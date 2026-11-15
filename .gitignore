@@ -17,3 +17,6 @@ venv/
 # local tooling / test scratch
 .omc/
 .hc-livetest/
+
+# release tooling
+node_modules/

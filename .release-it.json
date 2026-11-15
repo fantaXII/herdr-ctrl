@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/release-it@21/schema/release-it.json",
+  "git": {
+    "requireBranch": "main",
+    "requireCleanWorkingDir": true,
+    "commitMessage": "chore: release v${version}\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+    "tagName": "v${version}",
+    "tagAnnotation": "Release v${version}"
+  },
+  "npm": {
+    "publish": false
+  },
+  "github": {
+    "release": true,
+    "releaseName": "v${version}"
+  },
+  "hooks": {
+    "before:init": "python3 -m pytest -q",
+    "after:bump": "sed -i -E 's/^version = \"[^\"]+\"/version = \"${version}\"/' pyproject.toml && sed -i -E 's/^__version__ = \"[^\"]+\"/__version__ = \"${version}\"/' src/herdr_ctl/__init__.py"
+  }
+}

@@ -127,3 +127,9 @@ def test_add_and_list(tmp_path, monkeypatch, capsys):
     assert cli.main(["--list"]) == 0
     out = capsys.readouterr().out
     assert "projA" in out and "running" in out
+
+
+def test_version_flag(capsys):
+    from herdr_ctl import __version__
+    assert cli.main(["--version"]) == 0
+    assert capsys.readouterr().out.strip() == f"hc (herdr_ctl) {__version__}"

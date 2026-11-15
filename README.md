@@ -1,6 +1,6 @@
 # herdr_ctl
 
-> v0.1.0 구현 완료 (herdr 0.9.1에서 확인). 설계 상세와 구현 메모는 [PLAN.md](PLAN.md)를 참고하세요.
+> 구현 완료 (herdr 0.9.1에서 확인). 버전은 `hc --version` 또는 GitHub Releases 참고. 설계 상세와 구현 메모는 [PLAN.md](PLAN.md)를 참고하세요.
 
 [herdr](https://herdr.dev) 위에서 동작하는 보조 도구입니다.
 

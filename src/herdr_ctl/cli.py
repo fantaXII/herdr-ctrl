@@ -561,6 +561,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_list()
         if argv[0] == "--add":
             return cmd_add(argv[1] if len(argv) > 1 else None)
+        if argv[0] in ("-V", "--version"):
+            from . import __version__
+            print(f"hc (herdr_ctl) {__version__}")
+            return 0
         if argv[0] in ("-h", "--help"):
             build_parser().print_help()
             return 0
