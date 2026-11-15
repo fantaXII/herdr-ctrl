@@ -133,3 +133,25 @@ def test_version_flag(capsys):
     from herdr_ctl import __version__
     assert cli.main(["--version"]) == 0
     assert capsys.readouterr().out.strip() == f"hc (herdr_ctl) {__version__}"
+
+
+def test_init_without_herdr_warns_and_exits(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HC_HERDR_BIN", raising=False)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli.main(["init"]) == 1
+    err = capsys.readouterr().err
+    assert "herdr가 설치되어 있지 않습니다" in err
+    assert "curl -fsSL https://herdr.dev/install.sh | sh" in err
+    assert not (tmp_path / ".herdr-flow").exists()  # nothing written
+
+
+def test_init_honours_custom_herdr_bin(tmp_path, monkeypatch):
+    fake = tmp_path / "herdr"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("HC_HERDR_BIN", str(fake))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli.herdr_installed()
+    monkeypatch.setenv("HC_HERDR_BIN", str(tmp_path / "missing"))
+    assert not cli.herdr_installed()

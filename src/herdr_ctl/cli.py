@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -146,8 +147,29 @@ def cmd_add(name: str | None) -> int:
 
 
 # ------------------------------------------------------------ commands
+HERDR_INSTALL_HELP = """herdr가 설치되어 있지 않습니다. hc는 herdr 위에서 동작하므로 먼저 herdr를 설치하세요.
+
+설치 방법 (https://herdr.dev/tui/docs/install/):
+  공식 스크립트:  curl -fsSL https://herdr.dev/install.sh | sh
+  Homebrew:       brew install herdr
+  mise:           mise use -g herdr
+
+설치 후 새 터미널에서 'herdr --version'으로 확인한 뒤 hc init을 다시 실행하세요.
+(설치 위치가 PATH에 없으면 HC_HERDR_BIN=/경로/herdr 로 지정할 수 있습니다)"""
+
+
+def herdr_installed() -> bool:
+    custom = os.environ.get("HC_HERDR_BIN")
+    if custom:
+        return os.path.isfile(custom) and os.access(custom, os.X_OK)
+    return shutil.which("herdr") is not None
+
+
 def cmd_init(args) -> int:
     from .init_cmd import run_init
+    if not herdr_installed():
+        print(HERDR_INSTALL_HELP, file=sys.stderr)
+        return 1
     project = find_project() if not args.project else find_project(Path(args.project))
     if project is None:
         cwd = Path(args.project or Path.cwd()).resolve()

@@ -23,6 +23,12 @@
 
 ## 설치
 
+herdr가 먼저 설치되어 있어야 합니다. 없으면 `hc init`이 설치 방법을 안내하고 종료합니다.
+
+```bash
+curl -fsSL https://herdr.dev/install.sh | sh   # 또는 brew install herdr / mise use -g herdr
+```
+
 ```bash
 cd ~/study/BackEnd/herdr_ctl
 pipx install -e .       # hc(=herdr_ctl) 명령 등록 (의존성: PyYAML)
