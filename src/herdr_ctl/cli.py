@@ -1,0 +1,585 @@
+"""`hc` (= `herdr_ctl`) command line."""
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+from . import roles as roles_mod
+from .config import check_file, format_issues, orch_name
+from .herdr import Herdr, HerdrError, clean_env
+from .orchestrator import LimitExceeded, ScopeError, current_actor, enforce, guard
+from .project import Project, find_project, load_registry, project_by_name, register
+from .state import LockBusy, State
+from .up import Ctx
+
+SUBCOMMANDS = {"init", "check", "up", "down", "status", "zoom", "run", "send", "wait", "stop",
+               "resume", "ask", "role", "changes", "restart", "watch", "_worker"}
+
+
+class Fail(Exception):
+    pass
+
+
+def tty() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+# ------------------------------------------------------------- context
+def resolve_project(path: str | None) -> Project:
+    root = path or os.environ.get("HC_PROJECT")
+    if root:
+        p = find_project(Path(root))
+        if p is None:
+            raise Fail(f"{root}에서 프로젝트를 찾을 수 없습니다")
+        return p
+    p = find_project()
+    if p is None:
+        raise Fail("현재 위치에서 프로젝트를 찾을 수 없습니다. 프로젝트 폴더에서 실행하거나 hc --add / hc init을 먼저 하세요")
+    return p
+
+
+def make_herdr(session: str):
+    return Herdr(session=session)
+
+
+def load_ctx(args, verbose_warnings: bool = False) -> Ctx:
+    project = resolve_project(getattr(args, "project", None))
+    cfg, issues = check_file(project.config_path)
+    errors = [i for i in issues if i.level == "error"]
+    if errors:
+        raise Fail("설정 오류로 실행하지 않습니다:\n" + format_issues(issues))
+    if verbose_warnings and issues:
+        print(format_issues(issues))
+    return Ctx(project, cfg, make_herdr(cfg.session), State(project))
+
+
+# ---------------------------------------------------------------- open
+def cmd_open(name: str | None) -> int:
+    if name:
+        project = project_by_name(name)
+        if project is None:
+            raise Fail(f"등록된 프로젝트 '{name}'이 없습니다 (hc --list)")
+    else:
+        project = find_project()
+    if os.environ.get("HERDR_ENV") == "1":
+        sock = os.environ.get("HERDR_SOCKET_PATH", "")
+        if project and project.config_path.exists():
+            cfg, _ = check_file(project.config_path)
+            if cfg and f"/sessions/{cfg.session}/" in sock:
+                print(f"이미 '{cfg.session}' 세션 안입니다.")
+                return 0
+        raise Fail("herdr 창 안에서는 프로젝트 세션을 열지 않습니다 (herdr 안에 herdr가 겹칩니다). "
+                   "일반 터미널에서 hc를 실행하세요")
+    if project is None:
+        cwd = Path.cwd()
+        if not tty() or input(f"{cwd}를 프로젝트로 등록할까요? [Y/n] > ").strip().lower() not in ("", "y", "yes"):
+            raise Fail("등록되지 않은 폴더입니다. hc --add [이름]으로 등록하세요")
+        pname = input(f"프로젝트 이름 [{cwd.name}] > ").strip() or cwd.name
+        register(pname, cwd)
+        project = Project(pname, cwd.resolve())
+        print(f"✔ 등록: {pname} → {cwd}")
+    if not project.config_path.exists():
+        if tty() and input("설정(config.yaml)이 없습니다. hc init을 진행할까요? [Y/n] > ").strip().lower() in ("", "y", "yes"):
+            from .init_cmd import run_init
+            if not run_init(project):
+                raise Fail("설정에 오류가 남아 있어 세션을 열지 않습니다")
+        else:
+            raise Fail(f"{project.config_path}가 없습니다 (hc init)")
+    cfg, issues = check_file(project.config_path)
+    if cfg is None:
+        raise Fail("설정 오류:\n" + format_issues(issues))
+    if issues:
+        print(format_issues(issues))
+    h = make_herdr(cfg.session)
+    ctx = Ctx(project, cfg, h, State(project))
+    if not h.session_running(cfg.session):
+        project.ensure_dirs()
+        print(f"세션 '{cfg.session}' 시작 (화면 없이 서버 먼저)...")
+        h.start_server(cfg.session, str(project.var_dir / "server.log"))
+        from .up import up
+        for line in up(ctx).lines():
+            print("  " + line)
+    elif not ctx.state["members"]:
+        from .up import up
+        for line in up(ctx).lines():
+            print("  " + line)
+    else:
+        from .watch import detect
+        pending = detect(ctx)
+        if pending:
+            print(f"설정 변경 {len(pending)}건이 반영 대기 중입니다 (세션 안에서 hc changes).")
+    print(f"'{cfg.session}' 세션을 엽니다.")
+    sys.stdout.flush()
+    os.execvpe(h.binary, [h.binary, "--session", cfg.session], clean_env())
+    return 0  # pragma: no cover
+
+
+def cmd_list() -> int:
+    reg = load_registry()
+    if not reg:
+        print("등록된 프로젝트가 없습니다 (hc --add)")
+        return 0
+    try:
+        running = {r["name"]: r["status"] for r in Herdr().session_list()}
+    except HerdrError:
+        running = {}
+    for name, path in sorted(reg.items()):
+        p = Project(name, Path(path))
+        session = name
+        if p.config_path.exists():
+            cfg, _ = check_file(p.config_path)
+            session = cfg.session if cfg else name
+        print(f"{name:<20} {running.get(session, '-'):<8} {path}")
+    return 0
+
+
+def cmd_add(name: str | None) -> int:
+    cwd = Path.cwd()
+    name = name or cwd.name
+    register(name, cwd)
+    print(f"✔ 등록: {name} → {cwd.resolve()}")
+    return 0
+
+
+# ------------------------------------------------------------ commands
+def cmd_init(args) -> int:
+    from .init_cmd import run_init
+    project = find_project() if not args.project else find_project(Path(args.project))
+    if project is None:
+        cwd = Path(args.project or Path.cwd()).resolve()
+        project = Project(cwd.name, cwd)
+    ok = run_init(project, add_tab=args.tab)
+    return 0 if ok else 1
+
+
+def cmd_check(args) -> int:
+    project = resolve_project(args.project)
+    integrations = None
+    try:
+        integrations = Herdr().integration_status()
+    except HerdrError:
+        pass
+    cfg, issues = check_file(project.config_path, integrations=integrations)
+    print(format_issues(issues))
+    return 1 if any(i.level == "error" for i in issues) else 0
+
+
+def cmd_up(args) -> int:
+    from .up import up
+    ctx = load_ctx(args, verbose_warnings=True)
+    guard(ctx, current_actor(ctx), "up")
+    if not ctx.h.session_running(ctx.cfg.session):
+        ctx.project.ensure_dirs()
+        ctx.h.start_server(ctx.cfg.session, str(ctx.project.var_dir / "server.log"))
+    for line in up(ctx, tab=args.tab, start_watch=not args.no_watch).lines():
+        print(line)
+    return 0
+
+
+def cmd_down(args) -> int:
+    from .up import down
+    ctx = load_ctx(args)
+    guard(ctx, current_actor(ctx), "down")
+    closed = down(ctx, tab=args.tab, remove_worktree=args.remove_worktree)
+    print("정리: " + (", ".join(closed) or "없음"))
+    if args.stop_session and args.tab is None:
+        ctx.h.session_stop(ctx.cfg.session)
+        print(f"세션 '{ctx.cfg.session}' 정지")
+    return 0
+
+
+def cmd_status(args) -> int:
+    from .up import status
+    ctx = load_ctx(args)
+    print("\n".join(status(ctx)))
+    return 0
+
+
+def cmd_zoom(args) -> int:
+    from .up import zoom
+    zoom(load_ctx(args), args.name)
+    return 0
+
+
+def _finish(ctx, rec, detach: bool) -> int:
+    from .runner import execute, spawn_worker, summary
+    if detach:
+        spawn_worker(ctx.project, rec)
+        print(rec["id"])
+        return 0
+    rec = execute(ctx, rec)
+    print("\n".join(summary(rec)))
+    return 0 if rec["status"] == "done" else 1
+
+
+def cmd_run(args) -> int:
+    from .runner import create_run
+    ctx = load_ctx(args)
+    flow = ctx.cfg.flows.get(args.flow)
+    if flow is None:
+        raise Fail(f"flow '{args.flow}'이 없습니다 (있는 flow: {', '.join(ctx.cfg.flows) or '-'})")
+    actor = current_actor(ctx)
+    enforce(ctx, actor, sorted({s.target for s in flow.steps}), None)
+    rec = create_run(ctx.project, flow, actor=str(actor))
+    return _finish(ctx, rec, args.detach)
+
+
+def cmd_send(args) -> int:
+    from .config import parse_duration
+    from .runner import create_job
+    ctx = load_ctx(args)
+    m = ctx.cfg.member(args.agent)
+    if m is None or not m.is_agent:
+        raise Fail(f"agent '{args.agent}'가 설정에 없습니다")
+    actor = current_actor(ctx)
+    enforce(ctx, actor, [args.agent], args.text)
+    rec = create_job(ctx.project, args.agent, args.text, parse_duration(args.timeout), actor=str(actor))
+    return _finish(ctx, rec, args.detach)
+
+
+def cmd_wait(args) -> int:
+    from .runner import summary, wait
+    ctx_project = resolve_project(args.project)
+    rec = wait(ctx_project, args.id, timeout_s=args.timeout)
+    print("\n".join(summary(rec)))
+    return 0 if rec["status"] == "done" else 1
+
+
+def cmd_stop(args) -> int:
+    from .runner import load_run, stop, summary
+    ctx = load_ctx(args)
+    targets = sorted({s["agent"] or s["shell"] for s in load_run(ctx.project, args.id)["steps"]})
+    guard(ctx, current_actor(ctx), "stop", targets)
+    rec = stop(ctx, args.id)
+    print("\n".join(summary(rec)))
+    return 0
+
+
+def cmd_resume(args) -> int:
+    from .runner import execute, load_run, prepare_resume, spawn_worker, summary
+    ctx = load_ctx(args)
+    targets = sorted({s["agent"] or s["shell"] for s in load_run(ctx.project, args.id)["steps"]})
+    guard(ctx, current_actor(ctx), "resume", targets, budget=True)
+    rec = prepare_resume(ctx.project, args.id)
+    if args.detach:
+        spawn_worker(ctx.project, rec, resume=True, resend=args.resend)
+        print(rec["id"])
+        return 0
+    rec = execute(ctx, rec, resume=True, resend=args.resend)
+    print("\n".join(summary(rec)))
+    return 0 if rec["status"] == "done" else 1
+
+
+def cmd_worker(args) -> int:
+    from .runner import execute, load_run
+    ctx = load_ctx(args)
+    rec = load_run(ctx.project, args.id)
+    rec = execute(ctx, rec, resume=args.resume, resend=args.resend)
+    print(f"{rec['id']} {rec['status']}")
+    return 0
+
+
+def cmd_ask(args) -> int:
+    from .orchestrator import ask
+    ctx = load_ctx(args)
+    guard(ctx, current_actor(ctx), "ask")
+    ask(ctx, args.tab, args.text)
+    print(f"orchestrator '{orch_name(ctx.cfg.tab(args.tab).name)}'에게 전달했습니다. 진행은 화면이나 hc status로 확인하세요.")
+    return 0
+
+
+def _draft(ctx, m) -> str:
+    one, detail = roles_mod.effective_role(ctx.project, m)
+    tab = ctx.cfg.tab(m.tab)
+    goal = roles_mod.effective_role(ctx.project, tab.orchestrator)[0] if tab and tab.orchestrator else ""
+    prompt = (f"코딩 agent '{m.name}'({m.kind})의 상세 역할 지시문을 한국어 마크다운으로 작성해 주세요. "
+              f"한 줄 역할: '{one}'. 프로젝트 목표: '{goal or '-'}'. "
+              "항목: 담당 범위, 하지 말아야 할 것, 완료 기준, 결과 보고 방식. 20줄 이내, 제목 없이 본문만.")
+    cmd = shlex.split(os.environ.get("HC_DRAFT_CMD", "claude -p")) + [prompt]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ctx.project.root), timeout=300)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise Fail(f"초안 생성 실패: {(proc.stderr or proc.stdout).strip()[:300]}")
+    return proc.stdout.strip()
+
+
+def cmd_role(args) -> int:
+    from .watch import notify_role
+    ctx = load_ctx(args)
+    project, cfg = ctx.project, ctx.cfg
+    actor = current_actor(ctx)
+    if actor.kind != "user":
+        setting = args.name and args.text is not None and not any(
+            (args.edit, args.draft, args.apply, args.history, args.revert, args.review, args.accept, args.reject))
+        if args.apply and args.name:
+            guard(ctx, actor, "role --apply", [args.name])
+        elif not setting and (args.name is None or any((args.edit, args.draft, args.history, args.revert,
+                                                              args.review, args.accept, args.reject))):
+            raise Fail("역할 승인/편집/되돌리기는 사용자만 할 수 있습니다")
+    if args.review or args.accept or args.reject:
+        if args.accept or args.reject:
+            p = roles_mod.resolve_proposal(project, cfg, args.accept or args.reject, accept=bool(args.accept))
+            print(f"제안 {p['id']} ({p['name']}): {p['status']}")
+            return 0
+        items = roles_mod.proposals(project)
+        if not items:
+            print("대기 중인 역할 변경 제안이 없습니다")
+            return 0
+        for p in items:
+            print(f"#{p['id']} {p['name']}: '{p['role']}'  (제안: {p['actor']}, 이유: {p['reason'] or '-'})")
+            if tty():
+                ans = input("  [a] 승인  [r] 거절  [s] 나중에 > ").strip().lower()
+                if ans in ("a", "r"):
+                    roles_mod.resolve_proposal(project, cfg, p["id"], accept=ans == "a")
+        return 0
+    if not args.name:
+        for t in cfg.tabs:
+            print(f"[{t.name}] 역할 변경 정책: {t.role_update}")
+            for m in t.members:
+                if not m.is_agent:
+                    continue
+                one, detail = roles_mod.effective_role(project, m)
+                hist = roles_mod.history(project, m.name)
+                last = f"최근 변경: {hist[-1]['actor']}" if hist else ""
+                print(f"  {m.name:<14} {one or '-':<30} 상세:{'있음' if detail else '없음'}  {last}")
+        pend = roles_mod.proposals(project)
+        if pend:
+            print(f"승인 대기 제안 {len(pend)}건 (hc role --review)")
+        return 0
+    m = cfg.member(args.name)
+    if m is None or not m.is_agent:
+        raise Fail(f"agent '{args.name}'가 설정에 없습니다")
+    if args.history:
+        for e in roles_mod.history(project, m.name):
+            first = (e["after"].splitlines() or [""])[0]
+            print(f"#{e['n']} {e['actor']:<10} {e['reason'] or '-':<20} {first}")
+        return 0
+    if args.revert:
+        roles_mod.revert(project, m, args.revert)
+        print(f"{m.name}: #{args.revert} 이전 상태로 되돌렸습니다 (실행 중 agent에는 hc role {m.name} --apply)")
+        return 0
+    if args.edit:
+        f = roles_mod.ensure_template(project, m)
+        before = f.read_text()
+        editor = os.environ.get("EDITOR") or "vi"
+        if tty():
+            subprocess.call(shlex.split(editor) + [str(f)])
+            after = f.read_text()
+            if after != before:
+                roles_mod._record(project, m.name, "user", "edit", before, after)
+        print(f"역할 파일: {f}")
+        return 0
+    if args.draft:
+        text = _draft(ctx, m)
+        draft = project.roles_dir / f"{m.name}.draft.md"
+        draft.write_text(text + "\n")
+        print(text)
+        if tty() and input("이 초안을 상세 역할로 저장할까요? [y/N] > ").strip().lower().startswith("y"):
+            roles_mod.write_role(project, m, detail=text, actor="user", reason="draft")
+            draft.unlink()
+            print("저장했습니다")
+        else:
+            print(f"초안 파일: {draft}")
+        return 0
+    if args.apply:
+        print(notify_role(ctx, m.name))
+        return 0
+    if args.text is None:
+        one, detail = roles_mod.effective_role(project, m)
+        print(f"{m.name}: {one}\n{detail}")
+        return 0
+    tab = cfg.tab(m.tab)
+    if actor.kind == "agent":
+        raise Fail("작업 agent는 역할을 직접 바꿀 수 없습니다. 결과 파일에 '역할 조정 제안'을 남기세요")
+    if actor.kind == "orch":
+        if m.tab != actor.tab:
+            raise Fail("다른 탭 agent의 역할은 바꿀 수 없습니다")
+        if m.type == "orch":
+            raise Fail("orchestrator는 자신의 역할을 바꿀 수 없습니다")
+        if tab.role_update == "off":
+            raise Fail(f"탭 {tab.name}의 역할 변경 정책이 off입니다")
+        if tab.role_update == "confirm":
+            pid = roles_mod.propose(project, m.name, args.text, actor.name, args.reason or "")
+            ctx.h.notify("hc: 역할 변경 제안", f"{m.name}: {args.text} (hc role --review)")
+            print(f"제안 #{pid}로 저장했습니다. 사용자 승인 후 반영됩니다")
+            return 0
+        roles_mod.write_role(project, m, one=args.text, actor=actor.name, reason=args.reason or "")
+        ctx.h.notify("hc: 역할 변경(자동 반영)", f"{m.name}: {args.text}")
+        try:
+            print(notify_role(ctx, m.name))
+        except (RuntimeError, HerdrError) as e:
+            print(f"역할 파일은 바꿨지만 agent에게 알리지 못했습니다: {e}")
+        return 0
+    roles_mod.write_role(project, m, one=args.text, actor="user", reason=args.reason or "")
+    print(f"{m.name}: 역할을 바꿨습니다. 실행 중인 agent에 반영: hc role {m.name} --apply 또는 hc restart {m.name}")
+    return 0
+
+
+def cmd_changes(args) -> int:
+    from .watch import apply_change, default_actions, detect, save_pending
+    ctx = load_ctx(args)
+    guard(ctx, current_actor(ctx), "changes")
+    changes = detect(ctx)
+    if not changes:
+        save_pending(ctx.project, [])
+        print("반영 대기 중인 변경이 없습니다")
+        return 0
+    labels = {"notify": "[a] 알리기", "restart": "[r] 재시작", "add": "[c] 추가", "remove": "[x] 닫기",
+              "skip": "[s] 건너뛰기", "ack": "[k] 확인"}
+    keys = {"a": "notify", "r": "restart", "c": "add", "x": "remove", "s": "skip", "k": "ack"}
+    remaining = []
+    for ch in changes:
+        print(f"{ch.name}: {ch.detail}")
+        actions = default_actions(ch)
+        if args.list:
+            remaining.append(ch)
+            continue
+        if args.yes:
+            action = actions[0]
+        elif tty():
+            ans = input("  " + "  ".join(labels[a] for a in actions) + " > ").strip().lower()
+            action = keys.get(ans, "skip")
+            if action not in actions:
+                action = "skip"
+        else:
+            remaining.append(ch)
+            continue
+        try:
+            print("  → " + apply_change(ctx, ch, action, handoff=not args.no_handoff))
+        except (RuntimeError, KeyError, HerdrError, LockBusy) as e:
+            print(f"  ✘ {e}")
+            remaining.append(ch)
+        if action == "skip":
+            remaining.append(ch)
+    save_pending(ctx.project, list({id(c): c for c in remaining}.values()))
+    return 0
+
+
+def cmd_restart(args) -> int:
+    from .watch import restart
+    ctx = load_ctx(args)
+    actor = current_actor(ctx)
+    guard(ctx, actor, "restart", [args.name])
+    if actor.name == args.name:
+        raise Fail("orchestrator는 자기 자신을 재시작할 수 없습니다")
+    print(restart(ctx, args.name, handoff=not args.no_handoff))
+    return 0
+
+
+def cmd_watch(args) -> int:
+    from .watch import watch_loop
+    project = resolve_project(args.project)
+    cfg, _ = check_file(project.config_path)
+    session = cfg.session if cfg else project.name
+    watch_loop(project, make_herdr(session), interval=args.interval)
+    return 0
+
+
+# ----------------------------------------------------------------- main
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="hc", description="herdr_ctl: 프로젝트 세션, 화면 배치, agent 파이프라인")
+    p.add_argument("--project", help="프로젝트 경로 (기본: 현재 위치에서 찾기)")
+    sub = p.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("init", help="대화형으로 config.yaml 생성 (끝나면 자동 검사)")
+    s.add_argument("--tab", help="기존 설정에 탭 추가")
+    sub.add_parser("check", help="설정 검사")
+    s = sub.add_parser("up", help="탭/창/agent 구성 (멱등)")
+    s.add_argument("tab", nargs="?")
+    s.add_argument("--no-watch", action="store_true", help="설정 감시를 시작하지 않음")
+    s = sub.add_parser("down", help="탭의 창과 agent 정리")
+    s.add_argument("tab", nargs="?")
+    s.add_argument("--remove-worktree", action="store_true")
+    s.add_argument("--stop-session", action="store_true", help="(전체 정리 시) herdr 세션도 정지")
+    sub.add_parser("status", help="상태")
+    s = sub.add_parser("zoom", help="창 하나 크게 보기 / 복귀")
+    s.add_argument("name")
+    s = sub.add_parser("run", help="flow 실행 (A 방식)")
+    s.add_argument("flow")
+    s.add_argument("--detach", action="store_true")
+    s = sub.add_parser("send", help="agent 하나에 지시")
+    s.add_argument("agent")
+    s.add_argument("text")
+    s.add_argument("--detach", action="store_true")
+    s.add_argument("--timeout", default=None, help="예: 30m")
+    s = sub.add_parser("wait", help="detach된 실행 대기")
+    s.add_argument("id")
+    s.add_argument("--timeout", type=float, default=None, help="초")
+    s = sub.add_parser("stop", help="실행 중단")
+    s.add_argument("id")
+    s = sub.add_parser("resume", help="멈춘 실행 이어가기")
+    s.add_argument("id")
+    s.add_argument("--resend", action="store_true", help="멈춘 agent 단계의 지시를 다시 보냄")
+    s.add_argument("--detach", action="store_true")
+    s = sub.add_parser("ask", help="orchestrator에게 지시 (B 방식)")
+    s.add_argument("tab")
+    s.add_argument("text")
+    s = sub.add_parser("role", help="역할 보기/변경")
+    s.add_argument("name", nargs="?")
+    s.add_argument("text", nargs="?")
+    s.add_argument("--reason", default="")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--edit", action="store_true")
+    g.add_argument("--draft", action="store_true")
+    g.add_argument("--apply", action="store_true")
+    g.add_argument("--history", action="store_true")
+    g.add_argument("--revert", type=int)
+    g.add_argument("--review", action="store_true")
+    g.add_argument("--accept", type=int)
+    g.add_argument("--reject", type=int)
+    s = sub.add_parser("changes", help="설정 변경 확인 및 반영")
+    s.add_argument("--list", action="store_true")
+    s.add_argument("--yes", action="store_true", help="각 변경에 기본 조치 적용")
+    s.add_argument("--no-handoff", action="store_true")
+    s = sub.add_parser("restart", help="agent 재시작 (인수인계 후)")
+    s.add_argument("name")
+    s.add_argument("--no-handoff", action="store_true")
+    s = sub.add_parser("watch", help="설정 변경 감시 (_hc 탭에서 자동 실행)")
+    s.add_argument("--interval", type=float, default=2.0)
+    s = sub.add_parser("_worker")
+    s.add_argument("id")
+    s.add_argument("--resume", action="store_true")
+    s.add_argument("--resend", action="store_true")
+    return p
+
+
+HANDLERS = {"init": cmd_init, "check": cmd_check, "up": cmd_up, "down": cmd_down, "status": cmd_status,
+            "zoom": cmd_zoom, "run": cmd_run, "send": cmd_send, "wait": cmd_wait, "stop": cmd_stop,
+            "resume": cmd_resume, "ask": cmd_ask, "role": cmd_role, "changes": cmd_changes,
+            "restart": cmd_restart, "watch": cmd_watch, "_worker": cmd_worker}
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        if not argv:
+            return cmd_open(None)
+        if argv[0] == "--list":
+            return cmd_list()
+        if argv[0] == "--add":
+            return cmd_add(argv[1] if len(argv) > 1 else None)
+        if argv[0] in ("-h", "--help"):
+            build_parser().print_help()
+            return 0
+        if argv[0] not in SUBCOMMANDS and not argv[0].startswith("-"):
+            return cmd_open(argv[0])
+        args = build_parser().parse_args(argv)
+        if not args.cmd:
+            return cmd_open(None)
+        return HANDLERS[args.cmd](args)
+    except (Fail, KeyError, RuntimeError, LockBusy, LimitExceeded, ScopeError) as e:
+        msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+        print(f"hc: {msg}", file=sys.stderr)
+        return 1
+    except HerdrError as e:
+        print(f"hc: herdr 오류 — {e}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

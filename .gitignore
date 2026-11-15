@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# herdr_ctl runtime (when hc is used inside this repo)
+.herdr-flow/runs/
+.herdr-flow/handoff/
+.herdr-flow/var/
+.herdr-flow/state.json
+
+# local tooling / test scratch
+.omc/
+.hc-livetest/

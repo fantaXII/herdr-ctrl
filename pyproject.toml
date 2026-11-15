@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "herdr-ctl"
+version = "0.1.0"
+description = "Project sessions, layouts and agent pipelines on top of herdr"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6"]
+
+[project.scripts]
+hc = "herdr_ctl.cli:main"
+herdr_ctl = "herdr_ctl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["live: needs a real herdr binary (creates and deletes a throwaway session)"]
