@@ -317,3 +317,14 @@ def test_pending_changes_file_not_state(live):
     watch_once(live.project, live.h, None)
     assert live.project.state_path.read_text() == before
     assert [c["name"] for c in load_pending(live.project)] == ["x1"]
+
+
+def test_watch_signature_sees_edit_within_same_mtime_tick(live):
+    import os
+    from herdr_ctl.watch import _signature
+    c = live.project.config_path
+    st = c.stat()
+    before = _signature(live.project)
+    c.write_text(c.read_text().replace("model: sonnet", "model: opus"))
+    os.utime(c, ns=(st.st_atime_ns, st.st_mtime_ns))  # coarse clock: same mtime as before
+    assert _signature(live.project) != before

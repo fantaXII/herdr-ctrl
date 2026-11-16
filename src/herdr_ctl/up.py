@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import time
 import subprocess
@@ -56,13 +57,23 @@ def hc_command() -> list[str]:
 
 
 def fingerprint(project: Project, m: Member) -> dict:
-    return {"kind": m.kind, "model": m.model, "args": list(m.args), "permission": m.permission,
-            "role": role_fingerprint(project, m) if m.is_agent else None, "type": m.type,
-            "tab": m.tab, "cwd": m.cwd}
+    fp = {"kind": m.kind, "model": m.model, "args": list(m.args), "permission": m.permission,
+          "role": role_fingerprint(project, m) if m.is_agent else None, "type": m.type,
+          "tab": m.tab, "cwd": m.cwd, "v": 2}
+    if m.type == "agent" and m.kind == "claude" and m.unattended != "off":
+        fp["unattended"] = m.unattended  # absent when off: older state stays compatible
+    if m.tab_cwd is not None:
+        fp["tab_cwd"] = m.tab_cwd  # absent when unset (same compatibility rule)
+    if m.worktree:
+        fp["worktree"] = dict(m.worktree)
+    return fp
 
 
 def member_cwd(ctx: Ctx, tab: TabCfg, m: Member) -> str:
-    base = Path(ctx.state["worktrees"].get(tab.name, {}).get("cwd") or ctx.project.root)
+    wt = ctx.state["worktrees"].get(tab.name) or {}
+    # a recorded worktree only counts while the config still asks for that branch
+    use_wt = tab.worktree and wt.get("branch") == tab.worktree.get("branch")
+    base = Path((wt.get("cwd") if use_wt else None) or ctx.project.root)
     if tab.cwd:
         base = base / tab.cwd
     if m.cwd:
@@ -78,7 +89,10 @@ def ensure_workspace(ctx: Ctx) -> str:
     if wid in live:
         return wid
     wt_ids = {v.get("workspace_id") for v in st["worktrees"].values()}
+    root = ctx.project.root.resolve()
     for w in live.values():
+        if w.get("cwd") and Path(w["cwd"]).resolve() != root:
+            continue  # same label, but another project's workspace
         if w.get("label") == ctx.project.name and w["workspace_id"] not in wt_ids:
             st["workspace_id"] = w["workspace_id"]
             return w["workspace_id"]
@@ -125,8 +139,14 @@ def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport)
     wt = st["worktrees"].get(tab.name)
     if wt and wt.get("workspace_id") in live:
         return wt["workspace_id"]
-    base = tab.worktree.get("base") or git_branch(ctx.project.root)
-    res = h.worktree_create(main_wid, str(ctx.project.root), tab.worktree["branch"], base, tab.name)
+    if wt and wt.get("branch") == tab.worktree["branch"] and wt.get("cwd") and Path(wt["cwd"]).is_dir():
+        # `hc down` without --remove-worktree closed the workspace but kept the worktree: reopen it.
+        res = h.workspace_create(wt["cwd"], tab.name)
+        how = "다시 열기"
+    else:
+        base = tab.worktree.get("base") or git_branch(ctx.project.root)
+        res = h.worktree_create(main_wid, str(ctx.project.root), tab.worktree["branch"], base, tab.name)
+        how = "생성"
     ws = res.get("workspace") or {}
     root_pane = res.get("root_pane") or {}
     wid = ws.get("workspace_id") or root_pane.get("workspace_id")
@@ -137,7 +157,7 @@ def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport)
     if res.get("tab"):
         h.tab_rename(res["tab"]["tab_id"], tab.name)
         st["tabs"][tab.name] = {"tab_id": res["tab"]["tab_id"], "workspace_id": wid}
-    report.created_tabs.append(f"{tab.name} (worktree {tab.worktree['branch']})")
+    report.created_tabs.append(f"{tab.name} (worktree {tab.worktree['branch']} {how})")
     return wid
 
 
@@ -150,7 +170,10 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
     if tab_id not in live_tabs:
         tab_id = next((t["tab_id"] for t in live_tabs.values() if t.get("label") == group.label), None)
     panes = {p["pane_id"]: p for p in h.pane_list(wid)}
-    owned = {m.get("pane_id") for m in st["members"].values()}
+    configured = {m.name for t in ctx.cfg.tabs for m in t.members}
+    # Panes of members no longer in the config (e.g. renamed agents) are reusable.
+    stale = {r.get("pane_id"): name for name, r in st["members"].items() if name not in configured}
+    owned = {r.get("pane_id") for name, r in st["members"].items() if name in configured}
     slots: list[str | None] = []
     for m in group.members:
         rec = st.member(m.name) or {}
@@ -165,10 +188,16 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
         report.created_panes.append(slots[0])
     else:
         # Re-use leftover panes in the tab (e.g. an agent exited and left its shell).
-        free = [pid for pid, p in panes.items() if p.get("tab_id") == tab_id and pid not in owned]
+        free = [pid for pid, p in panes.items() if p.get("tab_id") == tab_id and pid not in owned
+                and pid not in slots and h.pane_shell_idle(pid)]
         for i, pid in enumerate(slots):
             if pid is None and free:
                 slots[i] = free.pop(0)
+                if slots[i] in stale:
+                    st["members"].pop(stale[slots[i]], None)
+        if all(pid is None for pid in slots):
+            raise RuntimeError(f"탭 '{group.label}'에 쓸 수 있는 창이 없습니다 (다른 프로그램이나 이전 agent가 "
+                               f"실행 중). 'hc down {group.cfg.name}' 후 'hc up {group.cfg.name}'로 다시 배치하세요")
     st["tabs"][group.label] = {"tab_id": tab_id, "workspace_id": wid}
     for slot in range(n):
         if slots[slot] is not None:
@@ -201,7 +230,10 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None) 
     """Start agent `m` in `pane_id`. Returns None on success or an attention reason."""
     h = ctx.h
     brief = brief_for(ctx, m, handoff)
-    args = agent_args(m, brief if m.kind == "claude" else None)
+    from .unattended import hook_settings
+    tab = ctx.cfg.tab(m.tab)
+    settings = hook_settings(ctx, tab, m) if tab else None
+    args = agent_args(m, brief if m.kind == "claude" else None, settings)
     try:
         h.agent_start(m.name, m.kind, pane_id, args)
     except HerdrError as e:
@@ -268,6 +300,8 @@ def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True) -> UpReport:
     ctx.state["applied_flows"] = flows_fingerprint(ctx.cfg)
     ctx.state["session"] = ctx.cfg.session
     ctx.state.save()
+    from .orchestrator import register_panes
+    register_panes(ctx)  # pane → member identity lives outside the project
     return report
 
 
@@ -284,6 +318,10 @@ def down(ctx: Ctx, tab: str | None = None, remove_worktree: bool = False) -> lis
         raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
     for t in tabs:
         wt = st["worktrees"].get(t.name)
+        labels = [g.label for g in group_tab(t)]
+        # overflow tabs (X-2, ...) from a larger earlier config
+        labels += sorted(lbl for lbl in st["tabs"] if lbl not in labels
+                         and re.fullmatch(rf"{re.escape(t.name)}-\d+", lbl))
         if wt and remove_worktree:
             # Remove first: closing the worktree's last tab also closes its workspace.
             try:
@@ -291,18 +329,20 @@ def down(ctx: Ctx, tab: str | None = None, remove_worktree: bool = False) -> lis
             except HerdrError as e:
                 done.append(f"(worktree 정리 실패: {e})")
             st["worktrees"].pop(t.name, None)
-        for group in group_tab(t):
-            rec = st["tabs"].pop(group.label, None)
+        for label in labels:
+            rec = st["tabs"].pop(label, None)
             if rec:
                 try:
                     h.tab_close(rec["tab_id"])
                 except HerdrError:
                     pass
-                done.append(group.label)
-            for m in group.members:
-                st["members"].pop(m.name, None)
-                st["applied"].pop(m.name, None)
-                st["attention"].pop(m.name, None)
+                done.append(label)
+        names = {m.name for m in t.members}
+        names |= {n for n, r in st["members"].items() if r.get("tab") == t.name}
+        for name in names:
+            st["members"].pop(name, None)
+            st["applied"].pop(name, None)
+            st["attention"].pop(name, None)
     if tab is None:
         ctl = st.get("control")
         if ctl:
@@ -312,6 +352,8 @@ def down(ctx: Ctx, tab: str | None = None, remove_worktree: bool = False) -> lis
                 pass
             st["control"] = None
     st.save()
+    from .orchestrator import register_panes
+    register_panes(ctx)  # pane → member identity lives outside the project
     return done
 
 
@@ -348,7 +390,11 @@ def status(ctx: Ctx) -> list[str]:
     pending = load_pending(ctx.project)
     if pending:
         lines.append(f"변경 대기: {len(pending)}건 (hc changes)")
-    active = [r for r in list_runs(ctx.project) if r.get("status") in ("pending", "running")]
+    from .unattended import pending as pending_questions
+    qs = pending_questions(ctx.project)
+    if qs:
+        lines.append(f"질문 대기: {len(qs)}건 (hc pending) — " + ", ".join(f"{q['id']}({q['agent']})" for q in qs[:5]))
+    active = [r for r in list_runs(ctx.project) if r.get("status") in ("pending", "running", "question")]
     for r in active:
         lines.append(f"실행 중: {r['id']} ({r.get('flow')}) 단계 {r.get('current', 0) + 1}/{len(r.get('steps', []))}")
     return lines

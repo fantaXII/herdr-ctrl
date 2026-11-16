@@ -63,14 +63,22 @@ def _parse(stdout: str) -> dict[str, Any] | None:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Some commands print a trailing hint line; take the last JSON line.
-        for line in reversed(text.splitlines()):
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    return json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+        pass
+    start = text.find("{")
+    if start >= 0:
+        # Pretty-printed (multi-line) JSON followed by extra hint lines.
+        try:
+            return json.JSONDecoder().raw_decode(text, start)[0]
+        except json.JSONDecodeError:
+            pass
+    # Some commands print a trailing hint line; take the last JSON line.
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
     return None
 
 
@@ -106,6 +114,8 @@ class Herdr:
             data = _parse(proc.stderr or "")  # herdr reports errors as JSON on stderr
         if isinstance(data, dict) and "error" in data:
             err = data["error"] or {}
+            if not isinstance(err, dict):
+                raise HerdrError("error", str(err))
             raise HerdrError(err.get("code", "error"), err.get("message", ""))
         if proc.returncode != 0:
             msg = (proc.stderr or proc.stdout or "").strip()
@@ -211,9 +221,23 @@ class Herdr:
             args += ["--timeout", str(int(timeout_ms))]
         return self.call(*args)
 
+    def _raw(self, *args: str) -> str:
+        """Commands that print plain text (e.g. `read`), honouring the session."""
+        cmd = self._base() + [str(a) for a in args]
+        try:
+            proc = self._run(cmd, capture_output=True, text=True, env=self._env())
+        except FileNotFoundError as exc:
+            raise HerdrError("herdr_not_found", str(exc)) from exc
+        if proc.returncode != 0:
+            data = _parse(proc.stderr or "") or _parse(proc.stdout or "")
+            if isinstance(data, dict) and isinstance(data.get("error"), dict):
+                raise HerdrError(data["error"].get("code", "error"), data["error"].get("message", ""))
+            raise HerdrError("cli_failed", (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}")
+        return proc.stdout
+
     def pane_read(self, pane_id: str, lines: int = 80, source: str = "recent-unwrapped") -> str:
-        res = self.call("pane", "read", pane_id, "--source", source, "--lines", str(lines))
-        return res.get("read", res).get("text", "")
+        # `read` prints plain text, not JSON (herdr 0.9.1)
+        return self._raw("pane", "read", pane_id, "--source", source, "--lines", str(lines))
 
     def pane_zoom(self, pane_id: str) -> dict:
         return self.call("pane", "zoom", pane_id, "--toggle")
@@ -228,6 +252,8 @@ class Herdr:
         """True when the pane's shell itself is in the foreground (no command/agent running)."""
         info = self.call("pane", "process-info", "--pane", pane_id).get("process_info", {})
         procs = info.get("foreground_processes") or []
+        if info.get("shell_pid") is None or info.get("foreground_process_group_id") is None:
+            return False  # unknown is not idle
         return info.get("foreground_process_group_id") == info.get("shell_pid") or not procs
 
     # ---------------------------------------------------------------- agents
@@ -266,8 +292,7 @@ class Herdr:
         self.call("agent", "send-keys", target, *keys)
 
     def agent_read(self, target: str, lines: int = 60) -> str:
-        res = self.call("agent", "read", target, "--source", "recent-unwrapped", "--lines", str(lines))
-        return res.get("read", res).get("text", "")
+        return self._raw("agent", "read", target, "--source", "recent-unwrapped", "--lines", str(lines))
 
     # ---------------------------------------------------------- misc / other
     def integration_status(self) -> dict[str, str]:

@@ -4,6 +4,8 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass
 
+import yaml
+
 from .config import check_file, format_issues
 from .herdr import READY_STATES, HerdrError, agent_status
 from .state import State, acquire, digest, read_json, release, write_json
@@ -16,12 +18,15 @@ HANDOFF_PROMPT = ("[hc] 곧 새 설정으로 다시 시작됩니다. 지금까�
 @dataclass
 class Change:
     name: str
-    type: str  # role | restart | add | remove | flow
+    type: str  # role | restart | relayout | add | remove | flow
     detail: str
 
     @property
     def needs_restart(self) -> bool:
         return self.type == "restart"
+
+
+LAYOUT_KEYS = ("type", "tab", "cwd", "tab_cwd", "worktree")
 
 
 def detect(ctx: Ctx) -> list[Change]:
@@ -36,10 +41,17 @@ def detect(ctx: Ctx) -> list[Change]:
             if old is None:
                 changes.append(Change(m.name, "add", f"새 {m.type} (탭 {t.name})"))
                 continue
-            diffs = [k for k in ("kind", "model", "args", "permission", "type", "tab", "cwd")
-                     if old.get(k) != new.get(k)]
-            if diffs:
-                detail = ", ".join(f"{k} {old.get(k)!r} → {new.get(k)!r}" for k in diffs)
+            diffs = [k for k in ("kind", "model", "args", "permission", "type", "tab", "cwd", "unattended",
+                                 "tab_cwd", "worktree")
+                     if old.get(k) != new.get(k)
+                     and not (k in ("tab_cwd", "worktree") and "v" not in old)]  # pre-upgrade: never recorded
+            detail = ", ".join(f"{k} {old.get(k)!r} → {new.get(k)!r}" for k in diffs)
+            # Pane placement (tab, cwd, worktree) and shells can't change in place: restart reuses the pane.
+            if diffs and (m.type == "shell" or old.get("type") == "shell"
+                          or any(k in LAYOUT_KEYS for k in diffs)):
+                changes.append(Change(m.name, "relayout",
+                                      detail + f" (재배치 필요: hc down {t.name} && hc up {t.name})"))
+            elif diffs:
                 changes.append(Change(m.name, "restart", detail + " (재시작 필요)"))
             elif m.is_agent and old.get("role") != new.get("role"):
                 changes.append(Change(m.name, "role", "역할 변경"))
@@ -181,6 +193,13 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
         ctx.state["applied_flows"] = flows_fingerprint(ctx.cfg)
         ctx.state.save()
         return "flow 변경 확인"
+    if ch.type == "relayout" and action == "ack":
+        m = ctx.cfg.member(ch.name)
+        if m is None:
+            raise KeyError(f"'{ch.name}'가 설정에 없습니다")
+        ctx.state["applied"][ch.name] = fingerprint(ctx.project, m)
+        ctx.state.save()
+        return f"{ch.name}: 확인함 (창 배치는 hc down {m.tab} && hc up {m.tab}로 반영)"
     if action == "notify":
         return notify_role(ctx, ch.name)
     if action == "restart":
@@ -196,6 +215,7 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
 
 def default_actions(ch: Change) -> list[str]:
     return {"role": ["notify", "restart", "skip"], "restart": ["restart", "skip"],
+            "relayout": ["ack", "skip"],
             "add": ["add", "skip"], "remove": ["remove", "skip"], "flow": ["ack"]}[ch.type]
 
 
@@ -211,13 +231,32 @@ def save_pending(project, changes: list[Change]) -> None:
 def load_pending(project) -> list[dict]:
     return read_json(pending_path(project), []) or []
 
+def _custom_role_files(project) -> list:
+    """role_file paths named in config.yaml (best effort: a broken config just yields none)."""
+    try:
+        data = yaml.safe_load(project.config_path.read_text())
+        root = project.root.resolve()
+        out = set()
+        for tdata in (data.get("tabs") or {}).values():
+            for adata in ((tdata or {}).get("agents") or {}).values():
+                rf = (adata or {}).get("role_file")
+                if isinstance(rf, str) and rf:
+                    p = (project.root / rf).resolve()
+                    if p.is_relative_to(root):
+                        out.add(p)
+        return sorted(out)
+    except Exception:
+        return []
+
+
 def _signature(project) -> str:
     parts = []
-    for p in [project.config_path, *sorted(project.roles_dir.glob("*.md"))] if project.roles_dir.exists() \
-            else [project.config_path]:
+    roles = sorted(project.roles_dir.glob("*.md")) if project.roles_dir.exists() else []
+    for p in [project.config_path, *roles, *_custom_role_files(project)]:
         try:
-            parts.append(f"{p}:{p.stat().st_mtime_ns}")
-        except FileNotFoundError:
+            # content, not just mtime: two quick edits can share an mtime tick (coarse fs clocks)
+            parts.append(f"{p}:{p.stat().st_mtime_ns}:{digest(p.read_text(errors='replace'))}")
+        except OSError:
             parts.append(f"{p}:-")
     return digest("|".join(parts))
 
@@ -254,6 +293,7 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None)
             h.notify("hc: 설정 오류 (반영 안 함)", err.splitlines()[0])
             continue
         if not changes:
+            notified = None  # nothing pending: the same change set later is news again
             continue
         key = digest(str([asdict(c) for c in changes]))
         if key == notified:

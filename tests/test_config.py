@@ -58,11 +58,12 @@ def test_more_than_four_panes_warns_but_valid():
     assert w and "X-2" in w[0].message
 
 
-def test_dangerous_args_warn():
+def test_dangerous_args_error():
+    # audit #7: bypass flags used to be warned about and then passed through; now rejected
     text = SAMPLE.replace('role: "구현" }', 'role: "구현", args: ["--dangerously-skip-permissions"] }')
     cfg, issues = check(text)
-    assert cfg is not None
-    assert any(i.level == "warning" and "우회" in i.message for i in issues)
+    assert cfg is None
+    assert any(i.level == "error" and "우회" in i.message for i in issues)
 
 
 def test_unknown_kind_and_bad_values():

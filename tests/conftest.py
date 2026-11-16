@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from herdr_ctl import orchestrator as orchestrator_mod
+from herdr_ctl import project as project_mod
+
 from herdr_ctl.config import check_file
 from herdr_ctl.fake import FakeHerdr
 from herdr_ctl.project import Project
@@ -54,6 +57,11 @@ def always_found(_):
 @pytest.fixture(autouse=True)
 def isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("HC_CONFIG_HOME", str(tmp_path / "cfghome"))
+    monkeypatch.setattr(project_mod, "STATE_HOME_OVERRIDE", tmp_path / "statehome")
+    monkeypatch.setenv("HC_HOOK_GRACE_S", "0")
+    monkeypatch.setenv("HC_SETTLE_S", "0")
+    # actor = own env only: pytest itself may run inside a herdr pane
+    monkeypatch.setattr(orchestrator_mod, "_ancestor_envs", lambda max_depth=30: iter(()))
     monkeypatch.setenv("HC_READY_GRACE_S", "0")
     monkeypatch.setenv("HC_STALL_WATCH_S", "0")
     for k in ("HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HC_ACTOR_PANE", "HC_PROJECT"):
@@ -90,3 +98,6 @@ def project(tmp_path):
 @pytest.fixture
 def ctx(project):
     return make_ctx(project)
+
+
+REAL_ANCESTOR_ENVS = orchestrator_mod._ancestor_envs

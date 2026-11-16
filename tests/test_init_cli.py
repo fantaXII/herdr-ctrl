@@ -27,7 +27,7 @@ def test_init_defaults_produce_valid_config(tmp_path, capsys):
     p = Project("shop", root)
     answers = ["",          # session [shop]
                "",          # tab name [X]
-               "", "", "목표: 결제", "",  # orchestrator yes, claude/opus, goal, policy confirm
+               "", "", "목표: 결제", "", "",  # orchestrator yes, claude/opus, goal, policy confirm, unattended off
                "", "", "", "", "", "", "",  # 2 agents: name/kind/role x2 (+ count)
                "", "", "",  # shell yes, name, build cmd
                "",          # default flow yes
@@ -155,3 +155,14 @@ def test_init_honours_custom_herdr_bin(tmp_path, monkeypatch):
     assert cli.herdr_installed()
     monkeypatch.setenv("HC_HERDR_BIN", str(tmp_path / "missing"))
     assert not cli.herdr_installed()
+
+
+def test_init_unattended_mode(tmp_path):
+    root = tmp_path / "shop"
+    root.mkdir()
+    p = Project("shop", root)
+    answers = ["", "", "", "", "", "", "maybe", "questions",  # invalid mode re-asked
+               "", "", "", "", "", "", "", "", "", "", "", ""]
+    assert run_init(p, scripted(answers), which=always_found)
+    data = yaml.safe_load(p.config_path.read_text())
+    assert data["tabs"]["X"]["unattended"] == "questions"

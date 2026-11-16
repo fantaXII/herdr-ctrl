@@ -5,6 +5,7 @@ import errno
 import hashlib
 import json
 import os
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,7 +16,7 @@ from .project import Project
 
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}.{threading.get_ident()}")
     tmp.write_text(text)
     os.replace(tmp, path)
 
@@ -105,7 +106,25 @@ def lock_path(project: Project, name: str) -> Path:
     return project.var_dir / "locks" / f"{name}.lock"
 
 
-def lock_holder(project: Project, name: str) -> dict | None:
+@contextmanager
+def file_lock(path: Path):
+    """Exclusive advisory lock (fcntl.flock) on `path` for short critical sections."""
+    import fcntl
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _guard(project: Project):
+    # every lock check/reclaim/create/remove is serialised: no TOCTOU between two reclaimers
+    return file_lock(project.var_dir / "locks" / ".guard")
+
+
+def _holder_unlocked(project: Project, name: str) -> dict | None:
     p = lock_path(project, name)
     info = read_json(p)
     if info is None:
@@ -117,36 +136,46 @@ def lock_holder(project: Project, name: str) -> dict | None:
         except FileNotFoundError:
             return None
         return {"owner": "?", "pid": "?"}
-    if not _pid_alive(int(info.get("pid", 0))):
-        p.unlink(missing_ok=True)  # stale: holder died
+    try:
+        pid = int(info.get("pid", 0))
+    except (TypeError, ValueError):
+        pid = 0
+    if not same_process_alive(pid, info.get("start")):  # holder died (pid reuse checked too)
+        p.unlink(missing_ok=True)
         return None
     return info
 
 
+def lock_holder(project: Project, name: str) -> dict | None:
+    with _guard(project):
+        return _holder_unlocked(project, name)
+
+
 def acquire(project: Project, name: str, owner: str, pid: int | None = None) -> None:
     p = lock_path(project, name)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    for _ in range(2):
+    pid = pid or os.getpid()
+    with _guard(project):
+        holder = _holder_unlocked(project, name)
+        if holder is not None:
+            raise LockBusy(name, holder)
         try:
             fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            holder = lock_holder(project, name)
-            if holder is None:
-                continue  # stale lock removed, retry once
-            raise LockBusy(name, holder)
+            raise LockBusy(name, read_json(p) or {"owner": "?", "pid": "?"})
         with os.fdopen(fd, "w") as f:
-            json.dump({"owner": owner, "pid": pid or os.getpid(), "ts": time.time()}, f)
-        return
-    raise LockBusy(name, {"owner": "?", "pid": "?"})
+            json.dump({"owner": owner, "pid": pid, "start": proc_start(pid), "ts": time.time()}, f)
 
 
 def release(project: Project, name: str, owner: str | None = None) -> None:
     p = lock_path(project, name)
-    info = read_json(p)
-    if info is None:
+    if not p.exists():
         return
-    if owner is None or info.get("owner") == owner:
-        p.unlink(missing_ok=True)
+    with _guard(project):
+        info = read_json(p)
+        if info is None:
+            return
+        if owner is None or info.get("owner") == owner:
+            p.unlink(missing_ok=True)
 
 
 @contextmanager

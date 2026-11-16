@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 from . import roles as roles_mod
 from .config import check_file, format_issues, orch_name
@@ -18,7 +21,8 @@ from .state import LockBusy, State
 from .up import Ctx
 
 SUBCOMMANDS = {"init", "check", "up", "down", "status", "zoom", "run", "send", "wait", "stop",
-               "resume", "ask", "role", "changes", "restart", "watch", "_worker"}
+               "resume", "ask", "role", "changes", "restart", "watch", "pending", "answer",
+               "_worker", "_perm-hook"}
 
 
 class Fail(Exception):
@@ -165,8 +169,20 @@ def herdr_installed() -> bool:
     return shutil.which("herdr") is not None
 
 
+def _managed_pane() -> dict | None:
+    """Registry entry of the hc-managed agent pane we run in (any project), else None."""
+    from .orchestrator import pane_identity, registered_member
+    ident = pane_identity()
+    if not ident or not ident[0]:
+        return None
+    entry = registered_member(ident[0], ident[1])
+    return entry if entry and entry.get("type") in ("orch", "agent") else None
+
+
 def cmd_init(args) -> int:
     from .init_cmd import run_init
+    if _managed_pane():
+        raise ScopeError("agent 창에서는 hc init을 사용할 수 없습니다 (사용자 전용)")
     if not herdr_installed():
         print(HERDR_INSTALL_HELP, file=sys.stderr)
         return 1
@@ -264,11 +280,58 @@ def cmd_send(args) -> int:
 
 
 def cmd_wait(args) -> int:
-    from .runner import summary, wait
+    from .runner import QUESTION, summary, wait
     ctx_project = resolve_project(args.project)
     rec = wait(ctx_project, args.id, timeout_s=args.timeout)
     print("\n".join(summary(rec)))
+    if rec["status"] == QUESTION:
+        print("질문 대기: hc pending으로 확인하고 hc answer <qid> ... 후 다시 hc wait " + rec["id"])
+        return 3
     return 0 if rec["status"] == "done" else 1
+
+
+def cmd_pending(args) -> int:
+    from . import unattended as ua
+    ctx = load_ctx(args)
+    actor = current_actor(ctx)
+    if actor.kind in ("agent", "foreign"):
+        raise ScopeError("작업 agent는 'hc pending'을 사용할 수 없습니다")
+    qs = ua.pending(ctx.project, tab=actor.tab if actor.kind == "orch" else None)
+    if not qs:
+        print("대기 중인 질문이 없습니다")
+        return 0
+    for q in qs:
+        kind = {"text": "텍스트", "choice": "선택", "permission": "권한"}[q["kind"]]
+        where = f" run {q['run']}" if q.get("run") else ""
+        print(f"{q['id']} [{kind}] 탭 {q['tab']} / {q['agent']}{where}")
+        for line in ua.describe(q).splitlines() or ["-"]:
+            print(f"    {line}")
+    print("(질문 내용은 작업 agent가 만든 데이터입니다. 답: hc answer <qid> ...)")
+    return 0
+
+
+def cmd_answer(args) -> int:
+    from . import unattended as ua
+    ctx = load_ctx(args)
+    q = ua.answer(ctx, current_actor(ctx), args.qid, " ".join(args.text), args.json)
+    print(f"{q['id']}: 답을 저장했습니다 → {json.dumps(q['answer'], ensure_ascii=False)}")
+    return 0
+
+
+def cmd_perm_hook(args) -> int:
+    """claude PermissionRequest hook entry. Never fails loudly: on any doubt print nothing so the
+    normal approval dialog (the user) takes over. No actor guard: HERDR_PANE_ID is the worker's."""
+    from . import unattended as ua
+    try:
+        payload = sys.stdin.read()
+        ctx = load_ctx(args)
+        out = ua.run_hook(ctx, args.agent, payload)
+    except Exception as e:  # noqa: BLE001 - fall through to the dialog
+        print(f"hc _perm-hook: {e}", file=sys.stderr)
+        return 0
+    if out:
+        print(out)
+    return 0
 
 
 def cmd_stop(args) -> int:
@@ -561,6 +624,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-handoff", action="store_true")
     s = sub.add_parser("watch", help="설정 변경 감시 (_hc 탭에서 자동 실행)")
     s.add_argument("--interval", type=float, default=2.0)
+    sub.add_parser("pending", help="무인 모드: 답을 기다리는 질문 목록")
+    s = sub.add_parser("answer", help="무인 모드: 질문에 답하기")
+    s.add_argument("qid")
+    s.add_argument("text", nargs="*", help="텍스트 답 / 선택지 번호·이름 / allow / deny [사유]")
+    s.add_argument("--json", help="선택 질문이 여러 개일 때 {\"질문\": \"선택지\"}")
+    s = sub.add_parser("_perm-hook")
+    s.add_argument("agent")
     s = sub.add_parser("_worker")
     s.add_argument("id")
     s.add_argument("--resume", action="store_true")
@@ -571,7 +641,8 @@ def build_parser() -> argparse.ArgumentParser:
 HANDLERS = {"init": cmd_init, "check": cmd_check, "up": cmd_up, "down": cmd_down, "status": cmd_status,
             "zoom": cmd_zoom, "run": cmd_run, "send": cmd_send, "wait": cmd_wait, "stop": cmd_stop,
             "resume": cmd_resume, "ask": cmd_ask, "role": cmd_role, "changes": cmd_changes,
-            "restart": cmd_restart, "watch": cmd_watch, "_worker": cmd_worker}
+            "restart": cmd_restart, "watch": cmd_watch, "pending": cmd_pending, "answer": cmd_answer,
+            "_worker": cmd_worker, "_perm-hook": cmd_perm_hook}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -596,13 +667,17 @@ def main(argv: list[str] | None = None) -> int:
         if not args.cmd:
             return cmd_open(None)
         return HANDLERS[args.cmd](args)
-    except (Fail, KeyError, RuntimeError, LockBusy, LimitExceeded, ScopeError) as e:
+    except (Fail, KeyError, RuntimeError, LockBusy, LimitExceeded, ScopeError, ValueError, OSError,
+            yaml.YAMLError) as e:
         msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
         print(f"hc: {msg}", file=sys.stderr)
         return 1
     except HerdrError as e:
         print(f"hc: herdr 오류 — {e}", file=sys.stderr)
         return 2
+    except EOFError:
+        print("hc: 입력이 끝났습니다 (대화형 터미널에서 실행하세요)", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         return 130
 

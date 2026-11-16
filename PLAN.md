@@ -557,3 +557,88 @@ flows:
 - 미리 구성한 세션에 화면을 붙였을 때 레이아웃 크기가 조정되는지는 수동으로 확인해야 한다. 화면 없는 서버의 기본 크기는 120×40이다.
 - 오래된 잠금을 회수하는 과정에 아주 짧은 경쟁 구간(TOCTOU)이 남아 있다. 같은 agent를 동시에 시작하는 경우에만 해당한다.
 - 이미 떠 있는 세션에 agent를 추가하면 레이아웃이 정확한 격자가 아닐 수 있다. `hc down X` 후 `hc up X`로 다시 배치할 수 있다.
+
+## 10. 무인 모드 (`unattended`, 2026-11-15 설계)
+
+orchestrator가 있는 탭에서 작업 agent의 질문과 승인 요청을 orchestrator가 판단해 답한다. **기본은 off**이고, off일 때는 기존 동작과 같다. 이 모드는 5장 설계 원칙의 "`blocked`를 자동 승인하지 않는다"에 대한 **유일한 예외**다. 예외는 사용자가 탭별로 켠 경우에만 적용된다. 실측 근거는 [docs/unattended-probe.md](docs/unattended-probe.md)에 있다.
+
+### 10.1 설정
+
+```yaml
+tabs:
+  X:
+    orchestrator: { kind: claude, model: opus }
+    unattended: off          # off | questions | approve
+    unattended_policy:       # 선택
+      answer_timeout: 300s   # 이 시간 안에 답이 없으면 사용자에게 넘김 (대화상자는 계속 떠 있음)
+      max_answers_per_ask: 30
+      deny: ["git push", "rm -rf"]   # 부분 문자열. 걸리면 무조건 사용자에게 (보조 장치)
+```
+
+| 값 | 질문 (B형 결과 파일 질문, AskUserQuestion) | 권한 승인 (Bash/Write 등) |
+|---|---|---|
+| off | 사용자 | 사용자 |
+| questions | orchestrator | 사용자 |
+| approve | orchestrator | orchestrator (정책 통과 시) |
+
+- orchestrator가 없는 탭에서 off가 아닌 값을 쓰면 `hc check` 오류.
+- opencode 작업 agent는 훅이 없어 항상 사용자에게 넘긴다 (`hc check` 경고).
+
+### 10.2 질문의 종류와 감지
+
+| 종류 | 감지 | 응답 전달 |
+|---|---|---|
+| B형 (텍스트 질문) | agent가 결과 파일 첫 줄을 `## QUESTION`으로 쓰고 턴을 끝냄 | 결과 파일을 `step-N.qK.md`로 옮기고, 답을 후속 지시로 보냄 |
+| 선택 질문 (AskUserQuestion) | claude PermissionRequest 훅 (`tool_name == AskUserQuestion`) | 훅이 `allow` + `updatedInput.answers` 반환 |
+| 권한 승인 (A형) | claude PermissionRequest 훅 | 훅이 `allow` 또는 `deny`(+사유) 반환 |
+
+claude 작업 agent가 있는 탭에서 unattended가 off가 아니면, `hc up`이 `--settings <훅 설정>`을 주입한다. questions 모드에서는 matcher를 `AskUserQuestion`으로, approve 모드에서는 `*`로 둔다. 훅 명령은 `PYTHONPATH=… python -m herdr_ctl.cli --project <root> _perm-hook <agent>`이고, 프로젝트와 agent 이름을 명령에 고정해 둔다.
+
+### 10.3 보안 규칙
+
+1. **질문과 답 저장소는 agent 작업 폴더 밖에 둔다.** 위치는 `$HC_STATE_HOME` 또는 `~/.local/state/herdr_ctl/<프로젝트>-<digest>/`이고, `questions/`, `answers.jsonl`, `hooks/`, orchestrator 상한 파일이 여기에 들어간다. acceptEdits 모드는 작업 폴더 안의 파일 쓰기를 묻지 않으므로, 작업 폴더 안에 두면 작업 agent가 답을 위조할 수 있다.
+2. **훅 정책은 결정적이며 LLM이 판단하기 전에 적용한다.** 다음 경우에는 무출력으로 사용자 대화상자에 넘긴다.
+   - deny 목록에 걸린 경우
+   - tool_input이 저장소, `.herdr-flow/`, `.claude/`, `herdr`, `hc`, `herdr_ctl`을 건드리는 경우
+   - 파일 도구의 대상 경로가 탭 작업 루트(프로젝트 또는 worktree) 밖인 경우
+3. **훅이 출력하는 내용은 다음으로 제한한다.** `behavior: allow`(AskUserQuestion일 때만 검증된 `updatedInput` 포함), 또는 `behavior: deny` + `message`. `updatedPermissions`는 절대 출력하지 않고 `permission_suggestions`도 쓰지 않는다. 즉 영구 권한 규칙은 절대 추가하지 않는다. AskUserQuestion의 `answers`는 키가 질문 원문과 같아야 하고, 값은 실제 선택지 label이어야 한다.
+4. **누가 답할 수 있는가.**
+   - 사용자는 언제나 답할 수 있다.
+   - orchestrator는 자기 탭 질문에만, 그리고 그 질문 종류가 모드에서 허용된 경우에만 답할 수 있다. 횟수는 `max_answers_per_ask`로 제한한다.
+   - 작업 agent는 답할 수 없다.
+
+   훅 프로세스 안에서는 `HERDR_PANE_ID`가 작업 agent의 창이다. 그래서 `_perm-hook`에는 actor 검사를 적용하지 않는다.
+5. **orchestrator `readonly` 권한을 고친다.** `--permission-mode default`를 함께 줘서, 계정 기본값이 auto여도 Read/Grep/Glob/`hc` 외의 도구는 사용자 승인을 받게 한다. `permission: ask`도 `--permission-mode default`를 명시한다.
+6. 모든 질문과 답(누가, 무엇을, 정책 결과)을 `answers.jsonl`에 남긴다.
+
+### 10.4 질문 기록과 생명주기
+
+`questions/<qid>.json`의 필드: `{id, kind: text|choice|permission, agent, tab, run, step, created, status, tool_name, tool_input, question, answer, answered_by, hook_pid, hook_start}`
+
+```
+pending ──(hc answer)──▶ answered ──(훅 또는 runner가 전달)──▶ resolved
+   └── answer_timeout / 훅 종료 / 대화상자를 사람이 처리 ──▶ expired (사용자에게 넘김)
+```
+
+- `hc pending`: 대기 질문 목록. orchestrator는 자기 탭 질문만 보인다. 훅 프로세스가 죽은 질문은 expired로 정리한다.
+- `hc answer <qid> <답>`
+  - permission: `allow` / `deny [사유]`
+  - choice: 선택지 번호 또는 label, 질문이 여러 개면 `--json`. 거절하려면 `deny [사유]`
+  - text: 자유 문장
+
+### 10.5 runner 연동
+
+- 새 상태 `question`은 **TERMINAL이 아니다.** worker는 살아서 잠금을 계속 쥐고 있고, `hc wait`만 이 상태에서 반환한다(exit 3, qid 출력). orchestrator는 `hc answer` 후 다시 `hc wait`을 호출한다.
+- 단계 중에 agent가 `blocked`가 되면, 최대 `HC_HOOK_GRACE_S`(5초) 동안 그 agent의 pending 질문(훅이 만든 것)을 찾는다.
+  - 찾으면 `question` 상태로 기다린다. agent가 `blocked`에서 벗어나면 다시 완료를 기다린다.
+  - 찾지 못하면 사용자에게 한 번 알리고, agent가 `blocked`인 동안 계속 기다린다(단계 timeout과 `hc stop`은 그대로 적용된다). 훅이 늦게 질문을 등록하면 그때 `question` 상태로 바뀌고, 사람이 화면에서 승인하면 그대로 이어간다. live 테스트에서 훅 질문이 5초 grace보다 늦게 등록되는 경우가 있었기 때문이다. 무인 모드가 off인 탭은 기존과 같이 `blocked`로 끝난다.
+  - 사용자가 누구인지(actor)는 프로젝트 밖의 창 등록 정보(`<state home>/panes.json`, `hc up`/`down`이 갱신)로 판단한다. 창 정보는 자기 환경 변수가 없으면 상위 프로세스 환경에서 찾는다. 다른 프로젝트에 등록된 창은 `foreign`으로 보고 모든 권한 작업을 거부한다.
+- B형은 결과 파일 첫 줄이 `## QUESTION`이면 파일을 옮긴 뒤 질문 기록을 만들고 `question` 상태로 답을 기다린다.
+  - 답이 오면 "[hc] 질문에 대한 답: …" 후속 지시를 보내고 같은 단계를 계속한다.
+  - `answer_timeout`이 지나면 단계와 run을 `blocked`(TERMINAL)로 끝내고 사용자에게 알린다. 질문 기록은 pending으로 남는다. 이후 `hc answer <qid>`로 답을 저장하고 `hc resume <run>`을 실행하면, runner가 저장된 답을 후속 지시로 보내고 이어간다.
+- `hc stop`은 `question` 상태의 run도 중단한다. agent에 esc를 보내 대화상자를 닫으면, 훅은 agent가 더 이상 blocked가 아님을 보고 종료한다.
+
+### 10.6 변경 감지
+
+- 작업 agent fingerprint에 unattended 모드를 포함한다. off일 때는 키를 넣지 않아 기존 상태와 호환된다. 모드를 바꾸면 그 탭 claude 작업 agent에 재시작 필요가 표시된다.
+- `args`에 `--settings`, `--permission-mode`, `--allowedTools`, `--disallowedTools`가 있으면 `hc check`가 경고한다. hc가 주입하는 인자와 충돌하기 때문이다.

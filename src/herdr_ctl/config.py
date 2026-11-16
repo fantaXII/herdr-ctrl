@@ -19,21 +19,28 @@ MAX_PANES_PER_TAB = 4
 CONTROL_TAB = "_hc"
 
 TOP_KEYS = {"session", "tabs", "flows"}
-TAB_KEYS = {"cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells"}
+TAB_KEYS = {"cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells",
+            "unattended", "unattended_policy"}
 AGENT_KEYS = {"kind", "model", "role", "role_file", "permission", "args"}
 ORCH_KEYS = {"kind", "model", "goal", "permission", "args"}
 SHELL_KEYS = {"cwd"}
 WORKTREE_KEYS = {"branch", "base"}
 LIMIT_KEYS = {"max_steps_per_ask", "max_minutes_per_ask", "max_retries_per_agent"}
+POLICY_KEYS = {"answer_timeout", "max_answers_per_ask", "deny"}
 FLOW_KEYS = {"steps", "tab"}
 STEP_KEYS = {"agent", "shell", "prompt", "run", "on_fail", "max_retries", "timeout"}
 
 PERMISSIONS = ("ask", "edit", "auto", "readonly")
 ROLE_UPDATE = ("confirm", "auto", "off")
 ON_FAIL = ("stop", "continue")
+UNATTENDED = ("off", "questions", "approve")
 DANGEROUS_ARGS = ("--dangerously-skip-permissions", "bypassPermissions", "--yolo",
                   "--dangerously-bypass-approvals-and-sandbox")
 DEFAULT_LIMITS = {"max_steps_per_ask": 20, "max_minutes_per_ask": 120, "max_retries_per_agent": 3}
+DEFAULT_POLICY = {"answer_timeout": 300.0, "max_answers_per_ask": 30, "deny": []}
+# args that collide with what hc itself passes (permission flags, injected hook settings)
+MANAGED_ARGS = ("--permission-mode", "--allowedTools", "--allowed-tools", "--disallowedTools",
+                "--disallowed-tools", "--settings")
 DEFAULT_ROLES = ["구현", "테스트 작성", "리뷰", "보조"]
 
 
@@ -61,6 +68,9 @@ class Member:
     role_file: str | None = None
     goal: str | None = None
     cwd: str | None = None
+    unattended: str = "off"  # the tab's unattended mode (set for work agents)
+    tab_cwd: str | None = None  # the tab's cwd (layout input: moving it needs a re-layout)
+    worktree: dict | None = None  # the tab's worktree {branch, base} (layout input)
 
     @property
     def is_agent(self) -> bool:
@@ -77,6 +87,8 @@ class TabCfg:
     role_update: str = "confirm"
     worktree: dict | None = None
     limits: dict = field(default_factory=lambda: dict(DEFAULT_LIMITS))
+    unattended: str = "off"
+    policy: dict = field(default_factory=lambda: dict(DEFAULT_POLICY, deny=[]))
 
     @property
     def members(self) -> list[Member]:
@@ -166,6 +178,20 @@ class _Checker:
     def warn(self, path: str, msg: str) -> None:
         self.issues.append(Issue("warning", path, msg))
 
+    def text(self, data: dict, key: str, path: str) -> str | None:
+        """Optional string value: anything else is an error and reads as None."""
+        v = data.get(key)
+        if v is not None and not isinstance(v, str):
+            self.err(f"{path}.{key}", "문자열이어야 합니다")
+            return None
+        return v
+
+    def inside_root(self, rel: str) -> bool:
+        if self.root is None:
+            p = Path(rel)
+            return not p.is_absolute() and ".." not in p.parts
+        return (self.root / rel).resolve().is_relative_to(self.root.resolve())
+
     def keys(self, data: dict, allowed: set[str], path: str) -> None:
         for k in data:
             if k not in allowed:
@@ -193,12 +219,16 @@ class _Checker:
         elif kind == "opencode" and "permission" in data and perm != "ask":
             self.warn(f"{path}.permission", "opencode는 시작 옵션으로 권한을 지정할 수 없습니다. opencode 설정 파일에서 지정하세요")
         args = data.get("args") or []
-        if not isinstance(args, list) or not all(isinstance(a, (str, int, float)) for a in args):
+        if not isinstance(args, list) or not all(isinstance(a, (str, int, float)) and not isinstance(a, bool)
+                                                 for a in args):
             self.err(f"{path}.args", "문자열 목록이어야 합니다")
             args = []
         for a in args:
             if any(d in str(a) for d in DANGEROUS_ARGS):
-                self.warn(f"{path}.args", f"권한 전체 우회 옵션 '{a}'은 지원하지 않습니다 (permission 사용 권장)")
+                self.err(f"{path}.args", f"권한 전체 우회 옵션 '{a}'은 지원하지 않습니다 (permission 사용)")
+            elif kind == "claude" and str(a).split("=", 1)[0] in MANAGED_ARGS:
+                self.warn(f"{path}.args", f"'{a}'는 hc가 permission/무인 모드로 직접 지정하는 옵션이라 "
+                                          "충돌합니다. permission 값을 쓰세요")
         model = data.get("model")
         if model is not None and not isinstance(model, str):
             self.err(f"{path}.model", "문자열이어야 합니다")
@@ -207,12 +237,15 @@ class _Checker:
             self.warn(f"{path}.model", f"opencode 모델은 '제공자/모델' 형식입니다 (현재 '{model}')")
         if model and kind not in ("claude", "opencode", None) and kind in AGENT_KINDS:
             self.warn(f"{path}.model", f"'{kind}'의 모델 옵션 매핑을 모릅니다. args로 직접 지정하세요")
-        role_file = data.get("role_file")
-        if role_file and self.root and not (self.root / role_file).exists():
+        role_file = self.text(data, "role_file", path)
+        if role_file and not self.inside_root(role_file):
+            self.err(f"{path}.role_file", f"프로젝트 폴더 안의 경로여야 합니다: {role_file}")
+            role_file = None
+        elif role_file and self.root and not (self.root / role_file).exists():
             self.warn(f"{path}.role_file", f"파일이 없습니다: {role_file}")
         return Member(name=name, type=mtype, tab=tab, kind=kind, model=model,
-                      args=[str(a) for a in args], permission=perm, role=data.get("role"),
-                      role_file=role_file, goal=data.get("goal"))
+                      args=[str(a) for a in args], permission=perm, role=self.text(data, "role", path),
+                      role_file=role_file, goal=self.text(data, "goal", path))
 
 
 def check_data(data: Any, root: Path | None = None, which: Callable[[str], str | None] = shutil.which,
@@ -231,11 +264,17 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
         tabs_raw = {}
     tabs: list[TabCfg] = []
     seen: dict[str, str] = {}
+    tab_names = [str(t) for t in tabs_raw]
     for tname, tdata in tabs_raw.items():
         tpath = f"tabs.{tname}"
         tname = str(tname)
         if not TAB_RE.match(tname) or tname == CONTROL_TAB:
             c.err(tpath, "탭 이름은 영문으로 시작하고 영문/숫자/_- 25자 이하 ('_hc'는 예약됨)")
+        if [t.lower() for t in tab_names].count(tname.lower()) > 1:
+            c.err(tpath, "대소문자만 다른 탭 이름이 있습니다 (탭 이름은 대소문자를 구분하지 않습니다)")
+        for other in tab_names:
+            if other != tname and re.fullmatch(rf"{re.escape(other)}-\d+", tname, re.IGNORECASE):
+                c.err(tpath, f"'{other}' 탭의 넘침 탭 이름('{other}-2' 등)과 겹칩니다. 다른 이름을 쓰세요")
         if not isinstance(tdata, dict):
             c.err(tpath, "객체여야 합니다")
             continue
@@ -263,7 +302,7 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
                         c.err(mpath, "객체여야 합니다 ({} 가능)")
                         continue
                     c.keys(mdata, SHELL_KEYS, mpath)
-                    m = Member(name=name, type="shell", tab=tname, cwd=mdata.get("cwd"))
+                    m = Member(name=name, type="shell", tab=tname, cwd=c.text(mdata, "cwd", mpath))
                 if m:
                     target.append(m)
         for m in ([orch] if orch else []) + agents + shells:
@@ -271,6 +310,8 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
                 c.err(f"{tpath}", f"이름 '{m.name}'이 탭 {seen[m.name]}와 중복됩니다")
             seen[m.name] = tname
         ru = tdata.get("role_update", "confirm")
+        if ru is False:  # YAML 1.1 reads a bare `off` as false
+            ru = "off"
         if ru not in ROLE_UPDATE:
             c.err(f"{tpath}.role_update", f"{'/'.join(ROLE_UPDATE)} 중 하나")
         wt = tdata.get("worktree")
@@ -280,6 +321,8 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
                 wt = None
             else:
                 c.keys(wt, WORKTREE_KEYS, f"{tpath}.worktree")
+                for k in WORKTREE_KEYS:
+                    c.text(wt, k, f"{tpath}.worktree")
                 if root and not (root / ".git").exists():
                     c.err(f"{tpath}.worktree", "git 저장소가 아니어서 worktree를 쓸 수 없습니다")
         limits = dict(DEFAULT_LIMITS)
@@ -290,13 +333,58 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
             c.keys(lim, LIMIT_KEYS, f"{tpath}.limits")
             for k, v in lim.items():
                 if k in LIMIT_KEYS:
-                    if not isinstance(v, int) or v < 0:
+                    if not isinstance(v, int) or isinstance(v, bool) or v < 0:
                         c.err(f"{tpath}.limits.{k}", "0 이상의 정수여야 합니다")
                     else:
                         limits[k] = v
-        tab = TabCfg(name=tname, cwd=tdata.get("cwd"), orchestrator=orch, agents=agents,
+        unattended = tdata.get("unattended", "off")
+        if unattended is False:  # YAML 1.1 reads a bare `off` as false
+            unattended = "off"
+        if unattended not in UNATTENDED:
+            c.err(f"{tpath}.unattended", f"{'/'.join(UNATTENDED)} 중 하나")
+            unattended = "off"
+        elif unattended != "off":
+            if orch is None:
+                c.err(f"{tpath}.unattended", "orchestrator가 없는 탭에서는 무인 모드를 쓸 수 없습니다 (off로 두세요)")
+            for m in agents:
+                if m.kind and m.kind != "claude":
+                    c.warn(f"{tpath}.agents.{m.name}",
+                           f"'{m.kind}'는 무인 응답을 지원하지 않습니다. 이 agent의 질문/승인은 사용자에게 넘어갑니다")
+        policy = dict(DEFAULT_POLICY, deny=[])
+        pol = tdata.get("unattended_policy") or {}
+        if not isinstance(pol, dict):
+            c.err(f"{tpath}.unattended_policy", "객체여야 합니다")
+        else:
+            c.keys(pol, POLICY_KEYS, f"{tpath}.unattended_policy")
+            if "answer_timeout" in pol:
+                try:
+                    t = parse_duration(pol["answer_timeout"])
+                    if t is None or not 10 <= t <= 3600:
+                        raise ValueError("10초 이상 1시간 이하여야 합니다 (예: 300s, 10m)")
+                    policy["answer_timeout"] = t
+                except ValueError as e:
+                    c.err(f"{tpath}.unattended_policy.answer_timeout", str(e))
+            if "max_answers_per_ask" in pol:
+                v = pol["max_answers_per_ask"]
+                if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                    c.err(f"{tpath}.unattended_policy.max_answers_per_ask", "0 이상의 정수여야 합니다")
+                else:
+                    policy["max_answers_per_ask"] = v
+            if "deny" in pol:
+                d = pol["deny"]
+                if not isinstance(d, list) or not all(isinstance(x, str) and x.strip() for x in d):
+                    c.err(f"{tpath}.unattended_policy.deny", "비어 있지 않은 문자열 목록이어야 합니다")
+                else:
+                    policy["deny"] = list(d)
+        for m in agents:
+            m.unattended = unattended
+        tcwd = c.text(tdata, "cwd", tpath)
+        wt_fp = {k: wt[k] for k in sorted(WORKTREE_KEYS) if wt.get(k) is not None} if wt else None
+        for m in ([orch] if orch else []) + agents + shells:
+            m.tab_cwd, m.worktree = tcwd, wt_fp
+        tab = TabCfg(name=tname, cwd=tcwd, orchestrator=orch, agents=agents,
                      shells=shells, role_update=ru if ru in ROLE_UPDATE else "confirm",
-                     worktree=wt, limits=limits)
+                     worktree=wt, limits=limits, unattended=unattended, policy=policy)
         if not tab.members:
             c.err(tpath, "agent나 shell이 최소 1개 필요합니다")
         n = len(tab.members)
@@ -321,6 +409,12 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
             c.err(fpath, "steps 목록이 필요합니다")
             continue
         c.keys(fdata, FLOW_KEYS, fpath)
+        ftab_name = c.text(fdata, "tab", fpath)
+        ftab = None
+        if ftab_name is not None:
+            ftab = next((t for t in tabs if t.name.lower() == ftab_name.lower()), None)
+            if ftab is None:
+                c.err(f"{fpath}.tab", f"'{ftab_name}' 탭이 없습니다 (탭: {', '.join(t.name for t in tabs) or '-'})")
         steps = []
         for i, sdata in enumerate(fdata["steps"]):
             spath = f"{fpath}.steps[{i}]"
@@ -328,37 +422,44 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
                 c.err(spath, "객체여야 합니다")
                 continue
             c.keys(sdata, STEP_KEYS, spath)
-            agent, shell = sdata.get("agent"), sdata.get("shell")
-            if bool(agent) == bool(shell):
+            if bool(sdata.get("agent")) == bool(sdata.get("shell")):
                 c.err(spath, "agent 또는 shell 중 정확히 하나가 필요합니다")
+            agent, shell = c.text(sdata, "agent", spath), c.text(sdata, "shell", spath)
+            prompt, run = c.text(sdata, "prompt", spath), c.text(sdata, "run", spath)
+            if ftab is not None and (agent or shell) and (agent or shell) in agent_names | shell_names \
+                    and (agent or shell) not in {m.name for m in ftab.members}:
+                c.err(spath, f"'{agent or shell}'는 flow의 탭 '{ftab.name}'에 없습니다")
             if agent:
                 if agent not in agent_names:
                     c.err(f"{spath}.agent", f"'{agent}' 없음 (agent: {', '.join(sorted(agent_names)) or '-'})")
-                if not sdata.get("prompt"):
+                if not prompt:
                     c.err(f"{spath}.prompt", "agent 단계에는 prompt가 필요합니다")
             if shell:
                 if shell not in shell_names:
                     c.err(f"{spath}.shell", f"'{shell}' 없음 (shell: {', '.join(sorted(shell_names)) or '-'})")
-                if not sdata.get("run"):
+                if not run:
                     c.err(f"{spath}.run", "shell 단계에는 run이 필요합니다")
             on_fail = sdata.get("on_fail", "stop")
             if on_fail not in ON_FAIL:
                 c.err(f"{spath}.on_fail", f"{'/'.join(ON_FAIL)} 중 하나")
                 on_fail = "stop"
             mr = sdata.get("max_retries", 0)
-            if not isinstance(mr, int) or mr < 0:
+            if not isinstance(mr, int) or isinstance(mr, bool) or mr < 0:
                 c.err(f"{spath}.max_retries", "0 이상의 정수여야 합니다")
                 mr = 0
             try:
+                if isinstance(sdata.get("timeout"), bool):
+                    raise ValueError("시간 값이어야 합니다 (예: 90s, 30m, 2h)")
                 timeout_s = parse_duration(sdata.get("timeout"))
+                if timeout_s is not None and timeout_s < 0:
+                    raise ValueError("0 이상이어야 합니다")
             except ValueError as e:
                 c.err(f"{spath}.timeout", str(e))
                 timeout_s = None
-            if i == 0 and "{prev}" in str(sdata.get("prompt") or sdata.get("run") or ""):
+            if i == 0 and "{prev}" in (prompt or run or ""):
                 c.warn(spath, "첫 단계에는 {prev}가 없습니다 (빈 값으로 치환됨)")
-            steps.append(Step(i, agent, shell, sdata.get("prompt"), sdata.get("run"),
-                              on_fail, mr, timeout_s))
-        flows[str(fname)] = Flow(str(fname), steps, fdata.get("tab"))
+            steps.append(Step(i, agent, shell, prompt, run, on_fail, mr, timeout_s))
+        flows[str(fname)] = Flow(str(fname), steps, ftab.name if ftab else None)
 
     has_error = any(i.level == "error" for i in c.issues)
     cfg = None if has_error else Config(session=session, tabs=tabs, flows=flows, raw=data)
@@ -394,16 +495,18 @@ def format_issues(issues: list[Issue]) -> str:
 # ---------------------------------------------------------------- agent args
 PERMISSION_ARGS = {
     "claude": {
-        "ask": [],
+        # explicit: without a mode claude starts in the account default (which may be auto)
+        "ask": ["--permission-mode", "default"],
         "edit": ["--permission-mode", "acceptEdits"],
         "auto": ["--permission-mode", "auto"],
-        # orchestrator: read + hc only (variadic option, so it must come last)
-        "readonly": ["--allowedTools", "Read", "Grep", "Glob", "Bash(hc:*)"],
+        # orchestrator: read + hc only; anything else asks the user (variadic option, so it must come last)
+        "readonly": ["--permission-mode", "default", "--allowedTools", "Read", "Grep", "Glob", "Bash(hc:*)"],
     },
 }
 
 
-def agent_args(m: Member, system_prompt_file: Path | None = None) -> list[str]:
+def agent_args(m: Member, system_prompt_file: Path | None = None,
+               settings_file: Path | None = None) -> list[str]:
     """Native CLI args passed after `--` to `herdr agent start`."""
     args: list[str] = []
     if m.model:
@@ -414,5 +517,7 @@ def agent_args(m: Member, system_prompt_file: Path | None = None) -> list[str]:
     if system_prompt_file and m.kind == "claude":
         args += ["--append-system-prompt-file", str(system_prompt_file)]
     args += list(m.args)
+    if settings_file and m.kind == "claude":
+        args += ["--settings", str(settings_file)]
     args += PERMISSION_ARGS.get(m.kind or "", {}).get(m.permission or "", [])
     return args

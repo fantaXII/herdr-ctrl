@@ -158,12 +158,12 @@ agent가 파일을 고치거나 명령을 실행할 때마다 승인을 요청�
 
 | 값 | 의미 |
 |---|---|
-| `ask` | 모든 작업에서 승인 요청 |
-| `edit` (작업 agent 기본) | 파일 수정은 자동, 명령 실행은 승인 요청 |
+| `ask` | 모든 작업에서 승인 요청 (계정 기본 모드가 auto여도 ask로 시작) |
+| `edit` (작업 agent 기본) | 파일 수정과 흔한 파일 명령(`echo > 파일` 등)은 자동, 그 밖의 명령 실행은 승인 요청 |
 | `auto` | 대부분 자동 |
-| `readonly` (orchestrator 기본) | 읽기와 `hc` 명령만 |
+| `readonly` (orchestrator 기본) | 읽기와 `hc` 명령만 자동, 그 밖은 사용자 승인 |
 
-모든 권한을 우회하는 옵션은 지원하지 않습니다.
+모든 권한을 우회하는 옵션(`--dangerously-skip-permissions` 등)은 지원하지 않으며, `hc check`에서 오류로 처리됩니다. `args`에 `--permission-mode`, `--allowedTools`, `--settings`를 직접 넣으면 hc가 넣는 값과 충돌하므로 `hc check`가 경고합니다.
 
 ### 작업 폴더 분리 (`worktree`, 선택)
 
@@ -235,6 +235,7 @@ x2: model sonnet → opus  (재시작 필요)
 | model / kind / args | **재시작 필요** |
 | agent 추가 / 삭제 | 창 추가 / 확인 후 종료 |
 | flow만 변경 | 다음 `hc run`부터 적용 (알림만) |
+| 쉘 창, 탭 `cwd`/`worktree`, 소속 탭 변경 | 창을 다시 배치해야 함 (`hc down X && hc up X`). `[k] 확인`으로 알림을 지움 |
 
 재시작(`hc restart x1`)은 다음 순서로 진행됩니다.
 
@@ -361,8 +362,69 @@ orchestrator에는 상한(`limits`)이 걸립니다. 한 번의 `hc ask`에서 �
 | 시간 초과 | 실행이 멈춤. 프롬프트를 자동으로 재전송하지 **않음** | `hc status`로 상태 확인 |
 | 중단하고 싶을 때 | `hc stop <run-id>` (agent에게 중단 신호, 잠금 해제) | 필요하면 `hc resume <run-id>` |
 | orchestrator 상한 도달 | 추가 지시를 거부하고 알림 | 확인 후 `hc ask`로 다시 지시 |
+| agent가 질문함 (`question`) | 실행은 살아서 답을 기다림, 알림 | `hc pending`으로 보고 `hc answer <qid> ...` ([6장](#6-무인-모드-unattended)) |
 
 실행 기록은 `.herdr-flow/runs/<run-id>/`에 단계별 결과 파일과 `run.json`으로 남습니다.
+
+## 6. 무인 모드 (`unattended`)
+
+orchestrator가 있는 탭에서 작업 agent의 **질문과 승인 요청에 orchestrator가 대신 답하게** 합니다. **기본은 off**입니다. 켜지 않으면 지금까지처럼 모두 사용자가 처리합니다.
+
+```yaml
+tabs:
+  X:
+    orchestrator: { kind: claude, model: opus }
+    unattended: questions        # off(기본) | questions | approve
+    unattended_policy:           # 선택
+      answer_timeout: 300s       # 이 시간 안에 답이 없으면 사용자에게 넘김
+      max_answers_per_ask: 30    # hc ask 1회당 orchestrator 답변 상한
+      deny: ["git push"]         # 포함되면 무조건 사용자에게
+```
+
+| 값 | 작업 agent의 질문 | 권한 승인 (명령 실행, 파일 쓰기 등) |
+|---|---|---|
+| `off` | 사용자 | 사용자 |
+| `questions` | orchestrator | 사용자 |
+| `approve` | orchestrator | orchestrator (아래 안전장치 통과 시) |
+
+### 질문의 종류
+
+- **텍스트 질문**: 작업 agent는 결과 파일 첫 줄을 `## QUESTION`으로 쓰고 질문을 남긴 뒤 턴을 끝냅니다(작업 규칙에 안내돼 있습니다). hc가 답을 다음 지시로 전달하고 같은 단계를 이어갑니다. 이 방식은 **무인 모드가 off여도** 동작하며, 그때는 사용자가 답합니다.
+- **선택 질문**: claude의 선택지 질문(AskUserQuestion)입니다.
+- **권한 승인**: claude의 "이 명령을 실행할까요?" 대화상자입니다. `approve`일 때만 orchestrator가 답합니다.
+
+선택 질문과 권한 승인은, `hc up`이 claude 작업 agent에 넣어 두는 훅을 통해 hc가 받습니다. 무인 모드를 바꾸면 해당 agent에 "재시작 필요"가 표시됩니다. opencode agent는 지원하지 않으며, 그 질문은 사용자에게 넘어갑니다.
+
+### 명령
+
+```bash
+hc pending                         # 답을 기다리는 질문 (orchestrator는 자기 탭 것만)
+hc answer q0003 "postgres로 하세요"  # 텍스트 질문
+hc answer q0004 2                  # 선택 질문: 번호 또는 선택지 이름
+hc answer q0005 --json '{"DB?": "postgres", "언어?": "go"}'   # 선택 질문이 여러 개일 때
+hc answer q0006 allow              # 권한 승인
+hc answer q0006 deny "배포는 사용자 결정입니다"   # 거절 (사유가 agent에게 전달됨)
+```
+
+- `hc wait <id>`는 질문이 생기면 **exit 3**으로 돌아옵니다. 답한 뒤 다시 `hc wait <id>`을 실행하세요. 실행 자체는 멈추지 않고 답을 기다립니다.
+- 답이 `answer_timeout` 안에 오지 않으면 사용자에게 넘어갑니다.
+  - 권한과 선택 질문: 화면의 대화상자가 그대로 있으므로 직접 처리합니다.
+  - 텍스트 질문: 실행이 `blocked`로 멈춥니다. `hc answer`로 답한 뒤 `hc resume <id>`를 실행하세요.
+- 화면에서 사람이 먼저 대화상자에 답해도 됩니다. 그러면 그 질문은 만료됩니다.
+- hc가 처리하지 않는 승인 요청(예: `questions` 모드의 명령 실행 승인, 사용자에게 넘긴 요청)이 생기면, 실행은 끝나지 않고 알림을 띄운 채 기다립니다. 화면에서 직접 승인하면 그대로 이어집니다. 무인 모드가 off인 탭은 지금처럼 `blocked`로 멈추며, `hc resume`으로 이어갑니다.
+
+### 안전장치
+
+- **누가 실행했는지 판별**: hc는 어느 창이 어느 agent인지를 프로젝트 밖의 등록 정보로 판별하고, 상위 프로세스의 환경도 함께 확인합니다. 그래서 agent가 `state.json`을 고치거나, `env -u ...`로 환경 변수를 지우거나, `hc --project 다른프로젝트`를 실행해도 사용자 권한을 얻지 못합니다.
+- **답할 수 있는 사람**: 사용자는 언제나 답할 수 있습니다. orchestrator는 자기 탭 질문에만, 모드가 허용하는 종류에만, 상한 안에서만 답할 수 있습니다. 작업 agent는 답할 수 없습니다.
+- **항상 사용자에게 넘어가는 승인 요청** (orchestrator에게 묻지 않음):
+  - deny 목록에 걸리는 요청
+  - `.herdr-flow`, `.claude`, `herdr`, `hc`를 건드리는 요청
+  - hc 상태 저장소에 접근하는 요청
+  - 작업 폴더(프로젝트 또는 worktree) 밖의 파일을 쓰는 요청
+- hc는 "항상 허용"이나 "auto mode 전환" 같은 **영구 권한 변경을 절대 선택하지 않습니다.** 매번 한 번만 허용합니다.
+- 질문과 답은 작업 agent가 고칠 수 없도록 프로젝트 밖(`~/.local/state/herdr_ctl/`, `HC_STATE_HOME`으로 변경 가능)에 저장되고, `answers.jsonl`에 모두 기록됩니다.
+- 실측 근거와 상세 설계: [docs/unattended-probe.md](docs/unattended-probe.md), [PLAN.md 10장](PLAN.md)
 
 ## 하루 사용 흐름
 

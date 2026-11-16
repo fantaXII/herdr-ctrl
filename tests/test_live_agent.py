@@ -1,8 +1,7 @@
 """Opt-in: real claude agent (haiku) through hc, in a throwaway herdr session.
 
-Run with HC_LIVE_AGENT=1. Costs a few cheap model calls. The project directory is
-created inside this repo so Claude's folder-trust prompt does not block startup
-(the parent folder is already trusted on the developer's machine).
+Run with HC_LIVE_AGENT=1. Costs a few cheap model calls. claude shows a folder-trust
+dialog for the new throwaway folder; the test accepts it (tests/livehelp.py).
 """
 import json
 import os
@@ -16,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from herdr_ctl.herdr import Herdr
+from livehelp import wait_ready
 
 REPO = Path(__file__).resolve().parents[1]
 SRC = str(REPO / "src")
@@ -57,15 +57,8 @@ def test_real_claude_agent_flow():
     try:
         r = hc(root, "up", "--no-watch")
         assert r.returncode == 0, r.stdout + r.stderr
-        if "확인" in r.stdout and "a1" in r.stdout:
-            pytest.skip("claude asked for folder trust: " + r.stdout)
-        # wait until the agent is ready
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            st = [a for a in h.agent_list() if a.get("name") == "a1"]
-            if st and st[0]["agent_status"] in ("idle", "done"):
-                break
-            time.sleep(1)
+        # a throwaway folder shows claude's folder-trust dialog first: accept it
+        assert not wait_ready(h, ["a1"]), "agent did not become ready: " + h.agent_read("a1", lines=30)
         r = hc(root, "run", "hello", timeout=300)
         screen = h.agent_read("a1", lines=40) if r.returncode else ""
         assert r.returncode == 0, r.stdout + r.stderr + "\n--- pane ---\n" + screen
