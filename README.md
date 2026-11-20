@@ -123,7 +123,7 @@ tabs:
 
 | 환경 | 동작 |
 |---|---|
-| WSL | `wslview`, 없으면 `explorer.exe`로 Windows 기본 브라우저를 엽니다 (WSL2는 `127.0.0.1`을 Windows와 공유) |
+| WSL | `wslview`, 없으면 `rundll32.exe url.dll,FileProtocolHandler`로 Windows 기본 브라우저를 엽니다 (WSL2는 `127.0.0.1`을 Windows와 공유) |
 | Linux 데스크톱 | 기본 브라우저 |
 | SSH, 화면 없는 서버 | 주소만 출력합니다. `ssh -L <포트>:127.0.0.1:<포트>`로 연결해 내 PC 브라우저에서 엽니다 |
 | 직접 지정 | `HC_BROWSER="firefox --new-tab"`, 열지 않으려면 `HC_BROWSER=none` |

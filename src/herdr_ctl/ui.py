@@ -74,14 +74,17 @@ def is_wsl() -> bool:
 
 
 def browser_command(url: str) -> list[str] | None:
-    """How to open `url`: HC_BROWSER > WSL (wslview / explorer.exe) > desktop default. None = print only."""
+    """How to open `url`: HC_BROWSER > WSL (wslview / rundll32) > desktop default. None = print only.
+
+    Not explorer.exe: given a URL with a query string (?t=...&p=...) it opens File Explorer instead."""
     custom = os.environ.get("HC_BROWSER")
     if custom is not None:
         return None if custom in ("", "none") else shlex.split(custom) + [url]
     if is_wsl():
-        for exe in ("wslview", "explorer.exe"):
-            if shutil.which(exe):
-                return [exe, url]
+        if shutil.which("wslview"):
+            return ["wslview", url]
+        if shutil.which("rundll32.exe"):  # Windows default browser, no shell parsing of & in the URL
+            return ["rundll32.exe", "url.dll,FileProtocolHandler", url]
         return None
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         return ["<webbrowser>", url]

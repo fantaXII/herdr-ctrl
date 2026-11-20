@@ -287,8 +287,9 @@ def test_session_mode_cannot_open(tmp_path, herdr):
 @pytest.mark.parametrize("env,wsl,which,expect", [
     ({"HC_BROWSER": "firefox --new-tab"}, False, (), ["firefox", "--new-tab", "U"]),
     ({"HC_BROWSER": "none"}, True, ("wslview",), None),
-    ({}, True, ("wslview", "explorer.exe"), ["wslview", "U"]),
-    ({}, True, ("explorer.exe",), ["explorer.exe", "U"]),
+    ({}, True, ("wslview", "rundll32.exe"), ["wslview", "U"]),
+    ({}, True, ("rundll32.exe", "explorer.exe"), ["rundll32.exe", "url.dll,FileProtocolHandler", "U"]),
+    ({}, True, ("explorer.exe",), None),  # explorer.exe opens File Explorer for URLs with a query string
     ({}, True, (), None),
     ({"DISPLAY": ":0"}, False, (), ["<webbrowser>", "U"]),
     ({}, False, (), None),

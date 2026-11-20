@@ -332,6 +332,22 @@ function freeName(prefix) {
   const used = new Set(allMembers(S.data).map((m) => m.name));
   for (let i = 1; ; i++) if (!used.has(prefix + i)) return prefix + i;
 }
+// Removing members also removes the flow steps that use them (after asking); flows left empty go too.
+function dropSteps(names) {
+  const gone = new Set(names);
+  const uses = (st) => gone.has(st.agent) || gone.has(st.shell);
+  const hits = Object.entries(S.data.flows || {})
+    .map(([fname, f]) => [fname, ((f && f.steps) || []).filter(uses).length]).filter(([, n]) => n);
+  if (!hits.length) return true;
+  const what = hits.map(([f, n]) => "flow '" + f + "'의 단계 " + n + "개").join(", ");
+  if (!confirm(names.join(", ") + "을(를) 쓰는 " + what + "도 함께 삭제합니다. 계속할까요?\n(단계가 남지 않는 flow는 flow째 삭제)")) return false;
+  for (const [fname] of hits) {
+    const f = S.data.flows[fname];
+    f.steps = f.steps.filter((st) => !uses(st));
+    if (!f.steps.length) delete S.data.flows[fname];
+  }
+  return true;
+}
 function renameMember(oldName, newName) {
   for (const f of Object.values(S.data.flows || {}))
     for (const st of (f && f.steps) || []) {
@@ -452,6 +468,7 @@ function renderTab(tname, t) {
         const v = e.target.value.trim(); if (v) t.title = v; else delete t.title; changed(); } })),
     h("div", { class: "row", style: "align-self:end" }, h("button", { class: "danger", onclick: () => {
       if (!confirm("탭 '" + tname + "'을 삭제할까요?")) return;
+      if (!dropSteps(allMembers(d).filter((m) => m.tab === tname).map((m) => m.name))) return;
       delete d.tabs[tname]; changed(); } }, "탭 삭제")));
   const left = h("div", {}, head, h("p"), renderOrch(tname, t), renderAgents(tname, t), renderShells(tname, t));
   return h("div", { class: "cols" }, left, h("div", {}, h("div", { class: "card" }, h("h3", {}, "화면 배치 미리보기"), renderPreview(tname, t))));
@@ -462,7 +479,9 @@ function renderOrch(tname, t) {
   const card = h("div", { class: "card" }, h("h3", {}, "orchestrator (지휘 LLM)",
     h("label", { class: "row small" }, h("input", { type: "checkbox", checked: on, onchange: (e) => {
       if (e.target.checked) t.orchestrator = { kind: "claude", model: "opus" };
-      else { t.orchestrator = "none"; delete t.unattended; delete t.unattended_policy; }
+      else if (dropSteps([tname.toLowerCase() + "-orch"])) {
+        t.orchestrator = "none"; delete t.unattended; delete t.unattended_policy;
+      }
       changed(); } }), "사용")));
   if (!on) { card.append(h("p", { class: "muted small" }, "없음: hctrl run / send로만 지시합니다.")); return card; }
   const o = t.orchestrator;
@@ -505,7 +524,7 @@ function renderAgents(tname, t) {
         const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } })),
       h("td", { class: "row", style: "flex-wrap:nowrap" },
         h("button", { title: "상세 프롬프트", onclick: () => editRole(name) }, "상세"),
-        h("button", { class: "danger", title: "삭제", onclick: () => { delete t.agents[name]; changed(); } }, "삭제"))));
+        h("button", { class: "danger", title: "삭제", onclick: () => { if (dropSteps([name])) { delete t.agents[name]; changed(); } } }, "삭제"))));
   }
   return h("div", { class: "card" }, h("h3", {}, "작업 agent", h("span", { class: "grow" }),
       h("button", { onclick: () => { t.agents[freeName(tname.toLowerCase()[0])] = { kind: "claude", model: "sonnet" }; changed(); } }, "+ agent")),
@@ -522,7 +541,7 @@ function renderShells(tname, t) {
       if (nv !== name && allMembers(S.data).some((m) => m.name === nv)) { e.target.value = name; toast("이미 있는 이름입니다"); return; }
       t.shells = renameKey(t.shells, name, nv); renameMember(name, nv); changed(); } }),
     h("span", { class: "muted small" }, "bash 창 (flow의 쉘 단계가 여기서 실행)"),
-    h("button", { class: "danger", onclick: () => { delete t.shells[name]; changed(); } }, "삭제")));
+    h("button", { class: "danger", onclick: () => { if (dropSteps([name])) { delete t.shells[name]; changed(); } } }, "삭제")));
   return h("div", { class: "card" }, h("h3", {}, "쉘 창", h("span", { class: "grow" }),
     h("button", { onclick: () => { t.shells[freeName(tname.toLowerCase()[0] + "sh")] = {}; changed(); } }, "+ 쉘")),
     rows.length ? rows : h("p", { class: "muted small" }, "없음"));
