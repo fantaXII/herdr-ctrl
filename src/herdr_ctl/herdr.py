@@ -41,7 +41,7 @@ class HerdrError(Exception):
 
 def clean_env(base: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if base is None else base)
-    for key in HERDR_ENV_VARS:
+    for key in HERDR_ENV_VARS + ("HC_CD_FILE",):  # HC_CD_FILE: the shell-init wrapper's, not the panes'
         env.pop(key, None)
     return env
 

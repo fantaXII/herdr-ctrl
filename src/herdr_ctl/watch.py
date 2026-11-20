@@ -1,15 +1,21 @@
 """Config/role change detection (`hctrl watch`, `hctrl changes`) and agent restart (`hctrl restart`)."""
 from __future__ import annotations
 
+import os
+import select
+import subprocess
+import sys
 import time
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
+from typing import Callable
 
 import yaml
 
 from .config import check_file, format_issues
 from .herdr import READY_STATES, HerdrError, agent_status
 from .state import State, acquire, digest, read_json, release, write_json
-from .up import Ctx, flows_fingerprint, fingerprint, start_agent, up
+from .up import Ctx, flows_fingerprint, fingerprint, hc_command, start_agent, up
 
 HANDOFF_PROMPT = ("[hctrl] 곧 새 설정으로 다시 시작됩니다. 지금까지의 작업 상태(완료한 것, 진행 중인 것, "
                   "다음에 할 일, 주의점)를 이 파일에 요약해 쓰세요: {path}")
@@ -276,14 +282,98 @@ def watch_once(project, h, last_sig: str | None, which=None) -> tuple[str, list[
     return sig, changes, None
 
 
-def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None) -> None:
+MENU = "[s] 설정 열기(브라우저)   [c] 변경 반영   [t] 상태   [p] 답을 기다리는 질문"
+MENU_COMMANDS = {"c": ["changes"], "t": ["status"], "p": ["pending"]}
+
+
+class TtyKeys:
+    """Single key presses from the terminal (cbreak), with cooked mode back for interactive commands."""
+
+    def __init__(self, fd: int | None = None):
+        self.fd = sys.stdin.fileno() if fd is None else fd
+        self.saved = None
+
+    def __enter__(self) -> "TtyKeys":
+        import termios
+        import tty
+        self.saved = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        import termios
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+
+    def __call__(self, timeout: float) -> str | None:
+        ready, _, _ = select.select([self.fd], [], [], max(timeout, 0))
+        return os.read(self.fd, 1).decode(errors="ignore") if ready else None
+
+    @contextmanager
+    def cooked(self):
+        import termios
+        import tty
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        try:
+            yield
+        finally:
+            tty.setcbreak(self.fd)
+
+
+class Menu:
+    """Key actions of the _hc tab. The _hc pane is the user's (never an agent's), so it may open the UI."""
+
+    def __init__(self, project, cooked=None, run: Callable[[list[str]], int] = subprocess.call):
+        self.project = project
+        self.cooked = cooked
+        self.run = run
+        self.ui = None
+
+    def handle(self, key: str) -> None:
+        key = key.lower()
+        if key == "s":
+            self.settings()
+        elif key in MENU_COMMANDS:
+            cmd = hc_command() + ["--project", str(self.project.root)] + MENU_COMMANDS[key]
+            with self.cooked() if self.cooked else nullcontext():
+                self.run(cmd)
+        else:
+            return
+        print(MENU, flush=True)
+
+    def settings(self) -> None:
+        from .ui import UIServer, announce
+        if self.ui is None:  # one server per watch process; each press mints a fresh one-time link
+            self.ui = UIServer("session", cwd=self.project.root, start=self.project).start()
+        announce(self.ui, self.project.name)
+
+    def close(self) -> None:
+        if self.ui is not None:
+            self.ui.stop()
+            self.ui = None
+
+
+def _pause(interval: float, keys, menu) -> None:
+    if keys is None:
+        time.sleep(interval)
+        return
+    deadline = time.monotonic() + interval
+    while (left := deadline - time.monotonic()) > 0:
+        key = keys(left)
+        if key and menu is not None:
+            menu.handle(key)
+
+
+def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
+               keys: Callable[[float], str | None] | None = None, menu: Menu | None = None) -> None:
     sig = _signature(project)
     notified: str | None = None
     n = 0
     print(f"[hctrl watch] {project.flow_dir} 감시 중 (간격 {interval}s)", flush=True)
+    if keys is not None:
+        print(MENU, flush=True)
     while iterations is None or n < iterations:
         n += 1
-        time.sleep(interval)
+        _pause(interval, keys, menu)
         sig2, changes, err = watch_once(project, h, sig)
         if changes is None:
             continue
@@ -301,4 +391,4 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None)
         notified = key
         text = ", ".join(f"{c.name} {c.detail}" for c in changes)
         print(f"[hctrl watch] 변경 감지: {text}", flush=True)
-        h.notify("hctrl: 설정 변경 감지", text[:200] + " — 'hctrl changes'로 확인")
+        h.notify("hctrl: 설정 변경 감지", text[:200] + " — 'hctrl changes' 또는 _hc 탭에서 [c]")

@@ -1,0 +1,97 @@
+"""_hc tab key menu: hctrl watch keeps polling while handling s/c/t/p."""
+import pytest
+
+from herdr_ctl import ui as ui_mod
+from herdr_ctl import watch as W
+from herdr_ctl.fake import FakeHerdr
+
+
+def scripted_keys(*keys):
+    seq = list(keys)
+
+    def get(timeout):
+        return seq.pop(0) if seq else None
+    return get
+
+
+def test_keys_dispatch_while_polling(project, monkeypatch, capsys):
+    polls = []
+    monkeypatch.setattr(W, "watch_once", lambda *a, **k: (polls.append(1) or "sig", None, None))
+    ran = []
+    menu = W.Menu(project, run=lambda cmd: ran.append(cmd[-1]) or 0)
+    settings = []
+    monkeypatch.setattr(menu, "settings", lambda: settings.append(1))
+    W.watch_loop(project, FakeHerdr(), interval=0.01, iterations=3, keys=scripted_keys("c", "t", "x", "P", "s"),
+                 menu=menu)
+    assert ran == ["changes", "status", "pending"] and settings == [1]
+    assert len(polls) == 3  # change detection kept running
+    assert W.MENU in capsys.readouterr().out
+
+
+def test_menu_commands_target_project_and_use_cooked_tty(project):
+    events = []
+
+    class Cooked:
+        def __enter__(self):
+            events.append("cooked")
+
+        def __exit__(self, *a):
+            events.append("cbreak")
+    menu = W.Menu(project, cooked=Cooked, run=lambda cmd: events.append(cmd) or 0)
+    menu.handle("c")
+    assert events[0] == "cooked" and events[2] == "cbreak"
+    assert events[1][-3:] == ["--project", str(project.root), "changes"]
+
+
+def test_settings_reuses_one_server_with_fresh_links(project, monkeypatch):
+    opened = []
+    monkeypatch.setattr(ui_mod, "open_browser", lambda url: opened.append(url) or True)
+    menu = W.Menu(project)
+    try:
+        menu.handle("s")
+        server = menu.ui
+        menu.handle("s")
+        assert menu.ui is server and server.mode == "session"
+        assert len(opened) == 2 and opened[0] != opened[1]
+        assert all(f":{server.port}/?t=" in u and u.endswith("&p=projA") for u in opened)
+    finally:
+        menu.close()
+    assert menu.ui is None
+
+
+def test_non_tty_watch_has_no_menu(project, monkeypatch, capsys):
+    monkeypatch.setattr(W, "watch_once", lambda *a, **k: ("sig", None, None))
+    monkeypatch.setattr(W.time, "sleep", lambda s: None)
+    monkeypatch.setattr(W.select, "select", lambda *a: pytest.fail("stdin read without a tty"))
+    W.watch_loop(project, FakeHerdr(), interval=0, iterations=2)
+    assert W.MENU not in capsys.readouterr().out
+
+
+def test_cmd_watch_without_tty_uses_plain_loop(project, monkeypatch):
+    from herdr_ctl import cli
+    seen = {}
+    monkeypatch.setattr(cli, "tty", lambda: False)
+    monkeypatch.setattr(W, "watch_loop", lambda p, h, interval, **kw: seen.update(kw=kw))
+    assert cli.main(["--project", str(project.root), "watch"]) == 0
+    assert seen["kw"] == {}
+
+
+def test_tty_keys_on_a_real_pty():
+    import os
+    import pty
+    import termios
+    master, slave = pty.openpty()
+    try:
+        before = termios.tcgetattr(slave)
+        with W.TtyKeys(slave) as keys:
+            assert not termios.tcgetattr(slave)[3] & termios.ICANON  # cbreak: no Enter needed
+            assert keys(0.01) is None
+            os.write(master, b"s")
+            assert keys(1) == "s"
+            with keys.cooked():
+                assert termios.tcgetattr(slave)[3] & termios.ICANON
+            assert not termios.tcgetattr(slave)[3] & termios.ICANON
+        assert termios.tcgetattr(slave) == before
+    finally:
+        os.close(master)
+        os.close(slave)

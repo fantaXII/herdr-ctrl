@@ -155,7 +155,7 @@ def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport)
     cwd = root_pane.get("cwd") or ws.get("cwd")
     st["worktrees"][tab.name] = {"workspace_id": wid, "cwd": cwd, "branch": tab.worktree["branch"]}
     if res.get("tab"):
-        h.tab_rename(res["tab"]["tab_id"], tab.name)
+        h.tab_rename(res["tab"]["tab_id"], tab.display)
         st["tabs"][tab.name] = {"tab_id": res["tab"]["tab_id"], "workspace_id": wid}
     report.created_tabs.append(f"{tab.name} (worktree {tab.worktree['branch']} {how})")
     return wid
@@ -168,7 +168,11 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
     live_tabs = {t["tab_id"]: t for t in h.tab_list(wid)}
     tab_id = (st["tabs"].get(group.label) or {}).get("tab_id")
     if tab_id not in live_tabs:
-        tab_id = next((t["tab_id"] for t in live_tabs.values() if t.get("label") == group.label), None)
+        claimed = {r.get("tab_id") for r in st["tabs"].values()} | {(st.get("control") or {}).get("tab_id")}
+        tab_id = next((t["tab_id"] for t in live_tabs.values()
+                       if t["tab_id"] not in claimed and t.get("label") in (group.title, group.label)), None)
+    if tab_id in live_tabs and live_tabs[tab_id].get("label") != group.title:
+        h.tab_rename(tab_id, group.title)  # title edited: rename in place, panes and agents untouched
     panes = {p["pane_id"]: p for p in h.pane_list(wid)}
     configured = {m.name for t in ctx.cfg.tabs for m in t.members}
     # Panes of members no longer in the config (e.g. renamed agents) are reusable.
@@ -181,7 +185,7 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
         slots.append(pid if pid in panes and panes[pid].get("tab_id") == tab_id else None)
     if tab_id is None:
         first = group.members[0]
-        res = h.tab_create(wid, group.label, member_cwd(ctx, group.cfg, first))
+        res = h.tab_create(wid, group.title, member_cwd(ctx, group.cfg, first))
         tab_id = res["tab"]["tab_id"]
         report.created_tabs.append(group.label)
         slots[0] = res["root_pane"]["pane_id"]
@@ -303,6 +307,20 @@ def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True) -> UpReport:
     from .orchestrator import register_panes
     register_panes(ctx)  # pane → member identity lives outside the project
     return report
+
+
+def sync_titles(ctx: Ctx) -> list[str]:
+    """Rename live herdr tabs to their configured titles (no relayout, no agent restart)."""
+    done = []
+    wids = {rec.get("workspace_id") for rec in ctx.state["tabs"].values()} - {None}
+    live = {t["tab_id"]: t for wid in wids for t in ctx.h.tab_list(wid)}
+    for t in ctx.cfg.tabs:
+        for group in group_tab(t):
+            tab_id = (ctx.state["tabs"].get(group.label) or {}).get("tab_id")
+            if tab_id in live and live[tab_id].get("label") != group.title:
+                ctx.h.tab_rename(tab_id, group.title)
+                done.append(f"{live[tab_id].get('label')} → {group.title}")
+    return done
 
 
 def flows_fingerprint(cfg: Config) -> str:

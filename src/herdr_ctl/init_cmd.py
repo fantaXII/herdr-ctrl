@@ -118,7 +118,7 @@ def build_config(session: str, tabs: dict[str, dict], flows: dict) -> dict:
     return data
 
 
-HEADER = """# herdr_ctl 설정 (hctrl init이 생성). 수정하면 다음 hctrl 명령 실행 시 자동 검사됩니다.
+HEADER = """# herdr_ctl 설정 (hctrl init 또는 hctrl ui가 생성). 수정하면 다음 hctrl 명령 실행 시 자동 검사됩니다.
 # 상세 역할: .herdr-flow/roles/<agent>.md (hctrl role <agent> --edit)
 """
 

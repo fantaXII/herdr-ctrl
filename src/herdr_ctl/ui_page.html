@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hctrl 설정</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #667085; --line: #dde1e7;
+  --accent: #2f6fde; --accent-ink: #ffffff; --ok: #1f8a4c; --warn: #b26b00; --err: #c62f2f;
+  --chip: #eef2f8; --pane: #e8eef9; --pane-orch: #dfe9ff; --pane-shell: #eef0f2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --panel: #1c2027; --ink: #e6e9ef; --muted: #98a2b3; --line: #2e343e;
+    --accent: #6c9cff; --accent-ink: #0d1220; --ok: #4cc38a; --warn: #f0b44c; --err: #ff7a7a;
+    --chip: #252b35; --pane: #223047; --pane-orch: #283c63; --pane-shell: #262b33;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", "Noto Sans KR", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--panel);
+  border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; }
+header .crumb { color: var(--muted); }
+header .spacer { flex: 1; }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 120px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px;
+  margin-bottom: 16px; }
+section > h2 { font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+section > h2 .grow { flex: 1; }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  border-radius: 7px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger { color: var(--err); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.link { border: none; background: none; color: var(--accent); padding: 0; }
+input, select, textarea { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; min-width: 0; }
+textarea { width: 100%; resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+label.field { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+label.field > * { color: var(--ink); font-size: 14px; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--chip); }
+.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.err { color: var(--err); }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 4px 6px; }
+td { padding: 4px 6px; vertical-align: middle; border-top: 1px solid var(--line); }
+td input, td select { width: 100%; }
+table.agents td:nth-child(1) { width: 96px; } table.agents td:nth-child(2) { width: 124px; }
+table.agents td:nth-child(4) { width: 130px; } table.agents td:last-child { width: 1%; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.tabchip { padding: 6px 12px; border-radius: 8px; background: var(--chip); border: 1px solid transparent; }
+.tabchip.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.cols { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) 300px; }
+@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.card h3 { margin: 0 0 10px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.preview { display: grid; gap: 4px; height: 170px; margin-bottom: 8px; }
+.pane { border-radius: 5px; background: var(--pane); display: flex; align-items: center; justify-content: center;
+  font-size: 12px; text-align: center; padding: 2px; overflow: hidden; }
+.pane.orch { background: var(--pane-orch); font-weight: 600; }
+.pane.shell { background: var(--pane-shell); }
+.preview-title { font-size: 12px; color: var(--muted); margin: 6px 0 4px; }
+.step { display: grid; grid-template-columns: 28px 110px 140px minmax(0, 1fr) auto; gap: 6px; align-items: start;
+  padding: 6px 0; border-top: 1px solid var(--line); }
+@media (max-width: 760px) { .step { grid-template-columns: 1fr; } }
+.step .num { color: var(--muted); padding-top: 6px; }
+.issues { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+  padding: 8px 20px; max-height: 30vh; overflow: auto; z-index: 5; }
+.issues ul { margin: 4px 0 0; padding-left: 18px; }
+.issues li.error { color: var(--err); } .issues li.warning { color: var(--warn); }
+.notice { padding: 10px 12px; border-radius: 8px; background: var(--chip); margin-bottom: 12px; }
+.toast { position: fixed; right: 20px; top: 64px; background: var(--ink); color: var(--bg); padding: 8px 14px;
+  border-radius: 8px; z-index: 20; max-width: 420px; }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink);
+  width: min(720px, 94vw); }
+dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>hctrl</h1>
+  <span class="crumb" id="crumb"></span>
+  <span class="spacer"></span>
+  <span id="headerActions" class="row"></span>
+</header>
+<main id="app"><p class="muted">불러오는 중…</p></main>
+<div class="issues hidden" id="issues"></div>
+<dialog id="roleDialog">
+  <h3 style="margin-top:0" id="roleTitle">역할</h3>
+  <label class="field">한 줄 역할 (역할 파일에 저장되며 표의 '역할'보다 우선합니다)<input id="roleOne"></label>
+  <p></p>
+  <label class="field">상세 프롬프트 (.herdr-flow/roles/&lt;agent&gt;.md)<textarea id="roleDetail" rows="14"></textarea></label>
+  <p class="row" style="justify-content:flex-end;margin-bottom:0">
+    <button id="roleCancel">취소</button><button class="primary" id="roleSave">저장</button>
+  </p>
+</dialog>
+<script>
+"use strict";
+// ------------------------------------------------------------------ helpers
+const $ = (id) => document.getElementById(id);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "class") el.className = v;
+    else if (k === "value") el.value = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  let data = null;
+  try { data = await r.json(); } catch (e) { data = null; }
+  if (!r.ok) { const err = new Error((data && data.error) || ("HTTP " + r.status)); err.status = r.status; throw err; }
+  return data;
+}
+function toast(msg) {
+  const t = h("div", { class: "toast" }, msg);
+  document.body.append(t);
+  setTimeout(() => t.remove(), 4000);
+}
+const clone = (x) => JSON.parse(JSON.stringify(x));
+const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+const TAB_RE = /^[A-Za-z][A-Za-z0-9_-]{0,24}$/;
+
+// -------------------------------------------------------------------- state
+const S = { mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
+            running: false, tab: null, issues: [], checkTimer: null, checkSeq: 0 };
+
+function dirty() { return S.data && JSON.stringify(S.data) !== JSON.stringify(S.saved); }
+window.addEventListener("beforeunload", (e) => { if (dirty()) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("hashchange", route);
+
+async function boot() {
+  try {
+    const st = await api("GET", "/api/state");
+    S.mode = st.mode; S.cwd = st.cwd;
+    if (!location.hash && st.mode === "session" && st.start) location.hash = "#/project/" + encodeURIComponent(st.start);
+  } catch (e) { $("app").replaceChildren(h("p", { class: "notice" }, "연결 실패: " + e.message)); return; }
+  route();
+}
+
+function route() {
+  const m = location.hash.match(/^#\/project\/(.+)$/);
+  if (m) openProject(decodeURIComponent(m[1]));
+  else showLauncher();
+}
+
+// ----------------------------------------------------------------- launcher
+async function showLauncher() {
+  if (dirty() && !confirm("저장하지 않은 변경이 있습니다. 버릴까요?")) { location.hash = "#/project/" + encodeURIComponent(S.project); return; }
+  S.project = null; S.data = null; S.saved = null;
+  $("crumb").textContent = "프로젝트";
+  $("headerActions").replaceChildren();
+  $("issues").classList.add("hidden");
+  const app = $("app");
+  app.replaceChildren(h("p", { class: "muted" }, "불러오는 중…"));
+  let rows;
+  try { rows = await api("GET", "/api/projects"); } catch (e) { app.replaceChildren(h("p", { class: "notice" }, e.message)); return; }
+  const list = h("section", {}, h("h2", {}, "프로젝트"));
+  if (S.mode === "session") list.append(h("div", { class: "notice" },
+    "herdr 세션 안에서 연 설정 화면입니다. 다른 프로젝트의 세션은 일반 터미널에서 hctrl로 여세요."));
+  if (!rows.length) list.append(h("p", { class: "muted" }, "등록된 프로젝트가 없습니다. 아래에서 추가하세요."));
+  else {
+    const tb = h("tbody");
+    for (const r of rows) {
+      const status = !r.exists ? h("span", { class: "badge err" }, "폴더 없음")
+        : !r.has_config ? h("span", { class: "badge warn" }, "설정 없음")
+        : r.running ? h("span", { class: "badge ok" }, "● 세션 실행 중") : h("span", { class: "badge" }, "○ 세션 없음");
+      const actions = h("td", { class: "row" });
+      if (r.has_config && S.mode === "launcher")
+        actions.append(h("button", { class: "primary", onclick: () => openSession(r.name) }, "열기"));
+      actions.append(h("button", { onclick: () => { location.hash = "#/project/" + encodeURIComponent(r.name); } },
+        r.has_config ? "설정" : "설정 만들기"));
+      tb.append(h("tr", {}, h("td", {}, h("b", {}, r.name)), h("td", { class: "muted small" }, r.root), h("td", {}, status), actions));
+    }
+    list.append(h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "이름"), h("th", {}, "경로"), h("th", {}, "상태"), h("th", {}, ""))), tb));
+  }
+  const path = h("input", { value: S.cwd, style: "flex:1;min-width:260px", "aria-label": "폴더 경로" });
+  const base = (p) => p.replace(/\/+$/, "").split("/").pop();
+  const name = h("input", { placeholder: base(S.cwd), style: "width:180px", "aria-label": "프로젝트 이름" });
+  path.addEventListener("input", () => { name.placeholder = base(path.value); });
+  const add = h("section", {}, h("h2", {}, "+ 프로젝트 추가"),
+    h("div", { class: "row" }, h("label", { class: "field", style: "flex:1" }, "폴더 경로", path),
+      h("label", { class: "field" }, "이름 (비우면 폴더 이름)", name),
+      h("button", { class: "primary", style: "align-self:end", onclick: async () => {
+        try {
+          const res = await api("POST", "/api/projects", { path: path.value, name: name.value || undefined });
+          location.hash = "#/project/" + encodeURIComponent(res.name);
+        } catch (e) { toast(e.message); }
+      } }, "추가하고 설정")),
+    h("p", { class: "muted small" }, "기본값은 hctrl을 실행한 폴더입니다."));
+  app.replaceChildren(list, add);
+}
+
+async function openSession(name) {
+  try {
+    const res = await api("POST", "/api/open", { name });
+    $("app").replaceChildren(h("section", {}, h("h2", {}, "✔ " + name), h("p", {}, res.message),
+      h("p", { class: "muted" }, "이 창은 닫아도 됩니다.")));
+    $("headerActions").replaceChildren();
+  } catch (e) { toast(e.message); }
+}
+
+// ------------------------------------------------------------------- editor
+async function openProject(name) {
+  if (S.project === name && S.data) { render(); return; }
+  if (dirty() && !confirm("저장하지 않은 변경이 있습니다. 버릴까요?")) return;
+  $("app").replaceChildren(h("p", { class: "muted" }, "불러오는 중…"));
+  try {
+    const [cfg, models] = await Promise.all([api("GET", "/api/project/" + encodeURIComponent(name)),
+                                            S.models ? Promise.resolve(S.models) : api("GET", "/api/models")]);
+    S.models = models;
+    S.project = name; S.version = cfg.version; S.running = cfg.running; S.exists = cfg.exists; S.root = cfg.root;
+    if (cfg.parse_error || !cfg.data || typeof cfg.data !== "object") {
+      $("app").replaceChildren(h("section", {}, h("h2", {}, name),
+        h("p", { class: "notice" }, "config.yaml을 읽을 수 없습니다: " + (cfg.parse_error || "형식 오류")),
+        h("p", {}, "파일을 직접 고친 뒤 새로고침하세요.")));
+      return;
+    }
+    S.data = cfg.data; normalize(S.data); S.saved = clone(S.data);
+    S.issues = cfg.issues; S.tab = Object.keys(S.data.tabs || {})[0] || null;
+    render();
+  } catch (e) { $("app").replaceChildren(h("p", { class: "notice" }, e.message)); }
+}
+
+function normalize(d) {
+  d.tabs = d.tabs && typeof d.tabs === "object" ? d.tabs : {};
+  for (const t of Object.values(d.tabs)) {
+    if (!t || typeof t !== "object") continue;
+    if (t.role_update === false) t.role_update = "off";   // YAML 1.1 bare off
+    if (t.unattended === false) t.unattended = "off";
+    // containers the editor fills in; done before the "saved" snapshot so loading is not an edit
+    if (!t.agents || typeof t.agents !== "object") t.agents = {};
+    if (!t.shells || typeof t.shells !== "object") t.shells = {};
+  }
+  if (!d.flows || typeof d.flows !== "object") d.flows = {};
+}
+function forSave(d) {  // the editor's empty containers are not written to config.yaml
+  const out = clone(d);
+  for (const t of Object.values(out.tabs || {})) if (t && t.shells && !Object.keys(t.shells).length) delete t.shells;
+  if (out.flows && !Object.keys(out.flows).length) delete out.flows;
+  return out;
+}
+
+function changed() {
+  render();
+  clearTimeout(S.checkTimer);
+  S.checkTimer = setTimeout(runCheck, 350);
+}
+async function runCheck() {
+  const seq = ++S.checkSeq;
+  try {
+    const res = await api("POST", "/api/project/" + encodeURIComponent(S.project) + "/check", { data: S.data });
+    if (seq === S.checkSeq) { S.issues = res.issues; renderIssues(); renderHeader(); }
+  } catch (e) { toast("검사 실패: " + e.message); }
+}
+
+function renderHeader() {
+  const nErr = S.issues.filter((i) => i.level === "error").length;
+  const nWarn = S.issues.length - nErr;
+  const badge = nErr ? h("span", { class: "badge err" }, "오류 " + nErr + " · 경고 " + nWarn)
+    : h("span", { class: "badge " + (nWarn ? "warn" : "ok") }, "검사 ✔ 경고 " + nWarn);
+  $("headerActions").replaceChildren(...[badge,
+    S.running ? h("span", { class: "badge ok" }, "● 세션 실행 중") : null,
+    h("button", { disabled: !dirty(), onclick: () => { S.data = clone(S.saved); changed(); } }, "되돌리기"),
+    h("button", { class: "primary", disabled: !dirty() && S.exists || nErr > 0, onclick: save }, S.exists ? "저장" : "만들기"),
+    S.mode === "launcher" && S.exists ? h("button", { disabled: dirty() || nErr > 0, onclick: () => openSession(S.project),
+      title: "저장된 설정으로 이 프로젝트 세션을 엽니다" }, "세션 열기") : null].filter(Boolean));
+}
+
+function renderIssues() {
+  const box = $("issues");
+  if (!S.issues.length) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  box.replaceChildren(h("b", {}, "검사 결과"),
+    h("ul", {}, S.issues.map((i) => h("li", { class: i.level }, (i.level === "error" ? "✘ " : "⚠ ") + i.path + ": " + i.message))));
+}
+
+async function save() {
+  try {
+    const sent = clone(S.data);
+    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version });
+    S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues;
+    let msg = "저장했습니다.";
+    if (res.renamed && res.renamed.length) msg += " 탭 이름 변경: " + res.renamed.join(", ") + ".";
+    if (S.running) msg += " 나머지 변경은 _hc 탭의 [c] (또는 hctrl changes)로 반영하세요.";
+    toast(msg);
+    render();
+  } catch (e) {
+    if (e.status === 409 && confirm(e.message + "\n\n파일에서 다시 불러올까요? (화면의 변경은 사라집니다)")) {
+      S.data = null; S.saved = null; openProject(S.project);
+    } else toast(e.message);
+  }
+}
+
+// ------------------------------------------------------------- members
+function allMembers(d) {
+  const out = [];
+  for (const [tname, t] of Object.entries(d.tabs || {})) {
+    if (!t || typeof t !== "object") continue;
+    if (t.orchestrator && t.orchestrator !== "none" && typeof t.orchestrator === "object")
+      out.push({ name: tname.toLowerCase() + "-orch", type: "orch", tab: tname });
+    for (const n of Object.keys(t.agents || {})) out.push({ name: n, type: "agent", tab: tname });
+    for (const n of Object.keys(t.shells || {})) out.push({ name: n, type: "shell", tab: tname });
+  }
+  return out;
+}
+function renameKey(obj, from, to) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) out[k === from ? to : k] = v;
+  return out;
+}
+function freeName(prefix) {
+  const used = new Set(allMembers(S.data).map((m) => m.name));
+  for (let i = 1; ; i++) if (!used.has(prefix + i)) return prefix + i;
+}
+function renameMember(oldName, newName) {
+  for (const f of Object.values(S.data.flows || {}))
+    for (const st of (f && f.steps) || []) {
+      if (st.agent === oldName) st.agent = newName;
+      if (st.shell === oldName) st.shell = newName;
+    }
+}
+
+// --------------------------------------------------------------- model UI
+// kind → (provider →) model. Unknown values and "직접 입력" show a text box instead of the lists.
+const typing = new WeakSet();
+function modelControl(spec, onChange) {
+  const kind = spec.kind || "claude";
+  const value = spec.model || "";
+  const providers = S.models.opencode || {};
+  const toList = () => { typing.delete(spec); onChange(undefined); };
+  const textBox = (placeholder, withList) => {
+    const input = h("input", { value, placeholder, "aria-label": "모델" });
+    input.addEventListener("change", () => onChange(input.value.trim() || undefined));
+    return h("div", { class: "row", style: "flex-wrap:nowrap" }, input,
+      withList ? h("button", { class: "link", onclick: toList }, "목록") : null);
+  };
+  const pick = (v) => { if (v === "__custom") { typing.add(spec); changed(); } else onChange(v || undefined); };
+  if (kind === "claude") {
+    const known = S.models.claude;
+    if (typing.has(spec) || (value && !known.includes(value))) return textBox("opus / 전체 모델 ID", true);
+    return h("select", { "aria-label": "모델", onchange: (e) => pick(e.target.value) },
+      h("option", { value: "" }, "(기본)"),
+      known.map((m) => h("option", { value: m, selected: m === value }, m)),
+      h("option", { value: "__custom" }, "직접 입력…"));
+  }
+  if (kind === "opencode") {
+    const prov = value.includes("/") ? value.split("/")[0] : "";
+    const listed = prov && providers[prov] && providers[prov].includes(value);
+    const any = Object.keys(providers).length > 0;
+    if (!any || typing.has(spec) || (value && !listed)) return textBox("제공자/모델", any);
+    const provSel = h("select", { "aria-label": "제공자", onchange: (e) => {
+      const p = e.target.value; pick(p === "__custom" ? p : p ? providers[p][0] : ""); } },
+      h("option", { value: "" }, "(기본)"),
+      Object.keys(providers).sort().map((p) => h("option", { value: p, selected: p === prov }, p)),
+      h("option", { value: "__custom" }, "직접 입력…"));
+    const modelSel = prov ? h("select", { "aria-label": "모델", onchange: (e) => pick(e.target.value) },
+      providers[prov].map((m) => h("option", { value: m, selected: m === value }, m.slice(prov.length + 1)))) : null;
+    return h("div", { class: "row" }, provSel, modelSel);
+  }
+  return textBox("모델 (선택)", false);
+}
+function setModel(spec, v) {
+  if (v === undefined) delete spec.model; else spec.model = v;
+  changed();
+}
+function kindSelect(spec) {
+  return h("select", { "aria-label": "종류", onchange: (e) => { spec.kind = e.target.value; delete spec.model; typing.delete(spec); changed(); } },
+    S.models.kinds.map((k) => h("option", { value: k, selected: k === (spec.kind || "claude") }, k)));
+}
+const PERMS = ["ask", "edit", "auto", "readonly"];
+function permSelect(spec, dflt) {
+  return h("select", { "aria-label": "권한", onchange: (e) => { if (e.target.value) spec.permission = e.target.value; else delete spec.permission; changed(); } },
+    h("option", { value: "" }, "(기본 " + dflt + ")"),
+    PERMS.map((p) => h("option", { value: p, selected: p === spec.permission }, p)));
+}
+
+// ------------------------------------------------------------------ render
+function render() {
+  const d = S.data;
+  $("crumb").replaceChildren(h("button", { class: "link", onclick: () => { location.hash = "#/"; } }, "프로젝트"), " / ", S.project);
+  renderHeader(); renderIssues();
+  const app = $("app");
+  const top = h("section", {}, h("h2", {}, "프로젝트 ", h("span", { class: "muted small" }, S.root)),
+    !S.exists ? h("div", { class: "notice" }, "아직 config.yaml이 없습니다. 아래 기본값을 고친 뒤 [만들기]를 누르세요.") : null,
+    S.running ? h("div", { class: "notice" }, "세션이 실행 중입니다. 탭 표시 이름은 저장 즉시 바뀌고, 그 밖의 변경은 _hc 탭의 [c]로 반영합니다.") : null,
+    h("div", { class: "grid" }, h("label", { class: "field" }, "세션 이름",
+      h("input", { value: d.session || "", onchange: (e) => { d.session = e.target.value.trim(); changed(); } }))));
+  app.replaceChildren(top, renderTabs(), renderFlows());
+}
+
+function renderTabs() {
+  const d = S.data;
+  const names = Object.keys(d.tabs);
+  if (!names.includes(S.tab)) S.tab = names[0] || null;
+  const chips = h("div", { class: "tabs" },
+    names.map((n) => h("button", { class: "tabchip" + (n === S.tab ? " active" : ""), onclick: () => { S.tab = n; render(); } },
+      (d.tabs[n] && d.tabs[n].title) ? d.tabs[n].title + " (" + n + ")" : n)),
+    h("button", { onclick: addTab }, "+ 탭 추가"));
+  const sec = h("section", {}, h("h2", {}, "탭"), chips);
+  if (S.tab) sec.append(renderTab(S.tab, d.tabs[S.tab]));
+  return sec;
+}
+
+function addTab() {
+  const d = S.data;
+  let id = "";
+  for (const c of "XYZWVUTSRQPONMLKJIHGFEDCBA") if (!Object.keys(d.tabs).some((t) => t.toLowerCase() === c.toLowerCase())) { id = c; break; }
+  if (!id) id = "T" + Object.keys(d.tabs).length;
+  const p = id.toLowerCase();
+  d.tabs[id] = { orchestrator: "none", agents: { [freeName(p)]: { kind: "claude", model: "sonnet", role: "구현" } } };
+  S.tab = id; changed();
+}
+
+function renderTab(tname, t) {
+  if (!t || typeof t !== "object") return h("p", { class: "notice" }, "이 탭은 객체가 아닙니다. config.yaml을 직접 고치세요.");
+  const d = S.data;
+  const savedIds = Object.keys((S.saved && S.saved.tabs) || {});
+  const idLocked = S.running && savedIds.includes(tname);
+  const idInput = h("input", { value: tname, disabled: idLocked, onchange: (e) => {
+    const nv = e.target.value.trim();
+    if (!TAB_RE.test(nv) || nv === tname) { e.target.value = tname; if (nv !== tname) toast("탭 ID: 영문으로 시작, 영문/숫자/_- 25자 이하"); return; }
+    if (Object.keys(d.tabs).some((x) => x !== tname && x.toLowerCase() === nv.toLowerCase())) { e.target.value = tname; toast("이미 있는 탭 ID입니다"); return; }
+    d.tabs = renameKey(d.tabs, tname, nv);
+    for (const f of Object.values(d.flows || {})) if (f && f.tab === tname) f.tab = nv;
+    S.tab = nv; changed();
+  } });
+  const head = h("div", { class: "grid" },
+    h("label", { class: "field" }, "탭 ID (명령에서 사용: hctrl ask " + tname + " …)", idInput,
+      idLocked ? h("span", { class: "muted small" }, "세션 실행 중에는 ID 대신 표시 이름을 바꾸세요") : null),
+    h("label", { class: "field" }, "표시 이름 (herdr 탭에 보이는 이름, 바로 반영)",
+      h("input", { value: t.title || "", placeholder: tname, maxlength: 30, onchange: (e) => {
+        const v = e.target.value.trim(); if (v) t.title = v; else delete t.title; changed(); } })),
+    h("div", { class: "row", style: "align-self:end" }, h("button", { class: "danger", onclick: () => {
+      if (!confirm("탭 '" + tname + "'을 삭제할까요?")) return;
+      delete d.tabs[tname]; changed(); } }, "탭 삭제")));
+  const left = h("div", {}, head, h("p"), renderOrch(tname, t), renderAgents(tname, t), renderShells(tname, t));
+  return h("div", { class: "cols" }, left, h("div", {}, h("div", { class: "card" }, h("h3", {}, "화면 배치 미리보기"), renderPreview(tname, t))));
+}
+
+function renderOrch(tname, t) {
+  const on = t.orchestrator && t.orchestrator !== "none" && typeof t.orchestrator === "object";
+  const card = h("div", { class: "card" }, h("h3", {}, "orchestrator (지휘 LLM)",
+    h("label", { class: "row small" }, h("input", { type: "checkbox", checked: on, onchange: (e) => {
+      if (e.target.checked) t.orchestrator = { kind: "claude", model: "opus" };
+      else { t.orchestrator = "none"; delete t.unattended; delete t.unattended_policy; }
+      changed(); } }), "사용")));
+  if (!on) { card.append(h("p", { class: "muted small" }, "없음: hctrl run / send로만 지시합니다.")); return card; }
+  const o = t.orchestrator;
+  const oname = tname.toLowerCase() + "-orch";
+  card.append(h("div", { class: "grid" },
+    h("label", { class: "field" }, "종류", kindSelect(o)),
+    h("label", { class: "field" }, "모델", modelControl(o, (v) => setModel(o, v))),
+    h("label", { class: "field" }, "권한", permSelect(o, "readonly")),
+    h("label", { class: "field" }, "역할 변경 정책",
+      h("select", { onchange: (e) => { t.role_update = e.target.value; changed(); } },
+        ["confirm", "auto", "off"].map((v) => h("option", { value: v, selected: v === (t.role_update || "confirm") }, v)))),
+    h("label", { class: "field" }, "무인 모드",
+      h("select", { onchange: (e) => { if (e.target.value === "off") delete t.unattended; else t.unattended = e.target.value; changed(); } },
+        [["off", "off (모두 사용자)"], ["questions", "questions (질문만 대신 답)"], ["approve", "approve (승인도 대신)"]]
+          .map(([v, l]) => h("option", { value: v, selected: v === (t.unattended || "off") }, l))))),
+    h("p"),
+    h("label", { class: "field" }, "프로젝트 목표 한 줄",
+      h("input", { value: o.goal || "", onchange: (e) => { const v = e.target.value.trim(); if (v) o.goal = v; else delete o.goal; changed(); } })),
+    h("p", { class: "row small" }, h("button", { onclick: () => editRole(oname) }, "역할 상세 편집"),
+      h("span", { class: "muted" }, "이름: " + oname)));
+  return card;
+}
+
+function renderAgents(tname, t) {
+  t.agents = t.agents && typeof t.agents === "object" ? t.agents : {};
+  const tb = h("tbody");
+  for (const [name, spec0] of Object.entries(t.agents)) {
+    if (!spec0 || typeof spec0 !== "object") t.agents[name] = {};
+    const spec = t.agents[name];
+    tb.append(h("tr", {},
+      h("td", {}, h("input", { value: name, style: "width:90px", "aria-label": "이름", onchange: (e) => {
+        const nv = e.target.value.trim();
+        if (!NAME_RE.test(nv)) { e.target.value = name; toast("이름: 소문자로 시작, 소문자/숫자/_- 32자 이하"); return; }
+        if (nv !== name && allMembers(S.data).some((m) => m.name === nv)) { e.target.value = name; toast("이미 있는 이름입니다"); return; }
+        t.agents = renameKey(t.agents, name, nv); renameMember(name, nv); changed(); } })),
+      h("td", {}, kindSelect(spec)),
+      h("td", {}, modelControl(spec, (v) => setModel(spec, v))),
+      h("td", {}, permSelect(spec, "edit")),
+      h("td", {}, h("input", { value: spec.role || "", placeholder: "한 줄 역할", "aria-label": "역할", onchange: (e) => {
+        const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } })),
+      h("td", { class: "row", style: "flex-wrap:nowrap" },
+        h("button", { title: "상세 프롬프트", onclick: () => editRole(name) }, "상세"),
+        h("button", { class: "danger", title: "삭제", onclick: () => { delete t.agents[name]; changed(); } }, "삭제"))));
+  }
+  return h("div", { class: "card" }, h("h3", {}, "작업 agent", h("span", { class: "grow" }),
+      h("button", { onclick: () => { t.agents[freeName(tname.toLowerCase()[0])] = { kind: "claude", model: "sonnet" }; changed(); } }, "+ agent")),
+    Object.keys(t.agents).length ? h("table", { class: "agents" }, h("thead", {}, h("tr", {}, ["이름", "종류", "모델", "권한", "역할", ""].map((x) => h("th", {}, x)))), tb)
+      : h("p", { class: "muted small" }, "agent가 없습니다."));
+}
+
+function renderShells(tname, t) {
+  t.shells = t.shells && typeof t.shells === "object" ? t.shells : {};
+  const rows = Object.keys(t.shells).map((name) => h("div", { class: "row", style: "margin-bottom:6px" },
+    h("input", { value: name, style: "width:140px", "aria-label": "쉘 이름", onchange: (e) => {
+      const nv = e.target.value.trim();
+      if (!NAME_RE.test(nv)) { e.target.value = name; toast("이름: 소문자로 시작, 소문자/숫자/_- 32자 이하"); return; }
+      if (nv !== name && allMembers(S.data).some((m) => m.name === nv)) { e.target.value = name; toast("이미 있는 이름입니다"); return; }
+      t.shells = renameKey(t.shells, name, nv); renameMember(name, nv); changed(); } }),
+    h("span", { class: "muted small" }, "bash 창 (flow의 쉘 단계가 여기서 실행)"),
+    h("button", { class: "danger", onclick: () => { delete t.shells[name]; changed(); } }, "삭제")));
+  return h("div", { class: "card" }, h("h3", {}, "쉘 창", h("span", { class: "grow" }),
+    h("button", { onclick: () => { t.shells[freeName(tname.toLowerCase()[0] + "sh")] = {}; changed(); } }, "+ 쉘")),
+    rows.length ? rows : h("p", { class: "muted small" }, "없음"));
+}
+
+// layout: same rules as hctrl (orchestrator first, 4 panes per herdr tab, overflow → <title>-2 …)
+const AREAS = { 1: ['"a"'], 2: ['"a b"'], 3: ['"a b"', '"a c"'], 4: ['"a b"', '"c d"'] };
+function renderPreview(tname, t) {
+  const ms = [];
+  if (t.orchestrator && t.orchestrator !== "none" && typeof t.orchestrator === "object") ms.push({ name: tname.toLowerCase() + "-orch", cls: "orch" });
+  for (const n of Object.keys(t.agents || {})) ms.push({ name: n, cls: "" });
+  for (const n of Object.keys(t.shells || {})) ms.push({ name: n, cls: "shell" });
+  if (!ms.length) return h("p", { class: "muted small" }, "창이 없습니다 (agent나 쉘이 1개 이상 필요)");
+  const title = t.title || tname;
+  const out = [];
+  for (let i = 0; i < ms.length; i += 4) {
+    const chunk = ms.slice(i, i + 4);
+    const n = chunk.length;
+    const grid = h("div", { class: "preview", style: "grid-template-areas:" + AREAS[n].join(" ") +
+      ";grid-template-columns:" + (n === 3 ? "1.2fr 1fr" : n === 1 ? "1fr" : "1fr 1fr") });
+    chunk.forEach((m, k) => grid.append(h("div", { class: "pane " + m.cls, style: "grid-area:" + "abcd"[k] }, m.name)));
+    out.push(h("div", { class: "preview-title" }, "herdr 탭 '" + (i ? title + "-" + (i / 4 + 1) : title) + "' · " + n + "/4"), grid);
+  }
+  return h("div", {}, out);
+}
+
+// ------------------------------------------------------------------ flows
+function renderFlows() {
+  const d = S.data;
+  d.flows = d.flows && typeof d.flows === "object" ? d.flows : {};
+  const members = allMembers(d);
+  const sec = h("section", {}, h("h2", {}, "flow (정해진 순서 실행: hctrl run <이름>)", h("span", { class: "grow" }),
+    h("button", { onclick: () => {
+      let n = 1; while (d.flows["flow-" + n]) n++;
+      const first = members.find((m) => m.type === "agent");
+      d.flows["flow-" + n] = { steps: [first ? { agent: first.name, prompt: "작업하고 결과 요약을 {out} 에 쓰세요." } : { shell: "", run: "" }] };
+      changed(); } }, "+ flow")));
+  const names = Object.keys(d.flows);
+  if (!names.length) sec.append(h("p", { class: "muted small" }, "flow가 없습니다."));
+  for (const fname of names) {
+    const f = d.flows[fname];
+    if (!f || typeof f !== "object") continue;
+    f.steps = Array.isArray(f.steps) ? f.steps : [];
+    const card = h("div", { class: "card" }, h("h3", {},
+      h("input", { value: fname, "aria-label": "flow 이름", onchange: (e) => {
+        const nv = e.target.value.trim();
+        if (!nv || (nv !== fname && d.flows[nv])) { e.target.value = fname; toast("비어 있거나 이미 있는 flow 이름입니다"); return; }
+        d.flows = renameKey(d.flows, fname, nv); changed(); } }),
+      h("span", { class: "grow" }),
+      h("button", { class: "danger", onclick: () => { if (confirm("flow '" + fname + "'을 삭제할까요?")) { delete d.flows[fname]; changed(); } } }, "flow 삭제")));
+    f.steps.forEach((st, i) => card.append(renderStep(f, st, i, members)));
+    card.append(h("p", { class: "row small", style: "margin-bottom:0" },
+      h("button", { onclick: () => {
+        const prev = f.steps[f.steps.length - 1];
+        const ag = (prev && prev.agent) || (members.find((m) => m.type === "agent") || {}).name || "";
+        f.steps.push({ agent: ag, prompt: "{prev} 를 읽고 이어서 작업하세요. 요약은 {out}" }); changed(); } }, "+ 단계"),
+      h("span", { class: "muted" }, "{out} = 이번 단계 결과 파일, {prev} = 직전 단계 결과 파일")));
+    sec.append(card);
+  }
+  return sec;
+}
+
+function renderStep(f, st, i, members) {
+  const isShell = "shell" in st;
+  const pool = members.filter((m) => (isShell ? m.type === "shell" : m.type !== "shell"));
+  const cur = isShell ? st.shell : st.agent;
+  const typeSel = h("select", { "aria-label": "단계 종류", onchange: (e) => {
+    const s = e.target.value === "shell"
+      ? { shell: (members.find((m) => m.type === "shell") || {}).name || "", run: "", on_fail: "stop" }
+      : { agent: (members.find((m) => m.type === "agent") || {}).name || "", prompt: "" };
+    f.steps[i] = s; changed(); } },
+    h("option", { value: "agent", selected: !isShell }, "agent"), h("option", { value: "shell", selected: isShell }, "shell"));
+  const targetSel = h("select", { "aria-label": "대상", onchange: (e) => { if (isShell) st.shell = e.target.value; else st.agent = e.target.value; changed(); } },
+    !pool.some((m) => m.name === cur) ? h("option", { value: cur || "", selected: true }, cur ? cur + " (없음)" : "(선택)") : null,
+    pool.map((m) => h("option", { value: m.name, selected: m.name === cur }, m.name + " · " + m.tab)));
+  const body = isShell
+    ? h("div", { class: "row" }, h("input", { value: st.run || "", placeholder: "실행할 명령 (예: npm run build)", style: "flex:1", onchange: (e) => { st.run = e.target.value; changed(); } }),
+        h("label", { class: "row small muted" }, "실패 시", h("select", { onchange: (e) => { st.on_fail = e.target.value; changed(); } },
+          ["stop", "continue"].map((v) => h("option", { value: v, selected: v === (st.on_fail || "stop") }, v)))))
+    : h("textarea", { rows: 2, value: st.prompt || "", placeholder: "지시 ({out}에 결과 요약을 쓰게 하세요)", onchange: (e) => { st.prompt = e.target.value; changed(); } });
+  const move = (delta) => { const j = i + delta; if (j < 0 || j >= f.steps.length) return; [f.steps[i], f.steps[j]] = [f.steps[j], f.steps[i]]; changed(); };
+  return h("div", { class: "step" }, h("span", { class: "num" }, i + 1), typeSel, targetSel, body,
+    h("div", { class: "row", style: "flex-wrap:nowrap" },
+      h("button", { title: "위로", onclick: () => move(-1), disabled: i === 0 }, "↑"),
+      h("button", { title: "아래로", onclick: () => move(1), disabled: i === f.steps.length - 1 }, "↓"),
+      h("button", { class: "danger", title: "삭제", onclick: () => { f.steps.splice(i, 1); changed(); } }, "✕")));
+}
+
+// ------------------------------------------------------------------- roles
+async function editRole(name) {
+  if (dirty() || !S.exists) { toast("먼저 저장하세요 (역할 상세는 저장된 설정의 agent에만 쓸 수 있습니다)"); return; }
+  try {
+    const r = await api("GET", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name));
+    $("roleTitle").textContent = "역할: " + name;
+    $("roleOne").value = r.one; $("roleDetail").value = r.detail;
+    const dlg = $("roleDialog");
+    $("roleCancel").onclick = () => dlg.close();
+    $("roleSave").onclick = async () => {
+      try {
+        await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name),
+          { one: $("roleOne").value, detail: $("roleDetail").value });
+        dlg.close();
+        toast("역할을 저장했습니다." + (S.running ? " 실행 중인 agent에는 _hc 탭의 [c]로 알리세요." : ""));
+      } catch (e) { toast(e.message); }
+    };
+    dlg.showModal();
+  } catch (e) { toast(e.message); }
+}
+
+boot();
+</script>
+</body>
+</html>

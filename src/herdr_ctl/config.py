@@ -19,7 +19,7 @@ MAX_PANES_PER_TAB = 4
 CONTROL_TAB = "_hc"
 
 TOP_KEYS = {"session", "tabs", "flows"}
-TAB_KEYS = {"cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells",
+TAB_KEYS = {"title", "cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells",
             "unattended", "unattended_policy"}
 AGENT_KEYS = {"kind", "model", "role", "role_file", "permission", "args"}
 ORCH_KEYS = {"kind", "model", "goal", "permission", "args"}
@@ -89,6 +89,11 @@ class TabCfg:
     limits: dict = field(default_factory=lambda: dict(DEFAULT_LIMITS))
     unattended: str = "off"
     policy: dict = field(default_factory=lambda: dict(DEFAULT_POLICY, deny=[]))
+    title: str | None = None  # herdr tab label shown on screen; `name` stays the id used by commands
+
+    @property
+    def display(self) -> str:
+        return self.title or self.name
 
     @property
     def members(self) -> list[Member]:
@@ -141,6 +146,14 @@ class Config:
     def tab_of(self, name: str) -> TabCfg | None:
         m = self.member(name)
         return self.tab(m.tab) if m else None
+
+
+TITLE_MAX = 30
+
+
+def valid_title(title) -> bool:
+    return (isinstance(title, str) and 0 < len(title.strip()) <= TITLE_MAX
+            and not any(ord(ch) < 32 or ord(ch) == 127 for ch in title))
 
 
 def orch_name(tab: str) -> str:
@@ -309,6 +322,18 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
             if m.name in seen:
                 c.err(f"{tpath}", f"이름 '{m.name}'이 탭 {seen[m.name]}와 중복됩니다")
             seen[m.name] = tname
+        title = tdata.get("title")
+        if title is not None and not valid_title(title):
+            c.err(f"{tpath}.title", f"표시 이름은 1~{TITLE_MAX}자 문자열이며 줄바꿈/제어 문자를 쓸 수 없습니다")
+            title = None
+        if title is not None:
+            # herdr labels must stay unique: up() falls back to finding tabs by label
+            others = [str(t) for t in tabs_raw if str(t) != tname]
+            others += [str(d["title"]).strip() for t, d in tabs_raw.items()
+                       if str(t) != tname and isinstance(d, dict) and isinstance(d.get("title"), str)]
+            if title.strip() == CONTROL_TAB or title.strip().lower() in {o.lower() for o in others}:
+                c.err(f"{tpath}.title", f"표시 이름 '{title.strip()}'이 다른 탭의 ID/표시 이름 또는 '_hc'와 겹칩니다")
+                title = None
         ru = tdata.get("role_update", "confirm")
         if ru is False:  # YAML 1.1 reads a bare `off` as false
             ru = "off"
@@ -384,14 +409,15 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
             m.tab_cwd, m.worktree = tcwd, wt_fp
         tab = TabCfg(name=tname, cwd=tcwd, orchestrator=orch, agents=agents,
                      shells=shells, role_update=ru if ru in ROLE_UPDATE else "confirm",
-                     worktree=wt, limits=limits, unattended=unattended, policy=policy)
+                     worktree=wt, limits=limits, unattended=unattended, policy=policy,
+                     title=title.strip() if title else None)
         if not tab.members:
             c.err(tpath, "agent나 shell이 최소 1개 필요합니다")
         n = len(tab.members)
         if n > MAX_PANES_PER_TAB:
             extra = n - MAX_PANES_PER_TAB
             c.warn(tpath, f"pane {n}개 → 탭당 최대 {MAX_PANES_PER_TAB}개라 {extra}개가 "
-                          f"'{tname}-2' 탭 이후로 넘어갑니다")
+                          f"'{tab.display}-2' 탭 이후로 넘어갑니다")
         if root and tab.cwd and not (root / tab.cwd).exists():
             c.warn(f"{tpath}.cwd", f"경로가 없습니다: {tab.cwd}")
         tabs.append(tab)

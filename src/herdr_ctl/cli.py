@@ -22,7 +22,7 @@ from .up import Ctx
 
 SUBCOMMANDS = {"init", "check", "up", "down", "status", "zoom", "run", "send", "wait", "stop",
                "resume", "ask", "role", "changes", "restart", "watch", "pending", "answer",
-               "_worker", "_perm-hook"}
+               "_worker", "_perm-hook", "ui", "shell-init"}
 
 
 class Fail(Exception):
@@ -63,12 +63,12 @@ def load_ctx(args, verbose_warnings: bool = False) -> Ctx:
 
 
 # ---------------------------------------------------------------- open
-def cmd_open(name: str | None) -> int:
+def cmd_open(name: str | None, project: Project | None = None) -> int:
     if name:
         project = project_by_name(name)
         if project is None:
             raise Fail(f"등록된 프로젝트 '{name}'이 없습니다 (hctrl --list)")
-    else:
+    elif project is None:
         project = find_project()
     if os.environ.get("HERDR_ENV") == "1":
         sock = os.environ.get("HERDR_SOCKET_PATH", "")
@@ -79,21 +79,16 @@ def cmd_open(name: str | None) -> int:
                 return 0
         raise Fail("herdr 창 안에서는 프로젝트 세션을 열지 않습니다 (herdr 안에 herdr가 겹칩니다). "
                    "일반 터미널에서 hctrl을 실행하세요")
-    if project is None:
-        cwd = Path.cwd()
-        if not tty() or input(f"{cwd}를 프로젝트로 등록할까요? [Y/n] > ").strip().lower() not in ("", "y", "yes"):
-            raise Fail("등록되지 않은 폴더입니다. hctrl --add [이름]으로 등록하세요")
-        pname = input(f"프로젝트 이름 [{cwd.name}] > ").strip() or cwd.name
-        register(pname, cwd)
-        project = Project(pname, cwd.resolve())
-        print(f"✔ 등록: {pname} → {cwd}")
-    if not project.config_path.exists():
-        if tty() and input("설정(config.yaml)이 없습니다. hctrl init을 진행할까요? [Y/n] > ").strip().lower() in ("", "y", "yes"):
-            from .init_cmd import run_init
-            if not run_init(project):
-                raise Fail("설정에 오류가 남아 있어 세션을 열지 않습니다")
-        else:
-            raise Fail(f"{project.config_path}가 없습니다 (hctrl init)")
+    if project is None or not project.config_path.exists():
+        if not tty():
+            raise Fail("등록되지 않은 폴더입니다. hctrl --add [이름]으로 등록하세요" if project is None
+                       else f"{project.config_path}가 없습니다 (hctrl init)")
+        # Unregistered folder / no config yet: pick or set up a project in the browser UI;
+        # the chosen project then opens right here, in this terminal.
+        from .ui import run_launcher
+        project = run_launcher(Path.cwd(), start=project)
+        if project is None:
+            return 0
     cfg, issues = check_file(project.config_path)
     if cfg is None:
         raise Fail("설정 오류:\n" + format_issues(issues))
@@ -119,6 +114,13 @@ def cmd_open(name: str | None) -> int:
             print(f"설정 변경 {len(pending)}건이 반영 대기 중입니다 (세션 안에서 hctrl changes).")
     print(f"'{cfg.session}' 세션을 엽니다.")
     sys.stdout.flush()
+    os.chdir(project.root)  # as if hctrl had been run from the project folder
+    cd_file = os.environ.get("HC_CD_FILE")  # set by the `hctrl shell-init` wrapper
+    if cd_file:
+        try:
+            Path(cd_file).write_text(str(project.root))
+        except OSError:
+            pass
     os.execvpe(h.binary, [h.binary, "--session", cfg.session], clean_env())
     return 0  # pragma: no cover
 
@@ -192,6 +194,39 @@ def cmd_init(args) -> int:
         project = Project(cwd.name, cwd)
     ok = run_init(project, add_tab=args.tab)
     return 0 if ok else 1
+
+
+def cmd_ui(args) -> int:
+    if _managed_pane():
+        raise ScopeError("agent 창에서는 hctrl ui를 사용할 수 없습니다 (사용자 전용)")
+    if args.name and args.name != ".":
+        start = project_by_name(args.name)
+        if start is None:
+            raise Fail(f"등록된 프로젝트 '{args.name}'이 없습니다 (hctrl --list)")
+    else:
+        start = find_project(Path(args.project) if args.project else None)
+    from .ui import run_launcher, run_settings
+    if os.environ.get("HERDR_ENV") == "1":
+        return run_settings(start)  # inside herdr: settings only, sessions open from a normal terminal
+    chosen = run_launcher(Path.cwd(), start=start)
+    return cmd_open(None, chosen) if chosen else 0
+
+
+SHELL_INIT = """# hctrl: after the herdr session detaches, stay in the project folder that was opened.
+hctrl() {
+  local __hc_cd __hc_rc
+  __hc_cd="$(mktemp)" || { command hctrl "$@"; return; }
+  HC_CD_FILE="$__hc_cd" command hctrl "$@"; __hc_rc=$?
+  if [ -s "$__hc_cd" ]; then cd -- "$(cat -- "$__hc_cd")" || true; fi
+  rm -f -- "$__hc_cd"
+  return $__hc_rc
+}
+"""
+
+
+def cmd_shell_init(args) -> int:
+    print(SHELL_INIT, end="")
+    return 0
 
 
 def cmd_check(args) -> int:
@@ -559,7 +594,17 @@ def cmd_watch(args) -> int:
     project = resolve_project(args.project)
     cfg, _ = check_file(project.config_path)
     session = cfg.session if cfg else project.name
-    watch_loop(project, make_herdr(session), interval=args.interval)
+    h = make_herdr(session)
+    if not tty():
+        watch_loop(project, h, interval=args.interval)
+        return 0
+    from .watch import Menu, TtyKeys
+    with TtyKeys() as keys:  # _hc tab: key menu (settings UI, changes, status, pending)
+        menu = Menu(project, cooked=keys.cooked)
+        try:
+            watch_loop(project, h, interval=args.interval, keys=keys, menu=menu)
+        finally:
+            menu.close()
     return 0
 
 
@@ -572,6 +617,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("init", help="대화형으로 config.yaml 생성 (끝나면 자동 검사)")
     s.add_argument("--tab", help="기존 설정에 탭 추가")
     sub.add_parser("check", help="설정 검사")
+    s = sub.add_parser("ui", help="브라우저 설정 화면 (프로젝트 선택/추가, config 편집)")
+    s.add_argument("name", nargs="?", help="처음 보여 줄 프로젝트 ('.' = 현재 폴더)")
+    s = sub.add_parser("shell-init", help="세션을 연 뒤 쉘도 프로젝트 폴더로 이동하게 하는 함수 출력")
+    s.add_argument("shell", nargs="?", choices=["bash", "zsh"], default="bash")
     s = sub.add_parser("up", help="탭/창/agent 구성 (멱등)")
     s.add_argument("tab", nargs="?")
     s.add_argument("--no-watch", action="store_true", help="설정 감시를 시작하지 않음")
@@ -642,7 +691,7 @@ HANDLERS = {"init": cmd_init, "check": cmd_check, "up": cmd_up, "down": cmd_down
             "zoom": cmd_zoom, "run": cmd_run, "send": cmd_send, "wait": cmd_wait, "stop": cmd_stop,
             "resume": cmd_resume, "ask": cmd_ask, "role": cmd_role, "changes": cmd_changes,
             "restart": cmd_restart, "watch": cmd_watch, "pending": cmd_pending, "answer": cmd_answer,
-            "_worker": cmd_worker, "_perm-hook": cmd_perm_hook}
+            "_worker": cmd_worker, "_perm-hook": cmd_perm_hook, "ui": cmd_ui, "shell-init": cmd_shell_init}
 
 
 def main(argv: list[str] | None = None) -> int:

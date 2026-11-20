@@ -642,3 +642,36 @@ pending ──(hctrl answer)──▶ answered ──(훅 또는 runner가 전�
 
 - 작업 agent fingerprint에 unattended 모드를 포함한다. off일 때는 키를 넣지 않아 기존 상태와 호환된다. 모드를 바꾸면 그 탭 claude 작업 agent에 재시작 필요가 표시된다.
 - `args`에 `--settings`, `--permission-mode`, `--allowedTools`, `--disallowedTools`가 있으면 `hctrl check`가 경고한다. hctrl이 주입하는 인자와 충돌하기 때문이다.
+
+
+## 11. 설정 화면 (`hctrl ui`, 2026-11-20 설계)
+
+질문형 `hctrl init`은 입력이 많고 고치기 어렵다는 사용 피드백에서 출발했다.
+
+### 11.1 흐름
+- 등록된 프로젝트 폴더에서 `hctrl` → 지금처럼 바로 세션을 연다 (매일 쓰는 경로는 그대로).
+- 등록되지 않은 폴더, 설정 없는 프로젝트, `hctrl ui` → **런처**(launcher 모드). 프로젝트를 고르면 서버가 끝나고 `cmd_open`이 같은 터미널에서 이어서 세션을 연다. herdr는 터미널 프로그램이라 브라우저 안에서 열 수 없기 때문이다.
+- 세션을 열기 직전 `chdir(project.root)`. 부모 쉘의 폴더는 바꿀 수 없으므로 선택 기능 `hctrl shell-init`이 `HC_CD_FILE`로 경로를 받아 `cd`한다.
+- herdr 세션 안(`HERDR_ENV=1`, 예: `_hc` 탭의 `s`) → **settings 모드**: 설정만 편집, `/api/open` 거부.
+
+### 11.2 구조
+- `ui.py`: 표준 라이브러리 `ThreadingHTTPServer` (의존성 추가 없음). `ui_page.html`: 외부 리소스 없는 단일 페이지(vanilla JS).
+- 검사는 서버의 `check_data`를 그대로 쓴다 (화면과 CLI가 같은 규칙). 저장은 `init_cmd.write_config`.
+- 저장은 낙관적 잠금: 불러올 때의 파일 digest(`version`)와 다르면 409.
+- 화면이 모르는 키도 전체 데이터를 왕복하므로 보존된다. yaml 주석은 보존하지 않는다 (PyYAML 한계).
+- `_hc` 탭: `hctrl watch`가 tty면 cbreak 모드로 키를 받는다 (`s/c/t/p`). `s`는 watch 프로세스 안에 UI 서버를 하나 띄우고 누를 때마다 새 일회용 링크를 연다. `c/t/p`는 cooked 모드로 돌려 `hctrl changes/status/pending`을 실행한다.
+
+### 11.3 탭 표시 이름 (`title`)
+탭 ID를 바꾸면 orchestrator 이름(`<tab>-orch`), state 키, 규칙 파일 이름이 모두 바뀌어 재배치가 필요하다. 그래서 herdr 라벨만 바꾸는 `title`을 따로 두었다.
+- `TabGroup.title` = `title or id` (+ `-2`…). state는 계속 ID로 키를 잡는다.
+- `up`은 라벨이 다르면 `tab_rename`만 한다. `fingerprint`에 넣지 않으므로 `detect()`가 변경으로 보지 않는다.
+- UI 저장 시 세션이 실행 중이면 `sync_titles`로 즉시 반영한다.
+
+### 11.4 보안
+- `127.0.0.1` 바인딩, Host 헤더 검사 (DNS rebinding 방지).
+- 일회용 토큰 → `HttpOnly; SameSite=Strict` 쿠키. 토큰은 쓰면 사라진다 (브라우저 실행 인자로 새어도 재사용 불가).
+- 쓰기 요청은 JSON + 같은 Origin만. CSP `default-src 'none'`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
+- agent/orchestrator 창에서 `hctrl ui` 거부 (`_managed_pane`, init과 같은 장치). orchestrator의 `Bash(hctrl:*)` 권한으로 UI를 띄워 자기 권한을 바꾸는 경로를 막는다.
+- 토큰 유효기간 2분. 브라우저를 열었으면 터미널에는 토큰 없는 주소만 출력한다 (`_hc` 창 내용은 `herdr pane read`로 다른 프로세스가 읽을 수 있음). 브라우저를 열 수 없을 때만 전체 링크를 출력한다.
+- 남은 위험: 같은 사용자 권한으로 도는 `auto` 권한 agent가 `herdr pane send-keys`로 `_hc` 탭에 `s`를 보내고, 브라우저가 없는 환경에서 출력된 링크를 사용자보다 먼저 읽는 경우. 같은 사용자 계정 안의 프로세스 격리는 이 도구의 범위 밖이며, `auto` 권한은 그 위험을 받아들이는 설정이다.
+
