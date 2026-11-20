@@ -162,6 +162,22 @@ def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport)
 
 
 # ----------------------------------------------------------------- panes
+def _move_out_of_place_shells(ctx: Ctx, group: TabGroup, tab_id: str | None, panes: dict,
+                              report: UpReport) -> None:
+    """Shell panes from the older layout (split into the agent tab) move to the build tab:
+    an idle one is closed here and recreated there; a busy one is left alone until it finishes."""
+    for m in group.members:
+        pid = (ctx.state.member(m.name) or {}).get("pane_id")
+        if m.type != "shell" or pid not in panes or (tab_id and panes[pid].get("tab_id") == tab_id):
+            continue
+        if not ctx.h.pane_shell_idle(pid):
+            raise RuntimeError(f"'{m.name}' 창에서 명령이 실행 중이라 '{group.title}' 탭으로 옮기지 못했습니다. "
+                               f"끝난 뒤 hctrl up {group.cfg.name}을 다시 실행하세요")
+        ctx.h.pane_close(pid)
+        panes.pop(pid)
+        report.created_tabs.append(f"{m.name} → {group.title}")
+
+
 def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
     h, st = ctx.h, ctx.state
     n = len(group.members)
@@ -174,6 +190,7 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
     if tab_id in live_tabs and live_tabs[tab_id].get("label") != group.title:
         h.tab_rename(tab_id, group.title)  # title edited: rename in place, panes and agents untouched
     panes = {p["pane_id"]: p for p in h.pane_list(wid)}
+    _move_out_of_place_shells(ctx, group, tab_id, panes, report)
     configured = {m.name for t in ctx.cfg.tabs for m in t.members}
     # Panes of members no longer in the config (e.g. renamed agents) are reusable.
     stale = {r.get("pane_id"): name for name, r in st["members"].items() if name not in configured}
@@ -339,7 +356,7 @@ def down(ctx: Ctx, tab: str | None = None, remove_worktree: bool = False) -> lis
         labels = [g.label for g in group_tab(t)]
         # overflow tabs (X-2, ...) from a larger earlier config
         labels += sorted(lbl for lbl in st["tabs"] if lbl not in labels
-                         and re.fullmatch(rf"{re.escape(t.name)}-\d+", lbl))
+                         and re.fullmatch(rf"{re.escape(t.name)}(-build)?(-\d+)?", lbl) and lbl != t.name)
         if wt and remove_worktree:
             # Remove first: closing the worktree's last tab also closes its workspace.
             try:

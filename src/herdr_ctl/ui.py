@@ -29,7 +29,7 @@ from . import roles as roles_mod
 from .config import check_data, check_file, load_yaml
 from .herdr import AGENT_KINDS, Herdr, HerdrError
 from .project import Project, _expand, find_project, load_registry, register
-from .state import State, digest
+from .state import LockBusy, State, digest
 
 COOKIE = "hctrl_ui"
 MAX_BODY = 1 << 20
@@ -230,6 +230,10 @@ class UIServer:
                 return {"issues": self.check(project, body.get("data"))}
             if rest == ["config"] and method == "PUT":
                 return self.save_config(project, body)
+            if rest == ["changes"] and method == "GET":
+                return self.get_changes(project)
+            if rest == ["apply"] and method == "POST":
+                return self.apply_changes(project, body)
             if len(rest) == 2 and rest[0] == "role":
                 if method == "GET":
                     return self.get_role(project, rest[1])
@@ -300,6 +304,42 @@ class UIServer:
             return sync_titles(Ctx(project, cfg, self.herdr(cfg.session), State(project)))
         except HerdrError:
             return []
+
+    # ---- applying saved changes to a running session (same steps as `hctrl changes`)
+    def live_ctx(self, project: Project):
+        from .up import Ctx
+        cfg, _ = check_file(project.config_path, which=self.which)
+        if cfg is None or cfg.session not in self.running_sessions():
+            return None
+        return Ctx(project, cfg, self.herdr(cfg.session), State(project))
+
+    def get_changes(self, project: Project) -> dict:
+        from .watch import default_actions, detect
+        ctx = self.live_ctx(project)
+        if ctx is None:
+            return {"running": False, "changes": []}
+        return {"running": True, "changes": [{"name": c.name, "type": c.type, "detail": c.detail,
+                                              "actions": default_actions(c)} for c in detect(ctx)]}
+
+    def apply_changes(self, project: Project, body: dict) -> dict:
+        from .watch import apply_change, default_actions, detect, save_pending
+        ctx = self.live_ctx(project)
+        if ctx is None:
+            raise ApiError(409, "세션이 실행 중이 아니거나 저장된 설정에 오류가 있습니다")
+        chosen = body.get("actions") or {}
+        results, remaining = [], []
+        for ch in detect(ctx):
+            action = chosen.get(ch.name, "skip")
+            if action not in default_actions(ch) or action == "skip":
+                remaining.append(ch)
+                continue
+            try:
+                results.append(apply_change(ctx, ch, action))
+            except (RuntimeError, KeyError, HerdrError, LockBusy) as e:
+                results.append(f"{ch.name}: ✘ {e}")
+                remaining.append(ch)
+        save_pending(project, remaining)
+        return {"results": results, **self.get_changes(project)}
 
     def _member(self, project: Project, name: str):
         cfg, _ = check_file(project.config_path, which=self.which)

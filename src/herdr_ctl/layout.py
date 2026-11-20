@@ -18,29 +18,28 @@ SPLIT_PLANS: dict[int, list[tuple[int, int, str, float | None]]] = {
 
 @dataclass
 class TabGroup:
-    label: str  # tab id (state key): X, X-2, ...
+    label: str  # state key: X, X-2, X-build, X-build-2 ...
     cfg: TabCfg
     members: list[Member]
-    index: int = 0
-
-    @property
-    def title(self) -> str:
-        """Label shown in herdr: the tab's title (or id), with -2, -3 ... for overflow tabs."""
-        return self.cfg.display if self.index == 0 else f"{self.cfg.display}-{self.index + 1}"
+    title: str  # herdr tab label: the tab title (or id) with the same suffixes
 
     def split_plan(self):
         return SPLIT_PLANS[len(self.members)]
 
 
-def group_tab(tab: TabCfg) -> list[TabGroup]:
-    """Chunk members into herdr tabs of at most 4; the orchestrator (first) stays in slot 0 of X."""
-    members = tab.members
+def _chunks(tab: TabCfg, members: list[Member], label: str, title: str) -> list[TabGroup]:
     groups = []
     for i in range(0, len(members), MAX_PANES_PER_TAB):
-        n = i // MAX_PANES_PER_TAB
-        label = tab.name if n == 0 else f"{tab.name}-{n + 1}"
-        groups.append(TabGroup(label, tab, members[i:i + MAX_PANES_PER_TAB], n))
+        suffix = "" if i == 0 else f"-{i // MAX_PANES_PER_TAB + 1}"
+        groups.append(TabGroup(label + suffix, tab, members[i:i + MAX_PANES_PER_TAB], title + suffix))
     return groups
+
+
+def group_tab(tab: TabCfg) -> list[TabGroup]:
+    """Orchestrator (slot 0) and agents in X, X-2 …; shell panes in their own tab X-build, X-build-2 …"""
+    workers = ([tab.orchestrator] if tab.orchestrator else []) + tab.agents
+    return (_chunks(tab, workers, tab.name, tab.display)
+            + _chunks(tab, tab.shells, f"{tab.name}-build", f"{tab.display}-build"))
 
 
 def source_slot(n_members: int, slot: int) -> tuple[int, str, float | None] | None:

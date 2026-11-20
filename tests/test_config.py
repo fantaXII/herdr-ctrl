@@ -51,7 +51,7 @@ def test_bad_name_and_duplicate():
 
 def test_more_than_four_panes_warns_but_valid():
     text = SAMPLE.replace("    shells:\n      xbuild: {}",
-                          "      x3: { kind: claude }\n    shells:\n      xbuild: {}")
+                          "      x3: { kind: claude }\n      x4: { kind: claude }\n    shells:\n      xbuild: {}")
     cfg, issues = check(text)
     assert cfg is not None
     w = [i for i in issues if i.level == "warning" and i.path == "tabs.X"]
@@ -122,14 +122,16 @@ def test_agent_args_mapping():
 def test_layout_grouping():
     cfg, _ = check(SAMPLE)
     groups = group_tab(cfg.tab("X"))
-    assert [g.label for g in groups] == ["X"] and len(groups[0].members) == 4
+    # shells never share the agent tab: they get their own X-build tab
+    assert [g.label for g in groups] == ["X", "X-build"] and len(groups[0].members) == 3
+    assert [m.name for m in groups[1].members] == ["xbuild"] and groups[1].title == "X-build"
     text = SAMPLE.replace("    shells:\n      xbuild: {}",
-                          "      x3: { kind: claude }\n    shells:\n      xbuild: {}")
+                          "      x3: { kind: claude }\n      x4: { kind: claude }\n    shells:\n      xbuild: {}")
     cfg, _ = check(text)
     groups = group_tab(cfg.tab("X"))
-    assert [g.label for g in groups] == ["X", "X-2"]
+    assert [g.label for g in groups] == ["X", "X-2", "X-build"]
     assert groups[0].members[0].name == "x-orch"
-    assert [m.name for m in groups[1].members] == ["xbuild"]
+    assert [m.name for m in groups[1].members] == ["x4"]
     assert len(SPLIT_PLANS[3]) == 2 and len(SPLIT_PLANS[4]) == 3
 
 

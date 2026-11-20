@@ -48,12 +48,13 @@ def test_up_creates_layout_and_agents(ctx):
     h = ctx.h
     rep = up(ctx, start_watch=False)
     labels = {t["label"] for t in h.tab_list()}
-    assert labels == {"_hc", "X", "Y"}
-    # X: orch + x1 + x2 + xbuild => 4 panes (grid: 3 splits); Y: 1 pane
+    assert labels == {"_hc", "X", "X-build", "Y"}
+    # X: orch + x1 + x2 => 3 panes (main-right); X-build: xbuild alone; Y: 1 pane
     x_tab = ctx.state["tabs"]["X"]["tab_id"]
-    assert len([p for p in h.panes.values() if p.tab_id == x_tab]) == 4
+    assert len([p for p in h.panes.values() if p.tab_id == x_tab]) == 3
+    assert ctx.state.member("xbuild")["tab_id"] == ctx.state["tabs"]["X-build"]["tab_id"]
     splits = [c for c in h.calls if c[0] == "pane_split"]
-    assert [c[2] for c in splits] == ["right", "down", "down"]
+    assert [c[2] for c in splits] == ["right", "down"]
     assert set(rep.started) == {"x-orch", "x1", "x2", "y1"}
     assert h.panes[ctx.state.member("x1")["pane_id"]].label == "hctrl:x1"
     # orchestrator sits in the first (root) pane of tab X
@@ -120,13 +121,40 @@ def test_up_blocked_start_needs_attention(ctx):
 
 def test_five_members_spill_into_second_tab(tmp_path):
     text = SAMPLE.replace("    shells:\n      xbuild: {}",
-                          "      x3: { kind: claude }\n    shells:\n      xbuild: {}")
+                          "      x3: { kind: claude }\n      x4: { kind: claude }\n    shells:\n      xbuild: {}")
     ctx = make_ctx(make_project(tmp_path, text))
     up(ctx, start_watch=False)
-    assert ctx.state.member("xbuild")["tab_label"] == "X-2"
+    assert ctx.state.member("x4")["tab_label"] == "X-2"
     assert ctx.state.member("x-orch")["tab_label"] == "X"
+    assert ctx.state.member("xbuild")["tab_label"] == "X-build"
     labels = [t["label"] for t in ctx.h.tab_list()]
-    assert "X-2" in labels
+    assert "X-2" in labels and "X-build" in labels
+
+
+def test_old_layout_shell_moves_to_build_tab(ctx):
+    """Sessions laid out before X-build existed: an idle shell pane in tab X moves to X-build."""
+    up(ctx, start_watch=False)
+    h, st = ctx.h, ctx.state
+    old = st.member("xbuild")["pane_id"]
+    x_tab = st["tabs"]["X"]["tab_id"]
+    h.panes[old].tab_id = x_tab  # as the old layout had it: no X-build tab at all
+    h.tab_close(st["tabs"].pop("X-build")["tab_id"])
+    up(ctx, start_watch=False)
+    assert old not in h.panes
+    new = st.member("xbuild")
+    assert new["tab_label"] == "X-build" and h.panes[new["pane_id"]].tab_id != x_tab
+
+
+def test_busy_old_layout_shell_is_not_moved(ctx):
+    up(ctx, start_watch=False)
+    h, st = ctx.h, ctx.state
+    old = st.member("xbuild")["pane_id"]
+    h.panes[old].tab_id = st["tabs"]["X"]["tab_id"]
+    h.tab_close(st["tabs"].pop("X-build")["tab_id"])
+    h.pane_shell_idle = lambda pid: pid != old
+    with pytest.raises(RuntimeError, match="실행 중"):
+        up(ctx, tab="X", start_watch=False)
+    assert old in h.panes
 
 
 def test_control_tab_runs_watch(ctx):
@@ -156,7 +184,7 @@ def test_down_and_zoom(ctx):
     zoom(ctx, "x2")
     assert ctx.h.panes[ctx.state.member("x2")["pane_id"]].zoomed
     closed = down(ctx, "X")
-    assert closed == ["X"] and "x1" not in ctx.h.agents and "y1" in ctx.h.agents
+    assert closed == ["X", "X-build"] and "x1" not in ctx.h.agents and "y1" in ctx.h.agents
     assert ctx.state.member("x1") is None
     with pytest.raises(KeyError):
         zoom(ctx, "x1")

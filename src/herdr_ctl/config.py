@@ -286,8 +286,8 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
         if [t.lower() for t in tab_names].count(tname.lower()) > 1:
             c.err(tpath, "대소문자만 다른 탭 이름이 있습니다 (탭 이름은 대소문자를 구분하지 않습니다)")
         for other in tab_names:
-            if other != tname and re.fullmatch(rf"{re.escape(other)}-\d+", tname, re.IGNORECASE):
-                c.err(tpath, f"'{other}' 탭의 넘침 탭 이름('{other}-2' 등)과 겹칩니다. 다른 이름을 쓰세요")
+            if other != tname and re.fullmatch(rf"{re.escape(other)}(-build)?(-\d+)?", tname, re.IGNORECASE):
+                c.err(tpath, f"'{other}' 탭이 만드는 탭 이름('{other}-2', '{other}-build' 등)과 겹칩니다. 다른 이름을 쓰세요")
         if not isinstance(tdata, dict):
             c.err(tpath, "객체여야 합니다")
             continue
@@ -413,11 +413,12 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
                      title=title.strip() if title else None)
         if not tab.members:
             c.err(tpath, "agent나 shell이 최소 1개 필요합니다")
-        n = len(tab.members)
-        if n > MAX_PANES_PER_TAB:
-            extra = n - MAX_PANES_PER_TAB
-            c.warn(tpath, f"pane {n}개 → 탭당 최대 {MAX_PANES_PER_TAB}개라 {extra}개가 "
-                          f"'{tab.display}-2' 탭 이후로 넘어갑니다")
+        # orchestrator + agents share tab X; shells get their own tab X-build (see layout.group_tab)
+        for what, n, over in (("agent", len(tab.members) - len(tab.shells), f"{tab.display}-2"),
+                              ("쉘", len(tab.shells), f"{tab.display}-build-2")):
+            if n > MAX_PANES_PER_TAB:
+                c.warn(tpath, f"{what} 창 {n}개 → 탭당 최대 {MAX_PANES_PER_TAB}개라 "
+                              f"{n - MAX_PANES_PER_TAB}개가 '{over}' 탭 이후로 넘어갑니다")
         if root and tab.cwd and not (root / tab.cwd).exists():
             c.warn(f"{tpath}.cwd", f"경로가 없습니다: {tab.cwd}")
         tabs.append(tab)

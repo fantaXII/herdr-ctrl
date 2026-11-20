@@ -94,6 +94,14 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); }
 </header>
 <main id="app"><p class="muted">불러오는 중…</p></main>
 <div class="issues hidden" id="issues"></div>
+<dialog id="applyDialog">
+  <h3 style="margin-top:0">실행 중인 세션에 반영</h3>
+  <p class="muted small" style="margin-top:0">저장한 설정과 지금 떠 있는 창/agent의 차이입니다. 재시작하면 agent의 대화 맥락은 인수인계 파일로 넘어갑니다.</p>
+  <div id="applyList"></div>
+  <p class="row" style="justify-content:flex-end;margin-bottom:0">
+    <button id="applyLater">나중에</button><button class="primary" id="applyNow">지금 반영</button>
+  </p>
+</dialog>
 <dialog id="roleDialog">
   <h3 style="margin-top:0" id="roleTitle">역할</h3>
   <label class="field">한 줄 역할 (역할 파일에 저장되며 표의 '역할'보다 우선합니다)<input id="roleOne"></label>
@@ -141,7 +149,7 @@ const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const TAB_RE = /^[A-Za-z][A-Za-z0-9_-]{0,24}$/;
 
 // -------------------------------------------------------------------- state
-const S = { mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
+const S = { pending: [], mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
             running: false, tab: null, issues: [], checkTimer: null, checkSeq: 0 };
 
 function dirty() { return S.data && JSON.stringify(S.data) !== JSON.stringify(S.saved); }
@@ -237,7 +245,9 @@ async function openProject(name) {
     }
     S.data = cfg.data; normalize(S.data); S.saved = clone(S.data);
     S.issues = cfg.issues; S.tab = Object.keys(S.data.tabs || {})[0] || null;
+    S.pending = [];
     render();
+    if (S.running && S.exists) refreshChanges(false);
   } catch (e) { $("app").replaceChildren(h("p", { class: "notice" }, e.message)); }
 }
 
@@ -280,6 +290,7 @@ function renderHeader() {
     : h("span", { class: "badge " + (nWarn ? "warn" : "ok") }, "검사 ✔ 경고 " + nWarn);
   $("headerActions").replaceChildren(...[badge,
     S.running ? h("span", { class: "badge ok" }, "● 세션 실행 중") : null,
+    S.pending.length ? h("button", { onclick: () => refreshChanges(true) }, "변경 반영 (" + S.pending.length + ")") : null,
     h("button", { disabled: !dirty(), onclick: () => { S.data = clone(S.saved); changed(); } }, "되돌리기"),
     h("button", { class: "primary", disabled: !dirty() && S.exists || nErr > 0, onclick: save }, S.exists ? "저장" : "만들기"),
     S.mode === "launcher" && S.exists ? h("button", { disabled: dirty() || nErr > 0, onclick: () => openSession(S.project),
@@ -301,9 +312,9 @@ async function save() {
     S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues;
     let msg = "저장했습니다.";
     if (res.renamed && res.renamed.length) msg += " 탭 이름 변경: " + res.renamed.join(", ") + ".";
-    if (S.running) msg += " 나머지 변경은 _hc 탭의 [c] (또는 hctrl changes)로 반영하세요.";
     toast(msg);
     render();
+    if (S.running) refreshChanges(true);
   } catch (e) {
     if (e.status === 409 && confirm(e.message + "\n\n파일에서 다시 불러올까요? (화면의 변경은 사라집니다)")) {
       S.data = null; S.saved = null; openProject(S.project);
@@ -418,7 +429,7 @@ function render() {
   const app = $("app");
   const top = h("section", {}, h("h2", {}, "프로젝트 ", h("span", { class: "muted small" }, S.root)),
     !S.exists ? h("div", { class: "notice" }, "아직 config.yaml이 없습니다. 아래 기본값을 고친 뒤 [만들기]를 누르세요.") : null,
-    S.running ? h("div", { class: "notice" }, "세션이 실행 중입니다. 탭 표시 이름은 저장 즉시 바뀌고, 그 밖의 변경은 _hc 탭의 [c]로 반영합니다.") : null,
+    S.running ? h("div", { class: "notice" }, "세션이 실행 중입니다. 저장하면 탭 표시 이름은 바로 바뀌고, 창/agent 변경은 반영할지 묻습니다.") : null,
     h("div", { class: "grid" }, h("label", { class: "field" }, "세션 이름",
       h("input", { value: d.session || "", onchange: (e) => { d.session = e.target.value.trim(); changed(); } }))));
   app.replaceChildren(top, renderTabs(), renderFlows());
@@ -547,24 +558,29 @@ function renderShells(tname, t) {
     rows.length ? rows : h("p", { class: "muted small" }, "없음"));
 }
 
-// layout: same rules as hctrl (orchestrator first, 4 panes per herdr tab, overflow → <title>-2 …)
+// layout: same rules as hctrl (orchestrator first, 4 panes per herdr tab, overflow → <title>-2 …;
+// shell panes in their own <title>-build tab)
 const AREAS = { 1: ['"a"'], 2: ['"a b"'], 3: ['"a b"', '"a c"'], 4: ['"a b"', '"c d"'] };
 function renderPreview(tname, t) {
-  const ms = [];
-  if (t.orchestrator && t.orchestrator !== "none" && typeof t.orchestrator === "object") ms.push({ name: tname.toLowerCase() + "-orch", cls: "orch" });
-  for (const n of Object.keys(t.agents || {})) ms.push({ name: n, cls: "" });
-  for (const n of Object.keys(t.shells || {})) ms.push({ name: n, cls: "shell" });
-  if (!ms.length) return h("p", { class: "muted small" }, "창이 없습니다 (agent나 쉘이 1개 이상 필요)");
+  const workers = [];
+  if (t.orchestrator && t.orchestrator !== "none" && typeof t.orchestrator === "object") workers.push({ name: tname.toLowerCase() + "-orch", cls: "orch" });
+  for (const n of Object.keys(t.agents || {})) workers.push({ name: n, cls: "" });
+  const shells = Object.keys(t.shells || {}).map((n) => ({ name: n, cls: "shell" }));
+  if (!workers.length && !shells.length) return h("p", { class: "muted small" }, "창이 없습니다 (agent나 쉘이 1개 이상 필요)");
   const title = t.title || tname;
   const out = [];
-  for (let i = 0; i < ms.length; i += 4) {
-    const chunk = ms.slice(i, i + 4);
-    const n = chunk.length;
-    const grid = h("div", { class: "preview", style: "grid-template-areas:" + AREAS[n].join(" ") +
-      ";grid-template-columns:" + (n === 3 ? "1.2fr 1fr" : n === 1 ? "1fr" : "1fr 1fr") });
-    chunk.forEach((m, k) => grid.append(h("div", { class: "pane " + m.cls, style: "grid-area:" + "abcd"[k] }, m.name)));
-    out.push(h("div", { class: "preview-title" }, "herdr 탭 '" + (i ? title + "-" + (i / 4 + 1) : title) + "' · " + n + "/4"), grid);
-  }
+  const draw = (ms, base) => {
+    for (let i = 0; i < ms.length; i += 4) {
+      const chunk = ms.slice(i, i + 4);
+      const n = chunk.length;
+      const grid = h("div", { class: "preview", style: "grid-template-areas:" + AREAS[n].join(" ") +
+        ";grid-template-columns:" + (n === 3 ? "1.2fr 1fr" : n === 1 ? "1fr" : "1fr 1fr") });
+      chunk.forEach((m, k) => grid.append(h("div", { class: "pane " + m.cls, style: "grid-area:" + "abcd"[k] }, m.name)));
+      out.push(h("div", { class: "preview-title" }, "herdr 탭 '" + (i ? base + "-" + (i / 4 + 1) : base) + "' · " + n + "/4"), grid);
+    }
+  };
+  draw(workers, title);
+  draw(shells, title + "-build");
   return h("div", {}, out);
 }
 
@@ -630,6 +646,43 @@ function renderStep(f, st, i, members) {
       h("button", { class: "danger", title: "삭제", onclick: () => { f.steps.splice(i, 1); changed(); } }, "✕")));
 }
 
+// ------------------------------------------------------------------ apply
+const ACTION_LABELS = { remove: "창 닫기", add: "창 추가", restart: "재시작 (인수인계 후)", notify: "agent에 알리기",
+  ack: "확인", skip: "건너뛰기" };
+async function refreshChanges(show) {
+  try {
+    const res = await api("GET", "/api/project/" + encodeURIComponent(S.project) + "/changes");
+    S.running = res.running; S.pending = res.changes;
+    renderHeader();
+    if (show && S.pending.length) showApply();
+  } catch (e) { toast("변경 확인 실패: " + e.message); }
+}
+function showApply() {
+  const dlg = $("applyDialog");
+  const selects = {};
+  $("applyList").replaceChildren(h("table", {}, h("tbody", {}, S.pending.map((c) => {
+    const opts = c.actions.includes("skip") ? c.actions : c.actions.concat(["skip"]);
+    selects[c.name] = h("select", { "aria-label": c.name + " 조치" },
+      opts.map((a, i) => h("option", { value: a, selected: i === 0 }, ACTION_LABELS[a] || a)));
+    return h("tr", {}, h("td", {}, h("b", {}, c.name)), h("td", { class: "small" }, c.detail), h("td", {}, selects[c.name]));
+  }))));
+  $("applyLater").onclick = () => dlg.close();
+  $("applyNow").onclick = async () => {
+    const actions = Object.fromEntries(Object.entries(selects).map(([n, sel]) => [n, sel.value]));
+    $("applyNow").disabled = true; $("applyNow").textContent = "반영 중…";
+    try {
+      const res = await api("POST", "/api/project/" + encodeURIComponent(S.project) + "/apply", { actions });
+      S.pending = res.changes;
+      dlg.close();
+      toast((res.results.length ? res.results.join(" · ") : "반영할 것이 없었습니다")
+        + (S.pending.length ? " — 남은 변경 " + S.pending.length + "건" : ""));
+      renderHeader();
+    } catch (e) { toast(e.message); }
+    finally { $("applyNow").disabled = false; $("applyNow").textContent = "지금 반영"; }
+  };
+  dlg.showModal();
+}
+
 // ------------------------------------------------------------------- roles
 async function editRole(name) {
   if (dirty() || !S.exists) { toast("먼저 저장하세요 (역할 상세는 저장된 설정의 agent에만 쓸 수 있습니다)"); return; }
@@ -644,7 +697,8 @@ async function editRole(name) {
         await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name),
           { one: $("roleOne").value, detail: $("roleDetail").value });
         dlg.close();
-        toast("역할을 저장했습니다." + (S.running ? " 실행 중인 agent에는 _hc 탭의 [c]로 알리세요." : ""));
+        toast("역할을 저장했습니다.");
+        if (S.running) refreshChanges(true);
       } catch (e) { toast(e.message); }
     };
     dlg.showModal();

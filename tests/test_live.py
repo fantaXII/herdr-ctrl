@@ -84,7 +84,7 @@ def test_live_end_to_end(live_project):
     assert h.session_running(session)
     state = json.loads((root / ".herdr-flow" / "state.json").read_text())
     tabs = {t["label"] for t in h.tab_list(state["workspace_id"])}
-    assert {"_hc", "T"} <= tabs
+    assert {"_hc", "T-build"} <= tabs  # shells-only tab: everything lives in its build tab
     panes = {p["pane_id"]: p for p in h.pane_list()}
     for name in ("s1", "s2", "s3"):
         assert state["members"][name]["pane_id"] in panes
@@ -131,7 +131,7 @@ def test_live_end_to_end(live_project):
 
     # status + zoom
     r = hctrl(root, "status")
-    assert r.returncode == 0 and "[T]" in r.stdout and "s1" in r.stdout
+    assert r.returncode == 0 and "[T-build]" in r.stdout and "s1" in r.stdout
     assert hctrl(root, "zoom", "s1").returncode == 0
 
     # control pane is running the watcher

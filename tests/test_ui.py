@@ -216,7 +216,7 @@ def test_save_title_renames_live_tabs(client, tmp_path, herdr):
     _, cfg = client.json("GET", "/api/project/projA")
     cfg["data"]["tabs"]["X"]["title"] = "로그인"
     st, res = client.json("PUT", "/api/project/projA/config", {"data": cfg["data"], "version": cfg["version"]})
-    assert st == 200 and res["renamed"] == ["X → 로그인"]
+    assert st == 200 and res["renamed"] == ["X → 로그인", "X-build → 로그인-build"]
     assert "로그인" in {t["label"] for t in herdr("projA").tab_list()}
 
 
@@ -444,3 +444,37 @@ def test_cd_file_not_passed_to_herdr(monkeypatch):
     from herdr_ctl.herdr import clean_env, server_env
     monkeypatch.setenv("HC_CD_FILE", "/tmp/x")
     assert "HC_CD_FILE" not in clean_env() and "HC_CD_FILE" not in server_env()
+
+
+def test_changes_listed_and_applied_from_ui(client, tmp_path, herdr):
+    from herdr_ctl.up import up
+    from conftest import make_ctx
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    h = herdr("projA")
+    ctx = make_ctx(p, h)
+    up(ctx, start_watch=False)
+    shell_pane = ctx.state.member("xbuild")["pane_id"]
+    assert client.json("GET", "/api/project/projA/changes")[1] == {"running": False, "changes": []}
+    herdr.running = {"projA"}
+    _, cfg = client.json("GET", "/api/project/projA")
+    data = cfg["data"]
+    del data["tabs"]["X"]["shells"]
+    data["flows"] = {"f": {"steps": [{"agent": "x1", "prompt": "do {out}"}]}}
+    data["tabs"]["Y"]["agents"]["y2"] = {"kind": "claude"}
+    st, _ = client.json("PUT", "/api/project/projA/config", {"data": data, "version": cfg["version"]})
+    assert st == 200
+    st, ch = client.json("GET", "/api/project/projA/changes")
+    kinds = {(c["name"], c["type"]) for c in ch["changes"]}
+    assert ("xbuild", "remove") in kinds and ("y2", "add") in kinds and ("flows", "flow") in kinds
+    st, res = client.json("POST", "/api/project/projA/apply",
+                          {"actions": {"xbuild": "remove", "y2": "add", "flows": "ack", "x1": "rm -rf"}})
+    assert st == 200 and res["changes"] == [] and len(res["results"]) == 3
+    assert shell_pane not in h.panes and "y2" in h.agents
+
+
+def test_apply_refused_when_not_running(client, tmp_path):
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    st, _ = client.json("POST", "/api/project/projA/apply", {"actions": {}})
+    assert st == 409

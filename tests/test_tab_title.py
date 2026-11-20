@@ -32,7 +32,7 @@ def test_title_validation(title, ok):
 def test_up_uses_title_as_label(tmp_path):
     ctx = make_ctx(make_project(tmp_path, textwrap.dedent(with_title(SAMPLE))))
     up(ctx, start_watch=False)
-    assert labels(ctx.h) == {"_hc", "로그인 작업", "Y"}
+    assert labels(ctx.h) == {"_hc", "로그인 작업", "로그인 작업-build", "Y"}
     assert "X" in ctx.state["tabs"]  # state stays keyed by the tab id
 
 
@@ -43,8 +43,8 @@ def test_title_change_renames_in_place_without_changes(ctx):
     ctx.project.config_path.write_text(textwrap.dedent(with_title(SAMPLE)))
     c2 = make_ctx(ctx.project, ctx.h)
     assert detect(c2) == []  # title-only edit: nothing to restart or relayout
-    assert sync_titles(c2) == ["X → 로그인 작업"]
-    assert labels(ctx.h) == {"_hc", "로그인 작업", "Y"}
+    assert sync_titles(c2) == ["X → 로그인 작업", "X-build → 로그인 작업-build"]
+    assert labels(ctx.h) == {"_hc", "로그인 작업", "로그인 작업-build", "Y"}
     assert set(ctx.h.panes) == set(panes_before) and set(ctx.h.agents) == agents_before
     assert sync_titles(c2) == []  # idempotent
 
@@ -55,7 +55,7 @@ def test_up_syncs_title_of_existing_tab(ctx):
     c2 = make_ctx(ctx.project, ctx.h)
     n_panes = len(ctx.h.panes)
     up(c2, start_watch=False)
-    assert labels(ctx.h) == {"_hc", "새 이름", "Y"} and len(ctx.h.panes) == n_panes
+    assert labels(ctx.h) == {"_hc", "새 이름", "새 이름-build", "Y"} and len(ctx.h.panes) == n_panes
 
 
 @pytest.mark.parametrize("title", ["_hc", "Y", "y", "dup"])

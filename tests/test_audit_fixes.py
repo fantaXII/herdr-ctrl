@@ -65,7 +65,9 @@ def test_no_free_pane_raises_clear_error(live):
 def test_tab_name_colliding_with_overflow_label():
     text = SAMPLE.replace("  Y:\n", "  X-2:\n")
     cfg, issues = check(text)
-    assert cfg is None and any(i.path == "tabs.X-2" and "넘침" in i.message for i in issues)
+    assert cfg is None and any(i.path == "tabs.X-2" and "X-2" in i.message for i in issues)
+    cfg, issues = check(SAMPLE.replace("  Y:\n", "  X-build:\n"))
+    assert cfg is None and any(i.path == "tabs.X-build" for i in issues)
 
 
 # ------------------------------------------------------- 2-5: type validation
@@ -208,7 +210,7 @@ def test_reopen_existing_worktree_after_down(tmp_path):
     assert len(ctx.h.worktrees) == n_created  # no second worktree_create
     new = ctx.state["worktrees"]["X"]
     assert new["workspace_id"] != wt["workspace_id"] and new["cwd"] == wt["cwd"]
-    assert [t["label"] for t in ctx.h.tab_list(new["workspace_id"])] == ["X"]
+    assert [t["label"] for t in ctx.h.tab_list(new["workspace_id"])] == ["X", "X-build"]
 
 
 def test_worktree_branch_change_creates_new_worktree(tmp_path):
@@ -240,7 +242,8 @@ def test_worktree_dropped_from_config_uses_project_root(tmp_path):
 
 
 def test_down_closes_overflow_tabs_after_config_shrank(tmp_path):
-    big = SAMPLE.replace("    shells:\n      xbuild: {}", "      x3: { kind: claude }\n    shells:\n      xbuild: {}")
+    big = SAMPLE.replace("    shells:\n      xbuild: {}",
+                         "      x3: { kind: claude }\n      x4: { kind: claude }\n    shells:\n      xbuild: {}")
     p = make_project(tmp_path, big)
     ctx = make_ctx(p)
     up(ctx, start_watch=False)
@@ -249,7 +252,7 @@ def test_down_closes_overflow_tabs_after_config_shrank(tmp_path):
     closed = down(small, "X")
     assert "X-2" in closed and "X-2" not in small.state["tabs"]
     assert "X-2" not in [t["label"] for t in small.h.tab_list()]
-    assert small.state.member("x3") is None
+    assert small.state.member("x3") is None and small.state.member("x4") is None
 
 
 # ---------------------------------------------------------- 13: workspace adopt
