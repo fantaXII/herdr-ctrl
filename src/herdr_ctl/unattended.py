@@ -32,10 +32,10 @@ SAFETY_ANSWER = "(답은 orchestrator 또는 사용자가 보낸 것입니다)"
 FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path",
               "NotebookEdit": "notebook_path"}
 # Mentioning any of these sends a permission request straight to the user (deterministic, before
-# any LLM judgement): hc's own control plane must never be operated through an agent's tool call.
+# any LLM judgement): hctrl's own control plane must never be operated through an agent's tool call.
 SENSITIVE = (".herdr-flow", ".claude", "herdr", "settings.json", "settings.local.json", ".local/state",
              "xdg_state_home")
-HC_CMD_RE = re.compile(r"(^|[\s;&|`($/\"'])hc([\s\"';|&)]|$)")
+HC_CMD_RE = re.compile(r"(^|[\s;&|`($/\"'])hctrl([\s\"';|&)]|$)")
 DENY_WORDS = ("deny", "no", "reject", "거절", "거부")
 ALLOW_WORDS = ("allow", "yes", "approve", "허용", "승인")
 
@@ -116,7 +116,7 @@ def load(project: Project, qid: str) -> dict:
         raise KeyError(f"질문 id 형식이 아닙니다: {qid!r} (예: q0001)")
     q = read_json(questions_dir(project) / f"{qid}.json")
     if not q:
-        raise KeyError(f"질문 '{qid}'이 없습니다 (hc pending)")
+        raise KeyError(f"질문 '{qid}'이 없습니다 (hctrl pending)")
     return refresh(project, q)
 
 
@@ -211,9 +211,9 @@ def policy_escalation(ctx, tab, tool_name: str, tool_input: dict, cwd: str | Non
         return "홈 아래 상태 폴더 접근"
     for p in {str(ctx.project.secure_dir), str(state_home())}:
         if p.lower() in low or p.lower() in plain:
-            return "hc 상태 저장소 접근"
+            return "hctrl 상태 저장소 접근"
     if tool_name == "Bash" and HC_CMD_RE.search(str(tool_input.get("command") or "")):
-        return "hc 명령 실행"
+        return "hctrl 명령 실행"
     key = FILE_TOOLS.get(tool_name)
     target = None
     if key:
@@ -226,13 +226,13 @@ def policy_escalation(ctx, tab, tool_name: str, tool_input: dict, cwd: str | Non
             return f"작업 폴더 밖 경로: {target}"
     scrubbed = low
     if target is not None and _is_result_file(ctx, target):
-        # the step's own result file (hc tells the agent to write it); run.json etc. stay protected
+        # the step's own result file (hctrl tells the agent to write it); run.json etc. stay protected
         scrubbed = scrubbed.replace(str(raw).lower(), "<out>").replace(str(target).lower(), "<out>")
     for r in sorted({str(r).lower() for r in work_roots(ctx, tab)}, key=len, reverse=True):
         scrubbed = scrubbed.replace(r, "<root>")  # the project's own path may contain e.g. "herdr"
     for s in SENSITIVE:
         if s in scrubbed:
-            return f"hc/에이전트 설정 관련 항목('{s}')"
+            return f"hctrl/에이전트 설정 관련 항목('{s}')"
     return None
 
 
@@ -366,7 +366,7 @@ def _output(q: dict) -> str:
             ti = q["tool_input"] or {}
             dec["updatedInput"] = {"questions": ti.get("questions"), "answers": ans["answers"]}
     else:
-        dec = {"behavior": "deny", "message": f"[hc {q['answered_by']}] {ans.get('reason') or '거절됨'}"}
+        dec = {"behavior": "deny", "message": f"[hctrl {q['answered_by']}] {ans.get('reason') or '거절됨'}"}
     return json.dumps({"hookSpecificOutput": {"hookEventName": HOOK_EVENT, "decision": dec}},
                       ensure_ascii=False)
 
@@ -401,7 +401,7 @@ def run_hook(ctx, agent: str, payload: str, sleep=time.sleep) -> str:
     pane = os.environ.get("HERDR_PANE_ID")
     rec = ctx.state.member(agent) or {}
     if pane and rec.get("pane_id") and pane != rec["pane_id"]:
-        return ""  # someone ran `hc _perm-hook <other agent>` by hand: not that agent's dialog
+        return ""  # someone ran `hctrl _perm-hook <other agent>` by hand: not that agent's dialog
     tool = data.get("tool_name")
     tinput = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
     if tool == "AskUserQuestion":
@@ -415,7 +415,7 @@ def run_hook(ctx, agent: str, payload: str, sleep=time.sleep) -> str:
         why = policy_escalation(ctx, tab, tool, tinput, data.get("cwd"))
         if why:
             audit(ctx.project, "escalated", {"agent": agent, "tab": tab.name, "tool_name": tool}, reason=why)
-            ctx.h.notify(f"hc: {agent} 승인 요청 → 사용자", f"{why}. 화면에서 직접 처리하세요")
+            ctx.h.notify(f"hctrl: {agent} 승인 요청 → 사용자", f"{why}. 화면에서 직접 처리하세요")
             return ""
     holder = lock_holder(ctx.project, agent) or {}
     # one write only: once the record exists it can be answered at any moment
@@ -423,8 +423,8 @@ def run_hook(ctx, agent: str, payload: str, sleep=time.sleep) -> str:
     q = create(ctx.project, kind, agent, tab.name, tool_name=tool, tool_input=tinput, question=text,
                run=holder.get("owner"), hook_pid=os.getpid(), hook_start=proc_start(os.getpid()))
     audit(ctx.project, "asked", q)
-    ctx.h.notify(f"hc: 질문 {q['id']} ({agent})",
-                 f"{q['question'][:200]}\n답: hc answer {q['id']} … (orchestrator 또는 사용자)")
+    ctx.h.notify(f"hctrl: 질문 {q['id']} ({agent})",
+                 f"{q['question'][:200]}\n답: hctrl answer {q['id']} … (orchestrator 또는 사용자)")
     deadline = q["created"] + tab.policy["answer_timeout"]
     grace_end = q["created"] + hook_grace_s()
     seen_blocked = False
@@ -473,5 +473,5 @@ def run_hook(ctx, agent: str, payload: str, sleep=time.sleep) -> str:
             return out["json"]
     if cur.get("status") == "expired":
         audit(ctx.project, "timeout", cur)
-        ctx.h.notify(f"hc: 질문 {q['id']} 시간 초과", f"{agent}: 화면에서 직접 처리하세요")
+        ctx.h.notify(f"hctrl: 질문 {q['id']} 시간 초과", f"{agent}: 화면에서 직접 처리하세요")
     return ""

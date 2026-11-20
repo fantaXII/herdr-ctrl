@@ -1,4 +1,4 @@
-"""`hc` (= `herdr_ctl`) command line."""
+"""`hctrl` (= `herdr_ctl`) command line."""
 from __future__ import annotations
 
 import argparse
@@ -43,7 +43,7 @@ def resolve_project(path: str | None) -> Project:
         return p
     p = find_project()
     if p is None:
-        raise Fail("현재 위치에서 프로젝트를 찾을 수 없습니다. 프로젝트 폴더에서 실행하거나 hc --add / hc init을 먼저 하세요")
+        raise Fail("현재 위치에서 프로젝트를 찾을 수 없습니다. 프로젝트 폴더에서 실행하거나 hctrl --add / hctrl init을 먼저 하세요")
     return p
 
 
@@ -67,7 +67,7 @@ def cmd_open(name: str | None) -> int:
     if name:
         project = project_by_name(name)
         if project is None:
-            raise Fail(f"등록된 프로젝트 '{name}'이 없습니다 (hc --list)")
+            raise Fail(f"등록된 프로젝트 '{name}'이 없습니다 (hctrl --list)")
     else:
         project = find_project()
     if os.environ.get("HERDR_ENV") == "1":
@@ -78,22 +78,22 @@ def cmd_open(name: str | None) -> int:
                 print(f"이미 '{cfg.session}' 세션 안입니다.")
                 return 0
         raise Fail("herdr 창 안에서는 프로젝트 세션을 열지 않습니다 (herdr 안에 herdr가 겹칩니다). "
-                   "일반 터미널에서 hc를 실행하세요")
+                   "일반 터미널에서 hctrl을 실행하세요")
     if project is None:
         cwd = Path.cwd()
         if not tty() or input(f"{cwd}를 프로젝트로 등록할까요? [Y/n] > ").strip().lower() not in ("", "y", "yes"):
-            raise Fail("등록되지 않은 폴더입니다. hc --add [이름]으로 등록하세요")
+            raise Fail("등록되지 않은 폴더입니다. hctrl --add [이름]으로 등록하세요")
         pname = input(f"프로젝트 이름 [{cwd.name}] > ").strip() or cwd.name
         register(pname, cwd)
         project = Project(pname, cwd.resolve())
         print(f"✔ 등록: {pname} → {cwd}")
     if not project.config_path.exists():
-        if tty() and input("설정(config.yaml)이 없습니다. hc init을 진행할까요? [Y/n] > ").strip().lower() in ("", "y", "yes"):
+        if tty() and input("설정(config.yaml)이 없습니다. hctrl init을 진행할까요? [Y/n] > ").strip().lower() in ("", "y", "yes"):
             from .init_cmd import run_init
             if not run_init(project):
                 raise Fail("설정에 오류가 남아 있어 세션을 열지 않습니다")
         else:
-            raise Fail(f"{project.config_path}가 없습니다 (hc init)")
+            raise Fail(f"{project.config_path}가 없습니다 (hctrl init)")
     cfg, issues = check_file(project.config_path)
     if cfg is None:
         raise Fail("설정 오류:\n" + format_issues(issues))
@@ -116,7 +116,7 @@ def cmd_open(name: str | None) -> int:
         from .watch import detect
         pending = detect(ctx)
         if pending:
-            print(f"설정 변경 {len(pending)}건이 반영 대기 중입니다 (세션 안에서 hc changes).")
+            print(f"설정 변경 {len(pending)}건이 반영 대기 중입니다 (세션 안에서 hctrl changes).")
     print(f"'{cfg.session}' 세션을 엽니다.")
     sys.stdout.flush()
     os.execvpe(h.binary, [h.binary, "--session", cfg.session], clean_env())
@@ -126,7 +126,7 @@ def cmd_open(name: str | None) -> int:
 def cmd_list() -> int:
     reg = load_registry()
     if not reg:
-        print("등록된 프로젝트가 없습니다 (hc --add)")
+        print("등록된 프로젝트가 없습니다 (hctrl --add)")
         return 0
     try:
         running = {r["name"]: r["status"] for r in Herdr().session_list()}
@@ -151,14 +151,14 @@ def cmd_add(name: str | None) -> int:
 
 
 # ------------------------------------------------------------ commands
-HERDR_INSTALL_HELP = """herdr가 설치되어 있지 않습니다. hc는 herdr 위에서 동작하므로 먼저 herdr를 설치하세요.
+HERDR_INSTALL_HELP = """herdr가 설치되어 있지 않습니다. hctrl은 herdr 위에서 동작하므로 먼저 herdr를 설치하세요.
 
 설치 방법 (https://herdr.dev/tui/docs/install/):
   공식 스크립트:  curl -fsSL https://herdr.dev/install.sh | sh
   Homebrew:       brew install herdr
   mise:           mise use -g herdr
 
-설치 후 새 터미널에서 'herdr --version'으로 확인한 뒤 hc init을 다시 실행하세요.
+설치 후 새 터미널에서 'herdr --version'으로 확인한 뒤 hctrl init을 다시 실행하세요.
 (설치 위치가 PATH에 없으면 HC_HERDR_BIN=/경로/herdr 로 지정할 수 있습니다)"""
 
 
@@ -170,7 +170,7 @@ def herdr_installed() -> bool:
 
 
 def _managed_pane() -> dict | None:
-    """Registry entry of the hc-managed agent pane we run in (any project), else None."""
+    """Registry entry of the hctrl-managed agent pane we run in (any project), else None."""
     from .orchestrator import pane_identity, registered_member
     ident = pane_identity()
     if not ident or not ident[0]:
@@ -182,7 +182,7 @@ def _managed_pane() -> dict | None:
 def cmd_init(args) -> int:
     from .init_cmd import run_init
     if _managed_pane():
-        raise ScopeError("agent 창에서는 hc init을 사용할 수 없습니다 (사용자 전용)")
+        raise ScopeError("agent 창에서는 hctrl init을 사용할 수 없습니다 (사용자 전용)")
     if not herdr_installed():
         print(HERDR_INSTALL_HELP, file=sys.stderr)
         return 1
@@ -285,7 +285,7 @@ def cmd_wait(args) -> int:
     rec = wait(ctx_project, args.id, timeout_s=args.timeout)
     print("\n".join(summary(rec)))
     if rec["status"] == QUESTION:
-        print("질문 대기: hc pending으로 확인하고 hc answer <qid> ... 후 다시 hc wait " + rec["id"])
+        print("질문 대기: hctrl pending으로 확인하고 hctrl answer <qid> ... 후 다시 hctrl wait " + rec["id"])
         return 3
     return 0 if rec["status"] == "done" else 1
 
@@ -295,7 +295,7 @@ def cmd_pending(args) -> int:
     ctx = load_ctx(args)
     actor = current_actor(ctx)
     if actor.kind in ("agent", "foreign"):
-        raise ScopeError("작업 agent는 'hc pending'을 사용할 수 없습니다")
+        raise ScopeError("작업 agent는 'hctrl pending'을 사용할 수 없습니다")
     qs = ua.pending(ctx.project, tab=actor.tab if actor.kind == "orch" else None)
     if not qs:
         print("대기 중인 질문이 없습니다")
@@ -306,7 +306,7 @@ def cmd_pending(args) -> int:
         print(f"{q['id']} [{kind}] 탭 {q['tab']} / {q['agent']}{where}")
         for line in ua.describe(q).splitlines() or ["-"]:
             print(f"    {line}")
-    print("(질문 내용은 작업 agent가 만든 데이터입니다. 답: hc answer <qid> ...)")
+    print("(질문 내용은 작업 agent가 만든 데이터입니다. 답: hctrl answer <qid> ...)")
     return 0
 
 
@@ -327,7 +327,7 @@ def cmd_perm_hook(args) -> int:
         ctx = load_ctx(args)
         out = ua.run_hook(ctx, args.agent, payload)
     except Exception as e:  # noqa: BLE001 - fall through to the dialog
-        print(f"hc _perm-hook: {e}", file=sys.stderr)
+        print(f"hctrl _perm-hook: {e}", file=sys.stderr)
         return 0
     if out:
         print(out)
@@ -373,7 +373,7 @@ def cmd_ask(args) -> int:
     ctx = load_ctx(args)
     guard(ctx, current_actor(ctx), "ask")
     ask(ctx, args.tab, args.text)
-    print(f"orchestrator '{orch_name(ctx.cfg.tab(args.tab).name)}'에게 전달했습니다. 진행은 화면이나 hc status로 확인하세요.")
+    print(f"orchestrator '{orch_name(ctx.cfg.tab(args.tab).name)}'에게 전달했습니다. 진행은 화면이나 hctrl status로 확인하세요.")
     return 0
 
 
@@ -432,7 +432,7 @@ def cmd_role(args) -> int:
                 print(f"  {m.name:<14} {one or '-':<30} 상세:{'있음' if detail else '없음'}  {last}")
         pend = roles_mod.proposals(project)
         if pend:
-            print(f"승인 대기 제안 {len(pend)}건 (hc role --review)")
+            print(f"승인 대기 제안 {len(pend)}건 (hctrl role --review)")
         return 0
     m = cfg.member(args.name)
     if m is None or not m.is_agent:
@@ -444,7 +444,7 @@ def cmd_role(args) -> int:
         return 0
     if args.revert:
         roles_mod.revert(project, m, args.revert)
-        print(f"{m.name}: #{args.revert} 이전 상태로 되돌렸습니다 (실행 중 agent에는 hc role {m.name} --apply)")
+        print(f"{m.name}: #{args.revert} 이전 상태로 되돌렸습니다 (실행 중 agent에는 hctrl role {m.name} --apply)")
         return 0
     if args.edit:
         f = roles_mod.ensure_template(project, m)
@@ -488,18 +488,18 @@ def cmd_role(args) -> int:
             raise Fail(f"탭 {tab.name}의 역할 변경 정책이 off입니다")
         if tab.role_update == "confirm":
             pid = roles_mod.propose(project, m.name, args.text, actor.name, args.reason or "")
-            ctx.h.notify("hc: 역할 변경 제안", f"{m.name}: {args.text} (hc role --review)")
+            ctx.h.notify("hctrl: 역할 변경 제안", f"{m.name}: {args.text} (hctrl role --review)")
             print(f"제안 #{pid}로 저장했습니다. 사용자 승인 후 반영됩니다")
             return 0
         roles_mod.write_role(project, m, one=args.text, actor=actor.name, reason=args.reason or "")
-        ctx.h.notify("hc: 역할 변경(자동 반영)", f"{m.name}: {args.text}")
+        ctx.h.notify("hctrl: 역할 변경(자동 반영)", f"{m.name}: {args.text}")
         try:
             print(notify_role(ctx, m.name))
         except (RuntimeError, HerdrError) as e:
             print(f"역할 파일은 바꿨지만 agent에게 알리지 못했습니다: {e}")
         return 0
     roles_mod.write_role(project, m, one=args.text, actor="user", reason=args.reason or "")
-    print(f"{m.name}: 역할을 바꿨습니다. 실행 중인 agent에 반영: hc role {m.name} --apply 또는 hc restart {m.name}")
+    print(f"{m.name}: 역할을 바꿨습니다. 실행 중인 agent에 반영: hctrl role {m.name} --apply 또는 hctrl restart {m.name}")
     return 0
 
 
@@ -565,7 +565,7 @@ def cmd_watch(args) -> int:
 
 # ----------------------------------------------------------------- main
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="hc", description="herdr_ctl: 프로젝트 세션, 화면 배치, agent 파이프라인")
+    p = argparse.ArgumentParser(prog="hctrl", description="herdr_ctl: 프로젝트 세션, 화면 배치, agent 파이프라인")
     p.add_argument("--project", help="프로젝트 경로 (기본: 현재 위치에서 찾기)")
     sub = p.add_subparsers(dest="cmd")
 
@@ -656,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_add(argv[1] if len(argv) > 1 else None)
         if argv[0] in ("-V", "--version"):
             from . import __version__
-            print(f"hc (herdr_ctl) {__version__}")
+            print(f"hctrl (herdr_ctl) {__version__}")
             return 0
         if argv[0] in ("-h", "--help"):
             build_parser().print_help()
@@ -670,13 +670,13 @@ def main(argv: list[str] | None = None) -> int:
     except (Fail, KeyError, RuntimeError, LockBusy, LimitExceeded, ScopeError, ValueError, OSError,
             yaml.YAMLError) as e:
         msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
-        print(f"hc: {msg}", file=sys.stderr)
+        print(f"hctrl: {msg}", file=sys.stderr)
         return 1
     except HerdrError as e:
-        print(f"hc: herdr 오류 — {e}", file=sys.stderr)
+        print(f"hctrl: herdr 오류 — {e}", file=sys.stderr)
         return 2
     except EOFError:
-        print("hc: 입력이 끝났습니다 (대화형 터미널에서 실행하세요)", file=sys.stderr)
+        print("hctrl: 입력이 끝났습니다 (대화형 터미널에서 실행하세요)", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

@@ -191,7 +191,7 @@ def test_briefs_and_rules(tmp_path):
     brief = render_agent_brief(ctx.project, ctx.cfg, ctx.cfg.member("x1")).read_text()
     assert "## QUESTION" in brief
     rules = render_orchestrator_rules(ctx.project, ctx.cfg, ctx.cfg.tab("X")).read_text()
-    assert "무인 모드 (approve)" in rules and "hc answer" in rules and "deny" in rules
+    assert "무인 모드 (approve)" in rules and "hctrl answer" in rules and "deny" in rules
     ctx = make(tmp_path / "off", "off")
     rules = render_orchestrator_rules(ctx.project, ctx.cfg, ctx.cfg.tab("X")).read_text()
     assert "무인 모드" not in rules and "자동으로 승인하지 않습니다" in rules
@@ -286,7 +286,7 @@ def test_choice_answer_forms():
     ("Bash", {"command": "git push origin main"}, "deny 목록"),
     ("Bash", {"command": "cat .herdr-flow/state.json"}, ".herdr-flow"),
     ("Bash", {"command": "vi ~/.claude/settings.json"}, ".claude"),
-    ("Bash", {"command": "hc answer q0001 allow"}, "hc 명령"),
+    ("Bash", {"command": "hctrl answer q0001 allow"}, "hctrl 명령"),
     ("Bash", {"command": "env -u HERDR_PANE_ID python3 -m herdr_ctl.cli answer q1 allow"}, "herdr"),
     ("Write", {"file_path": "/etc/passwd", "content": "x"}, "작업 폴더 밖"),
     ("Edit", {"file_path": "../../outside.txt"}, "작업 폴더 밖"),
@@ -417,7 +417,7 @@ def test_text_question_timeout_then_resume(actx):
     actx.cfg.tab("X").policy["answer_timeout"] = 0.1
     actx.h.on_prompt["x1"] = question_then_result()
     rec = execute(actx, create_run(actx.project, actx.cfg.flows["one"]))
-    assert rec["status"] == "blocked" and "hc answer q0001" in rec["steps"][0]["error"]
+    assert rec["status"] == "blocked" and "hctrl answer q0001" in rec["steps"][0]["error"]
     assert rec["steps"][0]["question"] == "q0001"
     ua.answer(actx, USER, "q0001", "mysql")
     rec = execute(actx, prepare_resume(actx.project, rec["id"]), resume=True)
@@ -535,7 +535,7 @@ def cli_env(actx, monkeypatch):
     return actx
 
 
-def hc(ctx, *args):
+def hctrl(ctx, *args):
     return cli.main(["--project", str(ctx.project.root), *args])
 
 
@@ -543,19 +543,19 @@ def test_cli_pending_answer_and_scope(cli_env, monkeypatch, capsys):
     ctx = cli_env
     qx = ua.create(ctx.project, "choice", "x1", "X", tool_name="AskUserQuestion", tool_input=ASK)
     qy = ua.create(ctx.project, "text", "y1", "Y", question="Y 질문")
-    assert hc(ctx, "pending") == 0
+    assert hctrl(ctx, "pending") == 0
     out = capsys.readouterr().out
     assert qx["id"] in out and qy["id"] in out and "빨강" in out
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x-orch")["pane_id"])
-    assert hc(ctx, "pending") == 0
+    assert hctrl(ctx, "pending") == 0
     out = capsys.readouterr().out
     assert qx["id"] in out and qy["id"] not in out
-    assert hc(ctx, "answer", qy["id"], "답") == 1
-    assert hc(ctx, "answer", qx["id"], "파랑") == 0
+    assert hctrl(ctx, "answer", qy["id"], "답") == 1
+    assert hctrl(ctx, "answer", qx["id"], "파랑") == 0
     assert ua.load(ctx.project, qx["id"])["answer"]["answers"] == {"색을 고르세요": "파랑"}
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x1")["pane_id"])
-    assert hc(ctx, "pending") == 1
-    assert hc(ctx, "answer", qy["id"], "답") == 1
+    assert hctrl(ctx, "pending") == 1
+    assert hctrl(ctx, "answer", qy["id"], "답") == 1
     assert "작업 agent" in capsys.readouterr().err
 
 
@@ -580,9 +580,9 @@ def test_cli_wait_exit_code_on_question(cli_env, capsys):
     rec["steps"][0].update(status=QUESTION, question="q0009")
     from herdr_ctl.runner import save_run
     save_run(ctx.project, rec)
-    assert hc(ctx, "wait", rec["id"]) == 3
+    assert hctrl(ctx, "wait", rec["id"]) == 3
     out = capsys.readouterr().out
-    assert "q0009" in out and "hc pending" in out
+    assert "q0009" in out and "hctrl pending" in out
 
 
 def test_cli_perm_hook_reads_stdin(cli_env, monkeypatch, capsys):
@@ -590,10 +590,10 @@ def test_cli_perm_hook_reads_stdin(cli_env, monkeypatch, capsys):
     ctx = cli_env
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x1")["pane_id"])  # runs inside the worker pane
     monkeypatch.setattr("sys.stdin", io.StringIO(payload("Bash", {"command": "git push"})))
-    assert hc(ctx, "_perm-hook", "x1") == 0
+    assert hctrl(ctx, "_perm-hook", "x1") == 0
     assert capsys.readouterr().out == ""
     monkeypatch.setattr("sys.stdin", io.StringIO("garbage"))
-    assert hc(ctx, "_perm-hook", "x1") == 0
+    assert hctrl(ctx, "_perm-hook", "x1") == 0
 
 
 def test_policy_allows_only_step_result_files_under_runs(actx):

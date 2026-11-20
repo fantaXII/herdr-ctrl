@@ -1,4 +1,4 @@
-"""`hc up/down/zoom/status`: reconcile config with the live herdr session."""
+"""`hctrl up/down/zoom/status`: reconcile config with the live herdr session."""
 from __future__ import annotations
 
 import json
@@ -52,7 +52,7 @@ class UpReport:
 
 
 def hc_command() -> list[str]:
-    """How to invoke hc from inside panes (works even when not pip-installed)."""
+    """How to invoke hctrl from inside panes (works even when not pip-installed)."""
     return [sys.executable, "-m", "herdr_ctl.cli"]
 
 
@@ -99,9 +99,9 @@ def ensure_workspace(ctx: Ctx) -> str:
     res = h.workspace_create(str(ctx.project.root), ctx.project.name)
     wid = res["workspace"]["workspace_id"]
     st["workspace_id"] = wid
-    # The new workspace's first tab becomes the hc control tab.
+    # The new workspace's first tab becomes the hctrl control tab.
     h.tab_rename(res["tab"]["tab_id"], CONTROL_TAB)
-    h.pane_rename(res["root_pane"]["pane_id"], "hc:control")
+    h.pane_rename(res["root_pane"]["pane_id"], "hctrl:control")
     st["control"] = {"tab_id": res["tab"]["tab_id"], "pane_id": res["root_pane"]["pane_id"]}
     return wid
 
@@ -113,7 +113,7 @@ def ensure_control(ctx: Ctx, wid: str, start_watch: bool) -> None:
     if ctl.get("pane_id") not in panes:
         res = h.tab_create(wid, CONTROL_TAB, str(ctx.project.root))
         pid = res["root_pane"]["pane_id"]
-        h.pane_rename(pid, "hc:control")
+        h.pane_rename(pid, "hctrl:control")
         ctl = {"tab_id": res["tab"]["tab_id"], "pane_id": pid}
         st["control"] = ctl
     if start_watch and h.pane_shell_idle(ctl["pane_id"]):
@@ -140,7 +140,7 @@ def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport)
     if wt and wt.get("workspace_id") in live:
         return wt["workspace_id"]
     if wt and wt.get("branch") == tab.worktree["branch"] and wt.get("cwd") and Path(wt["cwd"]).is_dir():
-        # `hc down` without --remove-worktree closed the workspace but kept the worktree: reopen it.
+        # `hctrl down` without --remove-worktree closed the workspace but kept the worktree: reopen it.
         res = h.workspace_create(wt["cwd"], tab.name)
         how = "다시 열기"
     else:
@@ -197,7 +197,7 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
                     st["members"].pop(stale[slots[i]], None)
         if all(pid is None for pid in slots):
             raise RuntimeError(f"탭 '{group.label}'에 쓸 수 있는 창이 없습니다 (다른 프로그램이나 이전 agent가 "
-                               f"실행 중). 'hc down {group.cfg.name}' 후 'hc up {group.cfg.name}'로 다시 배치하세요")
+                               f"실행 중). 'hctrl down {group.cfg.name}' 후 'hctrl up {group.cfg.name}'로 다시 배치하세요")
     st["tabs"][group.label] = {"tab_id": tab_id, "workspace_id": wid}
     for slot in range(n):
         if slots[slot] is not None:
@@ -213,7 +213,7 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
         slots[slot] = new["pane_id"]
         report.created_panes.append(new["pane_id"])
     for m, pid in zip(group.members, slots):
-        h.pane_rename(pid, f"hc:{m.name}")
+        h.pane_rename(pid, f"hctrl:{m.name}")
         st["members"][m.name] = {"pane_id": pid, "tab_id": tab_id, "workspace_id": wid,
                                  "tab_label": group.label, "tab": m.tab, "type": m.type,
                                  "cwd": member_cwd(ctx, group.cfg, m)}
@@ -360,7 +360,7 @@ def down(ctx: Ctx, tab: str | None = None, remove_worktree: bool = False) -> lis
 def zoom(ctx: Ctx, name: str) -> None:
     rec = ctx.state.member(name)
     if not rec:
-        raise KeyError(f"'{name}'의 창이 없습니다 (hc up 먼저)")
+        raise KeyError(f"'{name}'의 창이 없습니다 (hctrl up 먼저)")
     ctx.h.pane_zoom(rec["pane_id"])
 
 
@@ -389,11 +389,11 @@ def status(ctx: Ctx) -> list[str]:
     from .watch import load_pending
     pending = load_pending(ctx.project)
     if pending:
-        lines.append(f"변경 대기: {len(pending)}건 (hc changes)")
+        lines.append(f"변경 대기: {len(pending)}건 (hctrl changes)")
     from .unattended import pending as pending_questions
     qs = pending_questions(ctx.project)
     if qs:
-        lines.append(f"질문 대기: {len(qs)}건 (hc pending) — " + ", ".join(f"{q['id']}({q['agent']})" for q in qs[:5]))
+        lines.append(f"질문 대기: {len(qs)}건 (hctrl pending) — " + ", ".join(f"{q['id']}({q['agent']})" for q in qs[:5]))
     active = [r for r in list_runs(ctx.project) if r.get("status") in ("pending", "running", "question")]
     for r in active:
         lines.append(f"실행 중: {r['id']} ({r.get('flow')}) 단계 {r.get('current', 0) + 1}/{len(r.get('steps', []))}")

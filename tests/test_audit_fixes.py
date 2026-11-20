@@ -58,7 +58,7 @@ def test_renamed_agents_reuse_stale_panes_when_idle(live):
 def test_no_free_pane_raises_clear_error(live):
     # every member of tab Y renamed while the old agent still runs in the only pane
     c2 = reload(live, SAMPLE.replace("y1: {", "y9: {"))
-    with pytest.raises(RuntimeError, match="hc down Y"):
+    with pytest.raises(RuntimeError, match="hctrl down Y"):
         up(c2, tab="Y", start_watch=False)
 
 
@@ -120,7 +120,7 @@ def test_roles_role_file_refuses_outside_root(project):
 def test_shell_change_is_relayout_and_ack_records(live):
     c2 = reload(live, SAMPLE.replace("xbuild: {}", "xbuild: { cwd: sub }"))
     ch = [c for c in detect(c2) if c.name == "xbuild"]
-    assert [c.type for c in ch] == ["relayout"] and "hc down X" in ch[0].detail
+    assert [c.type for c in ch] == ["relayout"] and "hctrl down X" in ch[0].detail
     assert default_actions(ch[0]) == ["ack", "skip"]
     apply_change(c2, ch[0], "ack")
     assert detect(c2) == []

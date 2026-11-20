@@ -74,7 +74,7 @@ def test_other_projects_pane_is_foreign(two, monkeypatch):
     a, b = two
     monkeypatch.setenv("HERDR_SESSION", "pa")
     monkeypatch.setenv("HERDR_PANE_ID", a.state.member("x-orch")["pane_id"])
-    actor = current_actor(b)  # orchestrator of A running `hc --project B ...`
+    actor = current_actor(b)  # orchestrator of A running `hctrl --project B ...`
     assert actor.kind == "foreign"
     with pytest.raises(ScopeError):
         enforce(b, actor, ["x1"], "hi")
@@ -101,7 +101,7 @@ def test_ancestor_env_cannot_be_dropped(two, monkeypatch):
     monkeypatch.setattr(O, "_ancestor_envs", lambda max_depth=30: iter([{"PATH": "/bin"},
                                                                           {"HERDR_PANE_ID": pane, "HERDR_SESSION": "pa"}]))
     assert O.pane_identity() == ("pa", pane)
-    assert current_actor(a).kind == "agent"  # `env -u HERDR_PANE_ID hc ...` does not make it the user
+    assert current_actor(a).kind == "agent"  # `env -u HERDR_PANE_ID hctrl ...` does not make it the user
 
 
 def test_real_ancestry_reader_runs():
@@ -289,7 +289,7 @@ def test_failed_delivery_keeps_answer_for_resume(rx):
     threading.Thread(target=answer_when_asked, daemon=True).start()
     rec = execute(rx, rec)
     assert rec["status"] == "blocked", rec["steps"][0]["error"]
-    assert "hc resume" in rec["steps"][0]["error"]
+    assert "hctrl resume" in rec["steps"][0]["error"]
     assert ua.load(rx.project, "q0001")["status"] == "answered"  # not lost
     from herdr_ctl.runner import prepare_resume
     rec = execute(rx, prepare_resume(rx.project, rec["id"]), resume=True)  # the real resume path

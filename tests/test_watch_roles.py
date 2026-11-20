@@ -201,67 +201,67 @@ def cli_env(live, monkeypatch):
     return live
 
 
-def hc(ctx, *args):
+def hctrl(ctx, *args):
     return cli.main(["--project", str(ctx.project.root), *args])
 
 
 def test_cli_role_policies(cli_env, monkeypatch, capsys):
     ctx = cli_env
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x-orch")["pane_id"])
-    assert hc(ctx, "role", "x1", "결제만", "--reason", "범위") == 0  # confirm → proposal
+    assert hctrl(ctx, "role", "x1", "결제만", "--reason", "범위") == 0  # confirm → proposal
     assert "제안 #1" in capsys.readouterr().out
     assert R.effective_role(ctx.project, ctx.cfg.member("x1"))[0] == "구현"
-    assert hc(ctx, "role", "y1", "다른 탭") == 1  # scope
-    assert hc(ctx, "role", "x-orch", "나 자신") == 1
+    assert hctrl(ctx, "role", "y1", "다른 탭") == 1  # scope
+    assert hctrl(ctx, "role", "x-orch", "나 자신") == 1
     monkeypatch.delenv("HERDR_PANE_ID")
-    assert hc(ctx, "role", "--accept", "1") == 0
+    assert hctrl(ctx, "role", "--accept", "1") == 0
     assert R.effective_role(ctx.project, ctx.cfg.member("x1"))[0] == "결제만"
     # auto policy applies immediately and tells the agent
     ctx.project.config_path.write_text(textwrap.dedent(SAMPLE).replace("role_update: confirm", "role_update: auto"))
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x-orch")["pane_id"])
     ctx.h.agents["x2"].status = "idle"
-    assert hc(ctx, "role", "x2", "리뷰 전담") == 0
+    assert hctrl(ctx, "role", "x2", "리뷰 전담") == 0
     assert "역할이 변경" in ctx.h.agents["x2"].prompts[-1]
     ctx.project.config_path.write_text(textwrap.dedent(SAMPLE).replace("role_update: confirm", "role_update: off"))
-    assert hc(ctx, "role", "x2", "또 변경") == 1
+    assert hctrl(ctx, "role", "x2", "또 변경") == 1
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x1")["pane_id"])
-    assert hc(ctx, "role", "x2", "agent가 변경") == 1
+    assert hctrl(ctx, "role", "x2", "agent가 변경") == 1
 
 
 def test_cli_role_list_history_draft(cli_env, monkeypatch, capsys, tmp_path):
     ctx = cli_env
-    assert hc(ctx, "role") == 0
+    assert hctrl(ctx, "role") == 0
     assert "x1" in capsys.readouterr().out
-    assert hc(ctx, "role", "x1", "새 역할") == 0
-    assert hc(ctx, "role", "x1", "--history") == 0
+    assert hctrl(ctx, "role", "x1", "새 역할") == 0
+    assert hctrl(ctx, "role", "x1", "--history") == 0
     assert "새 역할" in capsys.readouterr().out
     fake = tmp_path / "fakeclaude"
     fake.write_text("#!/bin/sh\necho '- 담당: 결제'\n")
     fake.chmod(0o755)
     monkeypatch.setenv("HC_DRAFT_CMD", str(fake))
-    assert hc(ctx, "role", "x1", "--draft") == 0
+    assert hctrl(ctx, "role", "x1", "--draft") == 0
     assert (ctx.project.roles_dir / "x1.draft.md").read_text().startswith("- 담당")
 
 
 def test_cli_send_run_limits(cli_env, monkeypatch, capsys):
     ctx = cli_env
     ctx.h.default_on_prompt = writes_out()
-    assert hc(ctx, "send", "x2", "테스트 추가") == 0
-    assert hc(ctx, "run", "shell-only") == 0
+    assert hctrl(ctx, "send", "x2", "테스트 추가") == 0
+    assert hctrl(ctx, "run", "shell-only") == 0
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x-orch")["pane_id"])
-    assert hc(ctx, "send", "y1", "다른 탭") == 1
+    assert hctrl(ctx, "send", "y1", "다른 탭") == 1
     assert "다른 탭" in capsys.readouterr().err
-    assert hc(ctx, "run", "build-review-x") == 0
+    assert hctrl(ctx, "run", "build-review-x") == 0
 
 
 def test_cli_changes_yes(cli_env, capsys):
     ctx = cli_env
     R.write_role(ctx.project, ctx.cfg.member("x2"), one="리뷰")
-    assert hc(ctx, "changes", "--list") == 0
+    assert hctrl(ctx, "changes", "--list") == 0
     assert "역할 변경" in capsys.readouterr().out
-    assert hc(ctx, "changes", "--yes") == 0
+    assert hctrl(ctx, "changes", "--yes") == 0
     assert "역할이 변경" in ctx.h.agents["x2"].prompts[-1]
-    assert hc(ctx, "changes") == 0
+    assert hctrl(ctx, "changes") == 0
     assert "없습니다" in capsys.readouterr().out
 
 
@@ -270,34 +270,34 @@ def test_orchestrator_cannot_self_approve_or_manage(cli_env, monkeypatch, capsys
     """H2/M1: orchestrator may propose roles but not approve, edit, revert or run user-only commands."""
     ctx = cli_env
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x-orch")["pane_id"])
-    assert hc(ctx, "role", "x1", "결제만") == 0
+    assert hctrl(ctx, "role", "x1", "결제만") == 0
     for args in (["role", "--accept", "1"], ["role", "--reject", "1"], ["role", "--review"],
                  ["role", "x1", "--revert", "1"], ["role", "x1", "--edit"], ["role", "x1", "--draft"],
                  ["up"], ["down"], ["changes", "--yes"], ["ask", "X", "x"],
                  ["restart", "y1"], ["restart", "x-orch"]):
-        assert hc(ctx, *args) == 1, args
+        assert hctrl(ctx, *args) == 1, args
     assert R.proposals(ctx.project)[0]["status"] == "pending"
     assert R.effective_role(ctx.project, ctx.cfg.member("x1"))[0] == "구현"
     ctx.h.agents["x2"].status = "idle"
-    assert hc(ctx, "role", "x2", "--apply") == 0       # own tab: allowed
-    assert hc(ctx, "role", "y1", "--apply") == 1       # other tab: refused
+    assert hctrl(ctx, "role", "x2", "--apply") == 0       # own tab: allowed
+    assert hctrl(ctx, "role", "y1", "--apply") == 1       # other tab: refused
 
 
 def test_work_agent_is_read_only(cli_env, monkeypatch):
     ctx = cli_env
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x1")["pane_id"])
     for args in (["send", "x2", "hi"], ["run", "shell-only"], ["up"], ["role", "x2", "--apply"]):
-        assert hc(ctx, *args) == 1, args
-    assert hc(ctx, "status") == 0
+        assert hctrl(ctx, *args) == 1, args
+    assert hctrl(ctx, "status") == 0
 
 
 def test_shell_pane_user_is_user(cli_env, monkeypatch):
-    """M2: a person typing hc in a shell pane is the user, not a work agent."""
+    """M2: a person typing hctrl in a shell pane is the user, not a work agent."""
     ctx = cli_env
     ctx.h.default_on_prompt = writes_out()
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("xbuild")["pane_id"])
     assert current_actor(ctx).kind == "user"
-    assert hc(ctx, "send", "y1", "hi") == 0
+    assert hctrl(ctx, "send", "y1", "hi") == 0
 
 
 def test_orchestrator_resume_and_stop_are_scoped(cli_env, monkeypatch):
@@ -306,8 +306,8 @@ def test_orchestrator_resume_and_stop_are_scoped(cli_env, monkeypatch):
     ctx.h.on_prompt["y1"] = lambda a, t: "blocked"
     rec = execute(ctx, create_job(ctx.project, "y1", "hi", None))
     monkeypatch.setenv("HERDR_PANE_ID", ctx.state.member("x-orch")["pane_id"])
-    assert hc(ctx, "resume", rec["id"]) == 1
-    assert hc(ctx, "stop", rec["id"]) == 1
+    assert hctrl(ctx, "resume", rec["id"]) == 1
+    assert hctrl(ctx, "stop", rec["id"]) == 1
 
 
 def test_pending_changes_file_not_state(live):

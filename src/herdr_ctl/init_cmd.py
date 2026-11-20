@@ -1,4 +1,4 @@
-"""`hc init`: interactive config.yaml generation (followed by an automatic check)."""
+"""`hctrl init`: interactive config.yaml generation (followed by an automatic check)."""
 from __future__ import annotations
 
 import re
@@ -118,8 +118,8 @@ def build_config(session: str, tabs: dict[str, dict], flows: dict) -> dict:
     return data
 
 
-HEADER = """# herdr_ctl 설정 (hc init이 생성). 수정하면 다음 hc 명령 실행 시 자동 검사됩니다.
-# 상세 역할: .herdr-flow/roles/<agent>.md (hc role <agent> --edit)
+HEADER = """# herdr_ctl 설정 (hctrl init이 생성). 수정하면 다음 hctrl 명령 실행 시 자동 검사됩니다.
+# 상세 역할: .herdr-flow/roles/<agent>.md (hctrl role <agent> --edit)
 """
 
 
@@ -145,7 +145,7 @@ def run_init(project: Project, ask: Ask = input, add_tab: str | None = None, whi
         except (yaml.YAMLError, ValueError) as e:
             existing = {}
             if add_tab is not None:
-                print(f"✘ {project.config_path}를 읽을 수 없습니다: {e}\n  파일을 고친 뒤(hc check) 다시 실행하세요")
+                print(f"✘ {project.config_path}를 읽을 수 없습니다: {e}\n  파일을 고친 뒤(hctrl check) 다시 실행하세요")
                 return False
         if add_tab is None and not _yes(ask, f"{project.config_path}가 이미 있습니다. 덮어쓸까요?", False):
             return False
@@ -201,7 +201,7 @@ def run_init(project: Project, ask: Ask = input, add_tab: str | None = None, whi
             return None
         bad_tabs = {owner(i) for i in errors} - {None}
         if not bad_tabs:
-            print("  ✘ 새로 입력한 탭 밖의 오류입니다. config.yaml을 직접 고친 뒤 hc check로 확인하세요")
+            print("  ✘ 새로 입력한 탭 밖의 오류입니다. config.yaml을 직접 고친 뒤 hctrl check로 확인하세요")
             return False
         if not _yes(ask, "오류가 있는 탭을 다시 입력할까요?", True):
             return False

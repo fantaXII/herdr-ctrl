@@ -84,7 +84,7 @@ def test_open_refuses_inside_herdr(tmp_path, monkeypatch, capsys):
 def test_open_unregistered_non_tty(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert cli.main([]) == 1
-    assert "hc --add" in capsys.readouterr().err
+    assert "hctrl --add" in capsys.readouterr().err
 
 
 def test_open_starts_headless_then_up_then_attach(tmp_path, monkeypatch):
@@ -132,7 +132,7 @@ def test_add_and_list(tmp_path, monkeypatch, capsys):
 def test_version_flag(capsys):
     from herdr_ctl import __version__
     assert cli.main(["--version"]) == 0
-    assert capsys.readouterr().out.strip() == f"hc (herdr_ctl) {__version__}"
+    assert capsys.readouterr().out.strip() == f"hctrl (herdr_ctl) {__version__}"
 
 
 def test_init_without_herdr_warns_and_exits(tmp_path, monkeypatch, capsys):

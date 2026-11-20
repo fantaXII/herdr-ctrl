@@ -22,7 +22,7 @@ STATE_HOME_OVERRIDE: Path | None = None  # tests only (set in-process, never fro
 
 
 def state_home() -> Path:
-    """Private hc state kept OUTSIDE every project/agent cwd (agents may freely write inside it).
+    """Private hctrl state kept OUTSIDE every project/agent cwd (agents may freely write inside it).
 
     Deliberately NOT configurable through environment variables (HOME, XDG_STATE_HOME, ...): it
     holds the pane→member registry and the orchestrator budgets, and a caller that could point it
@@ -154,5 +154,5 @@ def ensure_gitignore(root: Path) -> list[str]:
         with gi.open("a") as f:
             if existing and existing[-1].strip():
                 f.write("\n")
-            f.write("# herdr_ctl (hc)\n" + "\n".join(missing) + "\n")
+            f.write("# herdr_ctl (hctrl)\n" + "\n".join(missing) + "\n")
     return missing

@@ -1,7 +1,7 @@
 # 무인 모드 실측 기록 (P0/P1)
 
 측정일: 2026-11-15. 환경: herdr 0.9.1, Claude Code v2.1.316 (haiku), opencode 1.19.4 (GLM-4.7), WSL2.
-버리는 herdr 세션(`hc-p0`, `hc-p1`)에서 `hc up`으로 agent를 띄우고 `herdr agent prompt/read/send-keys`로 측정했다.
+버리는 herdr 세션(`hctrl-p0`, `hctrl-p1`)에서 `hctrl up`으로 agent를 띄우고 `herdr agent prompt/read/send-keys`로 측정했다.
 
 ## 1. 화면 기반 (herdr 상태 + 키 입력)
 
@@ -38,10 +38,10 @@
 | AskUserQuestion | **이 훅을 거친다.** `tool_input.questions`가 구조화되어 들어온다. `allow` + `updatedInput`에 `answers: {질문: 선택 label}`을 넣으면 "User answered Claude's questions"로 처리되고 진행된다 |
 | acceptEdits 모드 | `echo > file` 같은 흔한 파일 명령은 묻지 않고 승인한다. 훅도 호출되지 않는다 |
 
-## 3. hc 기존 동작에서 발견한 문제
+## 3. hctrl 기존 동작에서 발견한 문제
 
 - `permission: ask`는 인자를 넘기지 않아서, claude가 계정 기본값인 auto mode로 시작했다. `--permission-mode default`를 명시하면 manual mode로 시작한다.
-- hc는 permission 인자를 사용자 `args` 뒤에 붙인다. 그래서 `args`에 넣은 `--permission-mode`가 덮어써지고, `hc check`는 경고하지 않는다.
+- hctrl은 permission 인자를 사용자 `args` 뒤에 붙인다. 그래서 `args`에 넣은 `--permission-mode`가 덮어써지고, `hctrl check`는 경고하지 않는다.
 - README는 `edit`를 "명령 실행은 승인 요청"이라고 설명하지만, 흔한 파일 명령은 승인 없이 실행된다.
 - 처음 보는 폴더에서는 신뢰 대화상자 때문에 `blocked` 상태로 시작한다. `tests/test_live_agent.py`의 주석과 다르다.
 

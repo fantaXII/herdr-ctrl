@@ -124,7 +124,7 @@ def test_on_fail_stop(ready):
 def test_agent_not_running(ready):
     ready.h.kill_agent("x1")
     rec = run_flow(ready)
-    assert rec["status"] == "failed" and "hc up" in rec["steps"][0]["error"]
+    assert rec["status"] == "failed" and "hctrl up" in rec["steps"][0]["error"]
 
 
 def test_busy_agent_is_waited_for(ready):
@@ -306,7 +306,7 @@ def test_stop_kills_unresponsive_worker(ready, monkeypatch):
 
 
 def test_shell_marker_survives_ctrl_c(tmp_path):
-    """The INT trap prints a completion marker when hc stop sends ctrl+c to the step."""
+    """The INT trap prints a completion marker when hctrl stop sends ctrl+c to the step."""
     import shlex, signal, subprocess as sp, time as _t
     marker = "__HC_DONE_t_0_1_"
     script = (f"trap 'echo {marker}$((128+2))__' INT; set -o pipefail; "

@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["PyYAML>=6"]
 
 [project.scripts]
-hc = "herdr_ctl.cli:main"
+hctrl = "herdr_ctl.cli:main"
 herdr_ctl = "herdr_ctl.cli:main"
 
 [tool.setuptools.packages.find]

@@ -55,7 +55,7 @@ def test_up_creates_layout_and_agents(ctx):
     splits = [c for c in h.calls if c[0] == "pane_split"]
     assert [c[2] for c in splits] == ["right", "down", "down"]
     assert set(rep.started) == {"x-orch", "x1", "x2", "y1"}
-    assert h.panes[ctx.state.member("x1")["pane_id"]].label == "hc:x1"
+    assert h.panes[ctx.state.member("x1")["pane_id"]].label == "hctrl:x1"
     # orchestrator sits in the first (root) pane of tab X
     root = [c for c in h.calls if c[0] == "tab_create" and c[1] == "X"]
     assert root and ctx.state.member("x-orch")["pane_id"] in h.panes
@@ -69,7 +69,7 @@ def test_up_passes_model_permission_and_brief(ctx):
     assert "--append-system-prompt-file" in x1_args and x1_args[-2:] == ("--permission-mode", "acceptEdits")
     assert starts["x2"][4] == ("-m", "anthropic/claude-sonnet-5-5")
     orch_args = starts["x-orch"][4]
-    assert "Bash(hc:*)" in orch_args
+    assert "Bash(hctrl:*)" in orch_args
     rules = ctx.project.flow_dir / "orchestrator-X.md"
     text = rules.read_text()
     assert "x1" in text and "build-review-x" in text and "금지 사항" in text and "로그인 모듈" in text

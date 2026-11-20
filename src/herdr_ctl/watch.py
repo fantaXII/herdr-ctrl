@@ -1,4 +1,4 @@
-"""Config/role change detection (`hc watch`, `hc changes`) and agent restart (`hc restart`)."""
+"""Config/role change detection (`hctrl watch`, `hctrl changes`) and agent restart (`hctrl restart`)."""
 from __future__ import annotations
 
 import time
@@ -11,7 +11,7 @@ from .herdr import READY_STATES, HerdrError, agent_status
 from .state import State, acquire, digest, read_json, release, write_json
 from .up import Ctx, flows_fingerprint, fingerprint, start_agent, up
 
-HANDOFF_PROMPT = ("[hc] 곧 새 설정으로 다시 시작됩니다. 지금까지의 작업 상태(완료한 것, 진행 중인 것, "
+HANDOFF_PROMPT = ("[hctrl] 곧 새 설정으로 다시 시작됩니다. 지금까지의 작업 상태(완료한 것, 진행 중인 것, "
                   "다음에 할 일, 주의점)를 이 파일에 요약해 쓰세요: {path}")
 
 
@@ -50,7 +50,7 @@ def detect(ctx: Ctx) -> list[Change]:
             if diffs and (m.type == "shell" or old.get("type") == "shell"
                           or any(k in LAYOUT_KEYS for k in diffs)):
                 changes.append(Change(m.name, "relayout",
-                                      detail + f" (재배치 필요: hc down {t.name} && hc up {t.name})"))
+                                      detail + f" (재배치 필요: hctrl down {t.name} && hctrl up {t.name})"))
             elif diffs:
                 changes.append(Change(m.name, "restart", detail + " (재시작 필요)"))
             elif m.is_agent and old.get("role") != new.get("role"):
@@ -59,7 +59,7 @@ def detect(ctx: Ctx) -> list[Change]:
         if name not in names:
             changes.append(Change(name, "remove", "설정에서 삭제됨"))
     if ctx.state.get("applied_flows") and ctx.state["applied_flows"] != flows_fingerprint(ctx.cfg):
-        changes.append(Change("flows", "flow", "flow 변경 (다음 hc run부터 적용)"))
+        changes.append(Change("flows", "flow", "flow 변경 (다음 hctrl run부터 적용)"))
     return changes
 
 
@@ -74,7 +74,7 @@ def notify_role(ctx: Ctx, name: str) -> str:
         raise RuntimeError(f"'{name}' 상태가 {st}라 지금은 알릴 수 없습니다")
     acquire(ctx.project, name, "role-apply")
     try:
-        ctx.h.agent_prompt(name, f"[hc] 역할이 변경됐습니다. {brief} 파일을 다시 읽고 새 역할을 따르세요. "
+        ctx.h.agent_prompt(name, f"[hctrl] 역할이 변경됐습니다. {brief} 파일을 다시 읽고 새 역할을 따르세요. "
                                  "확인했으면 '확인'이라고만 답하세요.", wait=True, timeout_ms=120000)
     finally:
         release(ctx.project, name, "role-apply")
@@ -99,7 +99,7 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
         raise KeyError(f"'{name}'는 설정된 agent가 아닙니다")
     rec = ctx.state.member(name)
     if not rec:
-        raise RuntimeError(f"'{name}'의 창이 없습니다 (hc up)")
+        raise RuntimeError(f"'{name}'의 창이 없습니다 (hctrl up)")
     pane = rec["pane_id"]
     acquire(ctx.project, name, "restart")
     try:
@@ -134,7 +134,7 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
         ctx.state.save()
     finally:
         release(ctx.project, name, "restart")
-    _tell_orchestrator(ctx, m, f"[hc] '{name}'가 새 설정으로 재시작됐습니다." +
+    _tell_orchestrator(ctx, m, f"[hctrl] '{name}'가 새 설정으로 재시작됐습니다." +
                        (f" 인수인계: {handoff_path}" if handoff_path else ""))
     if why:
         return f"{name}: 재시작했지만 확인 필요 — {why}"
@@ -169,7 +169,7 @@ def _tell_orchestrator(ctx: Ctx, m, text: str) -> None:
             return
     except HerdrError:
         pass
-    ctx.h.notify("hc: orchestrator에게 전달 못 함", text)
+    ctx.h.notify("hctrl: orchestrator에게 전달 못 함", text)
 
 
 def remove_member(ctx: Ctx, name: str) -> str:
@@ -199,7 +199,7 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
             raise KeyError(f"'{ch.name}'가 설정에 없습니다")
         ctx.state["applied"][ch.name] = fingerprint(ctx.project, m)
         ctx.state.save()
-        return f"{ch.name}: 확인함 (창 배치는 hc down {m.tab} && hc up {m.tab}로 반영)"
+        return f"{ch.name}: 확인함 (창 배치는 hctrl down {m.tab} && hctrl up {m.tab}로 반영)"
     if action == "notify":
         return notify_role(ctx, ch.name)
     if action == "restart":
@@ -280,7 +280,7 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None)
     sig = _signature(project)
     notified: str | None = None
     n = 0
-    print(f"[hc watch] {project.flow_dir} 감시 중 (간격 {interval}s)", flush=True)
+    print(f"[hctrl watch] {project.flow_dir} 감시 중 (간격 {interval}s)", flush=True)
     while iterations is None or n < iterations:
         n += 1
         time.sleep(interval)
@@ -289,8 +289,8 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None)
             continue
         sig = sig2
         if err:
-            print("[hc watch] 설정 오류:\n" + err, flush=True)
-            h.notify("hc: 설정 오류 (반영 안 함)", err.splitlines()[0])
+            print("[hctrl watch] 설정 오류:\n" + err, flush=True)
+            h.notify("hctrl: 설정 오류 (반영 안 함)", err.splitlines()[0])
             continue
         if not changes:
             notified = None  # nothing pending: the same change set later is news again
@@ -300,5 +300,5 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None)
             continue
         notified = key
         text = ", ".join(f"{c.name} {c.detail}" for c in changes)
-        print(f"[hc watch] 변경 감지: {text}", flush=True)
-        h.notify("hc: 설정 변경 감지", text[:200] + " — 'hc changes'로 확인")
+        print(f"[hctrl watch] 변경 감지: {text}", flush=True)
+        h.notify("hctrl: 설정 변경 감지", text[:200] + " — 'hctrl changes'로 확인")

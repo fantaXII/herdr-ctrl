@@ -1,4 +1,4 @@
-"""Actor detection and orchestrator limits (enforced by hc, not by the LLM)."""
+"""Actor detection and orchestrator limits (enforced by hctrl, not by the LLM)."""
 from __future__ import annotations
 
 import os
@@ -48,7 +48,7 @@ def _session_from_env(env: dict) -> str | None:
 
 def _ancestor_envs(max_depth: int = 30):
     """Environments of our ancestor processes (Linux /proc). A process can drop a variable from
-    its own environment (`env -u HERDR_PANE_ID hc ...`) but not from its parents'."""
+    its own environment (`env -u HERDR_PANE_ID hctrl ...`) but not from its parents'."""
     pid = os.getppid()
     for _ in range(max_depth):
         if pid <= 1:
@@ -85,7 +85,7 @@ def _load_registry() -> dict:
 
 
 def register_panes(ctx) -> None:
-    """Record this project's members' panes (called by hc up/down); drops this project's stale rows."""
+    """Record this project's members' panes (called by hctrl up/down); drops this project's stale rows."""
     root = str(ctx.project.root.resolve())
     session = ctx.cfg.session
     with file_lock(registry_path().with_suffix(".lock")):
@@ -103,9 +103,9 @@ def registered_member(session: str, pane: str) -> dict | None:
 
 
 def current_actor(ctx) -> Actor:
-    """Who is calling hc? Decided by the herdr pane we run in, looked up in the private registry.
+    """Who is calling hctrl? Decided by the herdr pane we run in, looked up in the private registry.
 
-    - pane not managed by any hc project → a person (user)
+    - pane not managed by any hctrl project → a person (user)
     - pane managed by THIS project → that member (shell panes are people → user)
     - pane managed by ANOTHER project → "foreign": refused for anything privileged
     """
@@ -154,11 +154,11 @@ def start_ask(ctx, tab: TabCfg) -> None:
 
 
 def enforce(ctx, actor: Actor, targets: list[str], prompt: str | None) -> None:
-    """Called before hc send/run. No-op for the user; checks scope + budget for an orchestrator."""
+    """Called before hctrl send/run. No-op for the user; checks scope + budget for an orchestrator."""
     if actor.kind == "foreign":
         raise ScopeError("다른 프로젝트의 agent 창에서는 이 프로젝트를 조작할 수 없습니다")
     if actor.kind == "agent":
-        raise ScopeError("작업 agent는 hc send/run으로 다른 agent에게 지시할 수 없습니다")
+        raise ScopeError("작업 agent는 hctrl send/run으로 다른 agent에게 지시할 수 없습니다")
     if actor.kind != "orch":
         return
     tab = ctx.cfg.tab(actor.tab)
@@ -173,9 +173,9 @@ def enforce(ctx, actor: Actor, targets: list[str], prompt: str | None) -> None:
         lim = tab.limits
         minutes = (time.time() - budget["started"]) / 60
         if budget["steps"] >= lim["max_steps_per_ask"]:
-            _limit(ctx, tab, f"hc ask 1회당 지시 상한 {lim['max_steps_per_ask']}회에 도달했습니다")
+            _limit(ctx, tab, f"hctrl ask 1회당 지시 상한 {lim['max_steps_per_ask']}회에 도달했습니다")
         if minutes >= lim["max_minutes_per_ask"]:
-            _limit(ctx, tab, f"hc ask 1회당 시간 상한 {lim['max_minutes_per_ask']}분에 도달했습니다")
+            _limit(ctx, tab, f"hctrl ask 1회당 시간 상한 {lim['max_minutes_per_ask']}분에 도달했습니다")
         if prompt is not None:
             for t in targets:
                 key = f"{t}:{digest(prompt.strip())}"
@@ -187,43 +187,43 @@ def enforce(ctx, actor: Actor, targets: list[str], prompt: str | None) -> None:
 
 
 def consume_answer(ctx, actor: Actor, tab: TabCfg) -> None:
-    """Count one `hc answer` by an orchestrator against max_answers_per_ask (hc enforces it)."""
+    """Count one `hctrl answer` by an orchestrator against max_answers_per_ask (hctrl enforces it)."""
     path = _budget_path(ctx, tab)
     with _budget_lock(ctx, tab):
         budget = read_json(path) or {"started": time.time(), "steps": 0, "repeats": {}}
         used = budget.get("answers", 0)
         cap = tab.policy["max_answers_per_ask"]
         if used >= cap:
-            _limit(ctx, tab, f"hc ask 1회당 답변 상한 {cap}회에 도달했습니다")
+            _limit(ctx, tab, f"hctrl ask 1회당 답변 상한 {cap}회에 도달했습니다")
         budget["answers"] = used + 1
         write_json(path, budget)
 
 
 def guard(ctx, actor: Actor, command: str, targets: list[str] | None = None,
           budget: bool = False) -> None:
-    """Gate for hc commands other than send/run. Users may do anything; work agents may only read;
+    """Gate for hctrl commands other than send/run. Users may do anything; work agents may only read;
     an orchestrator may act on its own tab only (optionally consuming its ask budget)."""
     if actor.kind == "user":
         return
     if actor.kind == "foreign":
-        raise ScopeError(f"다른 프로젝트의 agent 창에서는 'hc {command}'를 사용할 수 없습니다")
+        raise ScopeError(f"다른 프로젝트의 agent 창에서는 'hctrl {command}'를 사용할 수 없습니다")
     if actor.kind == "agent":
-        raise ScopeError(f"작업 agent는 'hc {command}'를 사용할 수 없습니다")
+        raise ScopeError(f"작업 agent는 'hctrl {command}'를 사용할 수 없습니다")
     if targets is None:
-        raise ScopeError(f"orchestrator는 'hc {command}'를 사용할 수 없습니다 (사용자 전용)")
+        raise ScopeError(f"orchestrator는 'hctrl {command}'를 사용할 수 없습니다 (사용자 전용)")
     if budget:
         enforce(ctx, actor, targets, None)
         return
     tab = ctx.cfg.tab(actor.tab)
     foreign = [t for t in targets if ctx.cfg.member(t) is None or ctx.cfg.member(t).tab != tab.name]
     if foreign:
-        raise ScopeError(f"다른 탭 대상에는 'hc {command}'를 쓸 수 없습니다: {', '.join(foreign)}")
+        raise ScopeError(f"다른 탭 대상에는 'hctrl {command}'를 쓸 수 없습니다: {', '.join(foreign)}")
 
 
 def _limit(ctx, tab: TabCfg, msg: str) -> None:
-    ctx.h.notify(f"hc: 탭 {tab.name} orchestrator 상한", msg)
+    ctx.h.notify(f"hctrl: 탭 {tab.name} orchestrator 상한", msg)
     raise LimitExceeded(msg + ". 사용자에게 상황을 보고하고 멈추세요. "
-                        "(상한은 사용자가 hc ask로 새 지시를 줄 때 초기화됩니다)")
+                        "(상한은 사용자가 hctrl ask로 새 지시를 줄 때 초기화됩니다)")
 
 
 def ask(ctx, tab_name: str, text: str) -> None:
@@ -232,11 +232,11 @@ def ask(ctx, tab_name: str, text: str) -> None:
         raise KeyError(f"탭 '{tab_name}'이 설정에 없습니다")
     if tab.orchestrator is None:
         raise RuntimeError(f"탭 '{tab.name}'에는 orchestrator가 없습니다 (orchestrator: none). "
-                           f"정해진 순서 실행은 hc run <flow>를 쓰세요")
+                           f"정해진 순서 실행은 hctrl run <flow>를 쓰세요")
     name = orch_name(tab.name)
     st = agent_status(ctx.h, name)
     if st is None:
-        raise RuntimeError(f"orchestrator '{name}'가 실행 중이 아닙니다 (hc up {tab.name})")
+        raise RuntimeError(f"orchestrator '{name}'가 실행 중이 아닙니다 (hctrl up {tab.name})")
     if st == "blocked":
         raise RuntimeError(f"orchestrator '{name}'가 승인 대기 중입니다. 화면에서 먼저 처리하세요")
     if st not in ("idle", "done"):

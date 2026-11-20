@@ -1,4 +1,4 @@
-"""Load and validate .herdr-flow/config.yaml (`hc check`)."""
+"""Load and validate .herdr-flow/config.yaml (`hctrl check`)."""
 from __future__ import annotations
 
 import difflib
@@ -38,7 +38,7 @@ DANGEROUS_ARGS = ("--dangerously-skip-permissions", "bypassPermissions", "--yolo
                   "--dangerously-bypass-approvals-and-sandbox")
 DEFAULT_LIMITS = {"max_steps_per_ask": 20, "max_minutes_per_ask": 120, "max_retries_per_agent": 3}
 DEFAULT_POLICY = {"answer_timeout": 300.0, "max_answers_per_ask": 30, "deny": []}
-# args that collide with what hc itself passes (permission flags, injected hook settings)
+# args that collide with what hctrl itself passes (permission flags, injected hook settings)
 MANAGED_ARGS = ("--permission-mode", "--allowedTools", "--allowed-tools", "--disallowedTools",
                 "--disallowed-tools", "--settings")
 DEFAULT_ROLES = ["구현", "테스트 작성", "리뷰", "보조"]
@@ -227,7 +227,7 @@ class _Checker:
             if any(d in str(a) for d in DANGEROUS_ARGS):
                 self.err(f"{path}.args", f"권한 전체 우회 옵션 '{a}'은 지원하지 않습니다 (permission 사용)")
             elif kind == "claude" and str(a).split("=", 1)[0] in MANAGED_ARGS:
-                self.warn(f"{path}.args", f"'{a}'는 hc가 permission/무인 모드로 직접 지정하는 옵션이라 "
+                self.warn(f"{path}.args", f"'{a}'는 hctrl이 permission/무인 모드로 직접 지정하는 옵션이라 "
                                           "충돌합니다. permission 값을 쓰세요")
         model = data.get("model")
         if model is not None and not isinstance(model, str):
@@ -468,7 +468,7 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
 
 def load_yaml(path: Path) -> tuple[Any, list[Issue]]:
     if not path.exists():
-        return None, [Issue("error", str(path), "설정 파일이 없습니다 (hc init으로 생성)")]
+        return None, [Issue("error", str(path), "설정 파일이 없습니다 (hctrl init으로 생성)")]
     try:
         return yaml.safe_load(path.read_text()), []
     except yaml.YAMLError as e:
@@ -499,8 +499,8 @@ PERMISSION_ARGS = {
         "ask": ["--permission-mode", "default"],
         "edit": ["--permission-mode", "acceptEdits"],
         "auto": ["--permission-mode", "auto"],
-        # orchestrator: read + hc only; anything else asks the user (variadic option, so it must come last)
-        "readonly": ["--permission-mode", "default", "--allowedTools", "Read", "Grep", "Glob", "Bash(hc:*)"],
+        # orchestrator: read + hctrl only; anything else asks the user (variadic option, so it must come last)
+        "readonly": ["--permission-mode", "default", "--allowedTools", "Read", "Grep", "Glob", "Bash(hctrl:*)"],
     },
 }
 

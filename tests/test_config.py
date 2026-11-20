@@ -116,7 +116,7 @@ def test_agent_args_mapping():
     assert agent_args(cfg.member("y1")) == ["--model", "haiku", "--permission-mode", "auto"]
     o = agent_args(cfg.member("x-orch"), system_prompt_file="/r.md")
     assert o[:4] == ["--model", "opus", "--append-system-prompt-file", "/r.md"]
-    assert o[-5:] == ["--allowedTools", "Read", "Grep", "Glob", "Bash(hc:*)"]
+    assert o[-5:] == ["--allowedTools", "Read", "Grep", "Glob", "Bash(hctrl:*)"]
 
 
 def test_layout_grouping():

@@ -1,4 +1,4 @@
-"""Opt-in: real claude agent (haiku) through hc, in a throwaway herdr session.
+"""Opt-in: real claude agent (haiku) through hctrl, in a throwaway herdr session.
 
 Run with HC_LIVE_AGENT=1. Costs a few cheap model calls. claude shows a folder-trust
 dialog for the new throwaway folder; the test accepts it (tests/livehelp.py).
@@ -42,24 +42,24 @@ flows:
 """
 
 
-def hc(root, *args, timeout=300):
+def hctrl(root, *args, timeout=300):
     env = dict(os.environ, PYTHONPATH=SRC, HC_CONFIG_HOME=str(root / ".cfghome"), HC_READY_GRACE_S="8")
     return subprocess.run([sys.executable, "-m", "herdr_ctl.cli", "--project", str(root), *args],
                           capture_output=True, text=True, env=env, timeout=timeout, cwd=str(root))
 
 
 def test_real_claude_agent_flow():
-    session = f"hc-agent-{os.getpid()}"
-    root = REPO / ".hc-livetest" / session
+    session = f"hctrl-agent-{os.getpid()}"
+    root = REPO / ".hctrl-livetest" / session
     (root / ".herdr-flow").mkdir(parents=True)
     (root / ".herdr-flow" / "config.yaml").write_text(textwrap.dedent(CONFIG.format(session=session)))
     h = Herdr(session=session)
     try:
-        r = hc(root, "up", "--no-watch")
+        r = hctrl(root, "up", "--no-watch")
         assert r.returncode == 0, r.stdout + r.stderr
         # a throwaway folder shows claude's folder-trust dialog first: accept it
         assert not wait_ready(h, ["a1"]), "agent did not become ready: " + h.agent_read("a1", lines=30)
-        r = hc(root, "run", "hello", timeout=300)
+        r = hctrl(root, "run", "hello", timeout=300)
         screen = h.agent_read("a1", lines=40) if r.returncode else ""
         assert r.returncode == 0, r.stdout + r.stderr + "\n--- pane ---\n" + screen
         run_dir = sorted((root / ".herdr-flow" / "runs").iterdir())[-1]

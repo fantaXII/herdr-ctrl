@@ -152,7 +152,7 @@ class FakeHerdr:
         self.calls.append(("pane_run", pane_id, command))
         p.output += f"$ {command}\n"
         if any(pat in command for pat in self.background_patterns):
-            p.busy = True  # long-running (e.g. hc watch): recorded, not executed
+            p.busy = True  # long-running (e.g. hctrl watch): recorded, not executed
             return
         proc = subprocess.run(["bash", "-c", command], cwd=p.cwd, capture_output=True, text=True)
         p.output += proc.stdout + proc.stderr

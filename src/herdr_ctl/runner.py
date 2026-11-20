@@ -1,4 +1,4 @@
-"""Flow / job execution: `hc run`, `hc send`, `hc wait`, `hc stop`, `hc resume`."""
+"""Flow / job execution: `hctrl run`, `hctrl send`, `hctrl wait`, `hctrl stop`, `hctrl resume`."""
 from __future__ import annotations
 
 import os
@@ -17,7 +17,7 @@ from .state import LockBusy, acquire, proc_start, read_json, release, same_proce
 from . import unattended as ua
 
 TERMINAL = ("done", "failed", "blocked", "timeout", "stopped")
-# Not terminal: the worker is alive, holds its locks and waits for `hc answer`; `hc wait` returns.
+# Not terminal: the worker is alive, holds its locks and waits for `hctrl answer`; `hctrl wait` returns.
 QUESTION = "question"
 MAX_TEXT_QUESTIONS_PER_STEP = 5
 DEFAULT_AGENT_TIMEOUT_S = 3600.0
@@ -143,7 +143,7 @@ class Runner:
         save_run(self.project, self.rec)
 
     def _notify(self, title: str, body: str) -> None:
-        self.h.notify(f"hc {self.rec['id']}: {title}", body)
+        self.h.notify(f"hctrl {self.rec['id']}: {title}", body)
 
     def _lock(self, name: str) -> None:
         acquire(self.project, name, self.rec["id"])
@@ -170,7 +170,7 @@ class Runner:
             st = agent_status(self.h, name)
             if st is None:
                 self.no_retry = True
-                return "failed", f"agent '{name}'가 실행 중이 아닙니다 (hc up)"
+                return "failed", f"agent '{name}'가 실행 중이 아닙니다 (hctrl up)"
             if st == "blocked":
                 return "blocked", f"agent '{name}'가 승인 대기 중입니다"
             if st not in READY_STATES:
@@ -187,11 +187,11 @@ class Runner:
                 if wait_s > 0:
                     time.sleep(wait_s)
             text = _expand(step["prompt"], out, prev)
-            parts = [text, "", f"[hc] 작업이 끝나면 결과 요약을 이 파일에 쓰세요: {out}"]
+            parts = [text, "", f"[hctrl] 작업이 끝나면 결과 요약을 이 파일에 쓰세요: {out}"]
             if prev:
-                parts.append(f"[hc] 이전 단계 결과: {prev} — {SAFETY_NOTE}")
+                parts.append(f"[hctrl] 이전 단계 결과: {prev} — {SAFETY_NOTE}")
             if last_error:
-                parts.append(f"[hc] 이전 시도가 실패했습니다. 원인: {last_error}")
+                parts.append(f"[hctrl] 이전 시도가 실패했습니다. 원인: {last_error}")
             deadline = time.time() + timeout_ms / 1000
             blocked, err = self._prompt(name, "\n".join(parts), out, timeout_ms)
             if err:
@@ -220,7 +220,7 @@ class Runner:
 
     # ------------------------------------------------------ unattended mode
     def _set_question(self, step: dict, qid: str | None) -> None:
-        """Enter/leave the non-terminal `question` state (visible to `hc wait`)."""
+        """Enter/leave the non-terminal `question` state (visible to `hctrl wait`)."""
         if qid:
             if step.get("question") != qid or self.rec["status"] != QUESTION:
                 step["status"], step["question"] = QUESTION, qid
@@ -262,7 +262,7 @@ class Runner:
                     self._set_question(step, None)
                     if time.time() >= grace_end and not told:
                         told = True
-                        self._notify("승인 대기", f"agent '{name}': hc가 처리하지 않는 승인 요청입니다. 화면에서 직접 처리하세요")
+                        self._notify("승인 대기", f"agent '{name}': hctrl이 처리하지 않는 승인 요청입니다. 화면에서 직접 처리하세요")
                 if time.time() > deadline:
                     return "timeout", "시간 초과 (질문/승인 대기 중)"
                 time.sleep(ua.poll_s())
@@ -311,11 +311,11 @@ class Runner:
                       step=step["index"], question=body, file=str(qfile))
         ua.audit(self.project, "asked", q)
         who = "orchestrator 또는 사용자" if tab and tab.unattended != "off" else "사용자"
-        self._notify(f"질문 {q['id']}", f"{name}: {body[:200]}\n답({who}): hc answer {q['id']} \"...\"")
+        self._notify(f"질문 {q['id']}", f"{name}: {body[:200]}\n답({who}): hctrl answer {q['id']} \"...\"")
         return q
 
     def _await_text_answer(self, step: dict, q: dict) -> str | None:
-        """Wait for `hc answer` (as `question`). Returns the answer, or None on answer_timeout."""
+        """Wait for `hctrl answer` (as `question`). Returns the answer, or None on answer_timeout."""
         tab = self.ctx.cfg.tab(q["tab"])
         limit = (tab.policy["answer_timeout"] if tab else 300.0) + q["created"]
         try:
@@ -335,8 +335,8 @@ class Runner:
 
     def _deliver_text_answer(self, step: dict, name: str, out: Path, q: dict, answer: str,
                              deadline: float):
-        text = "\n".join([f"[hc] 질문 {q['id']}에 대한 답입니다. {ua.SAFETY_ANSWER}", answer, "",
-                          f"[hc] 이어서 작업하고, 끝나면 결과 요약을 이 파일에 쓰세요: {out}"])
+        text = "\n".join([f"[hctrl] 질문 {q['id']}에 대한 답입니다. {ua.SAFETY_ANSWER}", answer, "",
+                          f"[hctrl] 이어서 작업하고, 끝나면 결과 요약을 이 파일에 쓰세요: {out}"])
         blocked, err = self._prompt(name, text, out, int(max(1.0, deadline - time.time()) * 1000))
         delivered = err is None or err[0] == "timeout"  # timeout: it was typed, never send it twice
         if delivered:
@@ -348,10 +348,10 @@ class Runner:
             cur = ua.update(self.project, q["id"], resolve)
             ua.audit(self.project, "delivered", cur)
             return blocked, err
-        # not delivered: keep the answer (`answered`) and stop as blocked, so `hc resume` sends it
+        # not delivered: keep the answer (`answered`) and stop as blocked, so `hctrl resume` sends it
         step["question"] = q["id"]
         return blocked, ("blocked", f"질문 {q['id']}의 답을 전달하지 못했습니다 ({err[1]}). "
-                                    f"화면을 확인한 뒤 hc resume {self.rec['id']}")
+                                    f"화면을 확인한 뒤 hctrl resume {self.rec['id']}")
 
     def _finish_turn(self, step: dict, name: str, out: Path, blocked: bool, deadline: float):
         """After a prompt: settle blocked/question states, then verify the result file."""
@@ -389,7 +389,7 @@ class Runner:
             if answer is None:
                 step["question"] = q["id"]
                 return "blocked", (f"질문 {q['id']}에 답이 없어 멈췄습니다. "
-                                   f"hc answer {q['id']} \"...\" 후 hc resume {self.rec['id']}")
+                                   f"hctrl answer {q['id']} \"...\" 후 hctrl resume {self.rec['id']}")
             blocked, err = self._deliver_text_answer(step, name, out, q, answer, deadline)
             if err:
                 return err
@@ -414,13 +414,13 @@ class Runner:
             return "ok", None
         self.no_retry = True
         return "failed", ("agent가 지시에 반응하지 않았습니다 (agent_prompt_stalled). "
-                          "화면을 확인한 뒤 hc resume <id> --resend")
+                          "화면을 확인한 뒤 hctrl resume <id> --resend")
 
     def _shell_step(self, step: dict, out: Path, prev: Path | None) -> tuple[str, str | None]:
         name = step["shell"]
         rec = self.ctx.state.member(name)
         if not rec:
-            return "failed", f"shell '{name}'의 창이 없습니다 (hc up)"
+            return "failed", f"shell '{name}'의 창이 없습니다 (hctrl up)"
         pane = rec["pane_id"]
         try:
             self._lock(name)
@@ -436,7 +436,7 @@ class Runner:
             cmd = _expand(step["run"], out, prev)
             # Run inside bash with pipefail so it works whatever the pane's shell is (zsh, fish...)
             # and the exit code is the command's, not tee's.
-            # trap: ctrl+c (hc stop) still prints a completion marker, so the waiter ends promptly.
+            # trap: ctrl+c (hctrl stop) still prints a completion marker, so the waiter ends promptly.
             # The typed line must never contain marker+digits itself (the pane echoes it), so the
             # interrupted code is computed: $((128+2)) prints 130.
             script = (f"trap 'echo {marker}$((128+2))__' INT; set -o pipefail; "
@@ -486,7 +486,7 @@ class Runner:
     def execute(self, start: int | None = None, resume: bool = False, resend: bool = False) -> dict:
         rec = self.rec
         run_lock = f"run-{rec['id']}"
-        try:  # two `hc resume` of the same run must not both drive it
+        try:  # two `hctrl resume` of the same run must not both drive it
             acquire(self.project, run_lock, f"worker-{os.getpid()}")
         except LockBusy as e:
             raise RuntimeError(f"{rec['id']}는 다른 프로세스가 실행 중입니다 ({e})") from e
@@ -563,7 +563,7 @@ class Runner:
         try:
             answer = (q["answer"] or {}).get("text") if q["status"] == "answered" else self._await_text_answer(step, q)
             if answer is None:
-                status, err = "blocked", f"질문 {q['id']}에 아직 답이 없습니다 (hc answer {q['id']} \"...\")"
+                status, err = "blocked", f"질문 {q['id']}에 아직 답이 없습니다 (hctrl answer {q['id']} \"...\")"
             else:
                 blocked, res = self._deliver_text_answer(step, name, out, q, answer, deadline)
                 status, err = res if res else self._finish_turn(step, name, out, blocked, deadline)
@@ -620,14 +620,14 @@ class Runner:
             self._save()
             return "ok"
         step["status"] = "failed"
-        step["error"] = "결과 파일이 없습니다. 같은 지시를 다시 보내려면 hc resume <id> --resend"
+        step["error"] = "결과 파일이 없습니다. 같은 지시를 다시 보내려면 hctrl resume <id> --resend"
         self._save()
         return "failed"
 
 
 def _install_sigterm(runner: Runner) -> None:
     def handler(signum, frame):
-        runner.stop_flag.touch()  # checked between steps; hc stop also interrupts the live step
+        runner.stop_flag.touch()  # checked between steps; hctrl stop also interrupts the live step
     signal.signal(signal.SIGTERM, handler)
 
 
@@ -667,7 +667,7 @@ def prepare_resume(project: Project, run_id: str) -> dict:
     rec = load_run(project, run_id)
     if rec.get("pid") and rec["pid"] != os.getpid() and same_process_alive(rec["pid"], rec.get("pid_start")):
         raise RuntimeError(f"{run_id}의 실행 프로세스(pid {rec['pid']})가 아직 살아 있습니다. "
-                           f"잠시 후 다시 시도하거나 hc stop {run_id}")
+                           f"잠시 후 다시 시도하거나 hctrl stop {run_id}")
     if rec["status"] == "done":
         raise RuntimeError(f"{run_id}는 이미 완료됐습니다")
     stop_flag = run_dir(project, run_id) / "stop"
@@ -700,7 +700,7 @@ def wait(project: Project, run_id: str, timeout_s: float | None = None, poll: fl
 
 
 def _question_pending(project: Project, rec: dict) -> bool:
-    """Right after `hc answer` the worker may not have left `question` yet: keep waiting then."""
+    """Right after `hctrl answer` the worker may not have left `question` yet: keep waiting then."""
     cur = rec["steps"][min(rec.get("current", 0), len(rec["steps"]) - 1)]
     try:
         return ua.load(project, cur.get("question") or "")["status"] == "pending"
@@ -722,7 +722,7 @@ def stop(ctx, run_id: str) -> dict:
             os.kill(worker, signal.SIGTERM)
         except OSError:
             pass
-    ua.expire_for_run(project, run_id, "실행이 중단됨 (hc stop)")
+    ua.expire_for_run(project, run_id, "실행이 중단됨 (hctrl stop)")
     cur = rec["steps"][min(rec["current"], len(rec["steps"]) - 1)]
     if cur.get("status") in ("running", QUESTION):
         try:
@@ -772,7 +772,7 @@ def summary(rec: dict) -> list[str]:
         if s.get("error"):
             line += f"  — {s['error']}"
         elif s["status"] == QUESTION and s.get("question"):
-            line += f"  — 질문 {s['question']} 답변 대기 (hc pending / hc answer {s['question']} ...)"
+            line += f"  — 질문 {s['question']} 답변 대기 (hctrl pending / hctrl answer {s['question']} ...)"
         lines.append(line)
     return lines
 
