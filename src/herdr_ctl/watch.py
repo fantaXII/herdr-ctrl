@@ -130,8 +130,8 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
             except HerdrError as e:
                 raise RuntimeError(f"인수인계 요청 실패: {e}") from e
             if not (handoff_path.exists() and handoff_path.read_text().strip()):
-                raise RuntimeError(f"인수인계 파일이 작성되지 않았습니다: {handoff_path} "
-                                   "(인수인계 없이 하려면 --no-handoff)")
+                raise RuntimeError(f"인수인계 파일이 작성되지 않았습니다: {handoff_path} (인수인계 없이 재시작하려면 "
+                                   f"변경 반영에서 [f] 또는 hctrl restart {name} --no-handoff)")
         if st is not None:
             _stop_agent(ctx, name, pane)
         if not ctx.h.pane_shell_idle(pane):
@@ -210,6 +210,8 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
         return notify_role(ctx, ch.name)
     if action == "restart":
         return restart(ctx, ch.name, handoff=handoff)
+    if action == "fresh":
+        return restart(ctx, ch.name, handoff=False)
     if action == "add":
         m = ctx.cfg.member(ch.name)
         rep = up(ctx, tab=m.tab, start_watch=False)
@@ -220,7 +222,7 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
 
 
 def default_actions(ch: Change) -> list[str]:
-    return {"role": ["notify", "restart", "skip"], "restart": ["restart", "skip"],
+    return {"role": ["notify", "restart", "fresh", "skip"], "restart": ["restart", "fresh", "skip"],
             "relayout": ["ack", "skip"],
             "add": ["add", "skip"], "remove": ["remove", "skip"], "flow": ["ack"]}[ch.type]
 

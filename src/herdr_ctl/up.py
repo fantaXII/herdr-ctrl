@@ -254,7 +254,8 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None) 
     from .unattended import hook_settings
     tab = ctx.cfg.tab(m.tab)
     settings = hook_settings(ctx, tab, m) if tab else None
-    args = agent_args(m, brief if m.kind == "claude" else None, settings)
+    args = agent_args(m, brief if m.kind == "claude" else None, settings,
+                      handoff_file=ctx.project.handoff_dir / f"{m.name}.md")
     try:
         h.agent_start(m.name, m.kind, pane_id, args)
     except HerdrError as e:

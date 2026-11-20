@@ -533,7 +533,7 @@ PERMISSION_ARGS = {
 
 
 def agent_args(m: Member, system_prompt_file: Path | None = None,
-               settings_file: Path | None = None) -> list[str]:
+               settings_file: Path | None = None, handoff_file: Path | None = None) -> list[str]:
     """Native CLI args passed after `--` to `herdr agent start`."""
     args: list[str] = []
     if m.model:
@@ -546,5 +546,10 @@ def agent_args(m: Member, system_prompt_file: Path | None = None,
     args += list(m.args)
     if settings_file and m.kind == "claude":
         args += ["--settings", str(settings_file)]
-    args += PERMISSION_ARGS.get(m.kind or "", {}).get(m.permission or "", [])
-    return args
+    perm = list(PERMISSION_ARGS.get(m.kind or "", {}).get(m.permission or "", []))
+    if handoff_file and m.kind == "claude" and m.permission in ("ask", "readonly"):
+        # restart asks the agent to write its own handoff file: allow exactly that one file
+        # ("//" = absolute path in Claude Code permission rules). allowedTools is variadic, so it stays last.
+        rule = f"Edit(/{Path(handoff_file).resolve()})"
+        perm += [rule] if "--allowedTools" in perm else ["--allowedTools", rule]
+    return args + perm

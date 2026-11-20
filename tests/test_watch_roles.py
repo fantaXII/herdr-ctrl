@@ -7,7 +7,7 @@ from herdr_ctl import cli
 from herdr_ctl import roles as R
 from herdr_ctl.orchestrator import Actor, LimitExceeded, ScopeError, ask, current_actor, enforce, start_ask
 from herdr_ctl.up import up
-from herdr_ctl.watch import apply_change, detect, restart, watch_once
+from herdr_ctl.watch import apply_change, default_actions, detect, restart, watch_once
 from conftest import SAMPLE, make_ctx, writes_out
 
 
@@ -328,3 +328,44 @@ def test_watch_signature_sees_edit_within_same_mtime_tick(live):
     c.write_text(c.read_text().replace("model: sonnet", "model: opus"))
     os.utime(c, ns=(st.st_atime_ns, st.st_mtime_ns))  # coarse clock: same mtime as before
     assert _signature(live.project) != before
+
+
+def test_orchestrator_may_write_only_its_handoff_file(live):
+    args = list(live.h.agents["x-orch"].args)
+    rule = f"Edit(/{(live.project.handoff_dir / 'x-orch.md').resolve()})"
+    i = args.index("--allowedTools")
+    assert args[i:] == ["--allowedTools", "Read", "Grep", "Glob", "Bash(hctrl:*)", rule]
+    assert rule.startswith("Edit(//")  # absolute-path form of Claude Code permission rules
+    # edit/auto agents can already write inside the project: no extra rule
+    assert not any(a.startswith("Edit(") for a in live.h.agents["x1"].args)
+
+
+def test_ask_agent_gets_handoff_rule():
+    from herdr_ctl.config import Member, agent_args
+    m = Member(name="a1", type="agent", tab="X", kind="claude", permission="ask")
+    assert agent_args(m, handoff_file=Path("/p/.herdr-flow/handoff/a1.md"))[-4:] == \
+        ["--permission-mode", "default", "--allowedTools", "Edit(//p/.herdr-flow/handoff/a1.md)"]
+
+
+def test_fresh_restart_skips_handoff(live):
+    c2 = reload(live, SAMPLE.replace("model: sonnet", "model: opus"))
+    asked = []
+
+    def on_prompt(agent, text):
+        asked.append(text)
+        if text == "/exit":
+            c2.h.kill_agent(agent.name)
+        return "idle"
+    c2.h.on_prompt["x1"] = on_prompt
+    c2.h.on_prompt["x-orch"] = lambda a, t: "idle"
+    ch = next(c for c in detect(c2) if c.name == "x1")
+    assert "fresh" in default_actions(ch)
+    msg = apply_change(c2, ch, "fresh")
+    assert "재시작 완료" in msg and not any("인수인계" in t for t in asked)
+    assert "opus" in c2.h.agents["x1"].args
+
+
+def test_missing_handoff_error_points_to_fresh(live):
+    live.h.on_prompt["x1"] = lambda a, t: "idle"
+    with pytest.raises(RuntimeError, match=r"\[f\]"):
+        restart(live, "x1")
