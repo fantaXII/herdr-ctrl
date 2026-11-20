@@ -1,6 +1,6 @@
 {
   "name": "herdr-ctl",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "private": true,
   "description": "Release tooling only (release-it). The project itself is Python: see pyproject.toml.",
   "scripts": {
