@@ -111,7 +111,7 @@ def open_browser(url: str) -> bool:
     if cmd[0] == "<webbrowser>":
         return webbrowser.open(url)
     try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         return False
     return True

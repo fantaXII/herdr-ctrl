@@ -95,3 +95,40 @@ def test_tty_keys_on_a_real_pty():
     finally:
         os.close(master)
         os.close(slave)
+
+
+def _ixon(fd):
+    import termios
+    return bool(termios.tcgetattr(fd)[0] & termios.IXON)
+
+
+def test_ttykeys_disables_ixon_and_restores():
+    import os
+    import pty
+    import termios
+    master, slave = pty.openpty()
+    try:
+        attrs = termios.tcgetattr(slave)
+        attrs[0] |= termios.IXON | termios.IXOFF
+        termios.tcsetattr(slave, termios.TCSANOW, attrs)
+        before = termios.tcgetattr(slave)
+        with W.TtyKeys(slave) as keys:
+            now = termios.tcgetattr(slave)
+            assert not now[0] & (termios.IXON | termios.IXOFF)
+            with keys.cooked():
+                assert termios.tcgetattr(slave) == before
+                assert _ixon(slave)
+            assert not termios.tcgetattr(slave)[0] & (termios.IXON | termios.IXOFF)
+        assert termios.tcgetattr(slave) == before
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_open_browser_detaches_stdin(monkeypatch):
+    import subprocess
+    seen = {}
+    monkeypatch.setattr(ui_mod, "browser_command", lambda url: ["somebrowser", url])
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: seen.update(kw))
+    assert ui_mod.open_browser("http://x") is True
+    assert seen["stdin"] is subprocess.DEVNULL

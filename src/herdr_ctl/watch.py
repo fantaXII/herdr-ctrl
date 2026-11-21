@@ -300,7 +300,15 @@ class TtyKeys:
         import tty
         self.saved = termios.tcgetattr(self.fd)
         tty.setcbreak(self.fd)
+        self._no_flow_control()
         return self
+
+    def _no_flow_control(self) -> None:
+        """Ctrl+S (XOFF) must not freeze the pane's output: turn IXON/IXOFF off."""
+        import termios
+        attrs = termios.tcgetattr(self.fd)
+        attrs[0] &= ~(termios.IXON | termios.IXOFF)
+        termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
 
     def __exit__(self, *exc) -> None:
         import termios
@@ -319,6 +327,7 @@ class TtyKeys:
             yield
         finally:
             tty.setcbreak(self.fd)
+            self._no_flow_control()
 
 
 class Menu:
