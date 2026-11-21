@@ -253,8 +253,12 @@ class _Checker:
         perm = data.get("permission", "readonly" if mtype == "orch" else "edit")
         if perm not in PERMISSIONS:
             self.err(f"{path}.permission", f"'{perm}' 대신 {'/'.join(PERMISSIONS)} 중 하나")
-        elif perm == "bypass" and mtype == "orch":
-            self.err(f"{path}.permission", "orchestrator에는 bypass를 쓸 수 없습니다 (작업 agent만)")
+        elif perm == "bypass" and mtype == "orch" and kind == "claude":
+            # allowed (outside unattended tabs, checked per tab), but it lifts the orchestrator's guard rails
+            self.warn(f"{path}.permission", "bypass: orchestrator가 승인 없이 코드를 고치고 명령을 실행합니다. "
+                                            "프로젝트 밖 상태 폴더도 고칠 수 있어 작업 상한(limits)이 우회될 수 "
+                                            "있습니다. 처음 쓰는 PC라면 claude --permission-mode "
+                                            "bypassPermissions를 한 번 직접 실행해 수락해 두세요")
         elif perm == "bypass" and kind == "claude":
             self.warn(f"{path}.permission", "bypass: 모든 권한 확인을 건너뜁니다. 작업 폴더 밖 파일 수정이나 "
                                             "위험한 명령도 묻지 않고 실행합니다. 처음 쓰는 PC라면 claude가 시작할 때 "
@@ -407,6 +411,10 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
                     # no permission dialog → the hook never runs, and the agent can write the answer store
                     c.err(f"{tpath}.agents.{m.name}.permission",
                           "무인 모드 탭에서는 bypass를 쓸 수 없습니다 (승인 훅이 동작하지 않고 답변 저장소를 보호할 수 없음)")
+            if orch is not None and orch.permission == "bypass":
+                # the orchestrator answers agents' questions/approvals: it must not be able to forge the store
+                c.err(f"{tpath}.orchestrator.permission",
+                      "무인 모드 탭의 orchestrator에는 bypass를 쓸 수 없습니다 (답변 저장소와 상한을 고칠 수 있음)")
             for m in agents:
                 if m.kind and m.kind != "claude":
                     c.warn(f"{tpath}.agents.{m.name}",

@@ -373,7 +373,7 @@ agent가 파일을 고치거나 명령을 실행할 때마다 승인을 요청�
 | `edit` (작업 agent 기본) | 파일 수정과 흔한 파일 명령(`echo > 파일` 등)은 자동, 그 밖의 명령 실행은 승인 요청 |
 | `auto` | 대부분 자동 |
 | `readonly` (orchestrator 기본) | 읽기와 `hctrl` 명령만 자동, 그 밖은 사용자 승인 |
-| `bypass` | 모든 권한 확인을 건너뜀 (claude `--permission-mode bypassPermissions`). 작업 agent에만 쓸 수 있고, 무인 모드(`unattended`)가 켜진 탭에서는 오류입니다. `hctrl check`가 항상 경고합니다 |
+| `bypass` | 모든 권한 확인을 건너뜀 (claude `--permission-mode bypassPermissions`). 무인 모드(`unattended`)가 켜진 탭에서는 오류입니다. `hctrl check`가 항상 경고합니다. orchestrator에 쓰면 승인 없이 코드를 고치고, 프로젝트 밖 상태 폴더도 고칠 수 있어 작업 상한(`limits`)이 우회될 수 있습니다 |
 
 `bypass`는 작업 폴더 밖 파일 수정이나 위험한 명령도 묻지 않고 실행하므로, 격리된 환경(컨테이너, 전용 worktree 등)에서만 쓰세요. `args`에 우회 옵션(`--dangerously-skip-permissions`, `bypassPermissions` 등)을 직접 넣는 것은 여전히 `hctrl check`에서 오류입니다. `permission: bypass`로 명시하세요.
 

@@ -74,8 +74,12 @@ def test_bypass_permission_for_work_agents():
     assert agent_args(cfg.member("x1"))[-2:] == ["--permission-mode", "bypassPermissions"]
 
 
-def test_bypass_refused_for_orchestrator_and_unattended_tabs():
-    cfg, issues = check(SAMPLE.replace('goal: "로그인 모듈" }', 'goal: "로그인 모듈", permission: bypass }'))
+def test_bypass_orchestrator_warns_and_unattended_tabs_refuse():
+    orch_bypass = SAMPLE.replace('goal: "로그인 모듈" }', 'goal: "로그인 모듈", permission: bypass }')
+    cfg, issues = check(orch_bypass)
+    assert cfg is not None and "tabs.X.orchestrator.permission" in paths(issues, "warning")
+    assert agent_args(cfg.member("x-orch"))[-2:] == ["--permission-mode", "bypassPermissions"]
+    cfg, issues = check(orch_bypass.replace("role_update: confirm", "role_update: confirm\n    unattended: questions"))
     assert cfg is None and "tabs.X.orchestrator.permission" in paths(issues, "error")
     text = SAMPLE.replace('role: "구현" }', 'role: "구현", permission: bypass }').replace(
         "role_update: confirm", "role_update: confirm\n    unattended: questions")

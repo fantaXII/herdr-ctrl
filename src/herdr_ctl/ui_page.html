@@ -720,7 +720,7 @@ const PERM_HELP = {
   edit: "파일 수정은 자동, 그 밖의 명령 실행은 승인을 요청합니다.",
   auto: "대부분 승인 없이 진행합니다.",
   readonly: "읽기와 hctrl 명령만 자동, 나머지는 사용자 승인을 받습니다.",
-  bypass: "⚠ 모든 권한 확인을 건너뜁니다 (claude bypassPermissions). 작업 agent만, 무인 모드가 꺼진 탭에서만 쓸 수 있습니다.",
+  bypass: "⚠ 모든 권한 확인을 건너뜁니다 (claude bypassPermissions). 무인 모드가 꺼진 탭에서만 쓸 수 있습니다.",
 };
 const ROLE_HELP = {
   confirm: "orchestrator가 agent 역할을 바꾸려 하면 제안으로 남고, 사용자가 승인해야 반영됩니다 (hctrl role --review).",
@@ -1041,7 +1041,7 @@ function renderOrch(tname, t) {
     h("summary", {}, "고급 설정 (권한 · 역할 정책 · 무인 모드)",
       h("span", { class: "advsum" }, changedBits.length ? "· " + changedBits.join(" · ") : "· 모두 기본값")),
     h("div", { class: "form" },
-      frow(["권한", markFor(opath + ".permission")], permSelect(o, "readonly", PERMS.filter((p) => p !== "bypass")), permHelp(o, "readonly")),
+      frow(["권한", markFor(opath + ".permission")], permSelect(o, "readonly"), permHelp(o, "readonly")),
       frow(["역할 변경 정책", markFor("tabs." + tname + ".role_update")],
         h("select", { "aria-label": "역할 변경 정책", onchange: (e) => { t.role_update = e.target.value; changed(); } },
           ["confirm", "auto", "off"].map((v) => h("option", { value: v, selected: v === role }, v))),

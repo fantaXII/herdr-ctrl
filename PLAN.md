@@ -347,7 +347,7 @@ x2: model sonnet → opus  (재시작 필요)
   | `auto` | 대부분 자동 | `--allowedTools` 목록 지정 |
   | `readonly` (orchestrator 기본) | 읽기와 `hctrl` 명령만 허용 | `--allowedTools "Read,Grep,Glob,Bash(hctrl:*)"` |
 
-- 전체 우회는 `permission: bypass`(→ `--permission-mode bypassPermissions`)로만 허용한다. 작업 agent 전용이고, orchestrator나 무인 모드 탭에서는 오류, 그 밖에는 항상 경고한다. `args`로 우회 옵션을 직접 넣으면 여전히 `hctrl check` 오류다.
+- 전체 우회는 `permission: bypass`(→ `--permission-mode bypassPermissions`)로만 허용한다. 무인 모드 탭에서는 (작업 agent, orchestrator 모두) 오류, 그 밖에는 항상 경고한다. orchestrator에 쓰면 상태 폴더를 고칠 수 있어 상한이 우회될 수 있다는 경고를 낸다. `args`로 우회 옵션을 직접 넣으면 여전히 `hctrl check` 오류다.
 - opencode의 권한 설정 방식은 M2에서 확인한다.
 
 **재시도와 비용 상한**
