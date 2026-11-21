@@ -516,3 +516,32 @@ def test_apply_refused_when_not_running(client, tmp_path):
     register("projA", p.root)
     st, _ = client.json("POST", "/api/project/projA/apply", {"actions": {}})
     assert st == 409
+
+
+def test_integrations_reread_on_page_load(tmp_path, monkeypatch):
+    """`herdr integration install` while the UI is open shows up on the next load (no restart)."""
+    status = {"claude": "not", "opencode": "not"}
+
+    class H:
+        def integration_status(self):
+            return dict(status)
+
+        def session_list(self):
+            return []
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    s = UIServer("launcher", cwd=tmp_path, herdr=lambda session=None: H(), which=always_found,
+                 models=lambda: {})
+    try:
+        warn = lambda: [i for i in s.get_config(p)["issues"] if "연동" in i["message"]]
+        assert warn()
+        status.update(claude="current", opencode="current")
+        assert not warn()
+        # within the TTL, edits reuse the cached status; after it, they re-read
+        data = yaml.safe_load(p.config_path.read_text())
+        status.update(claude="not")
+        assert not [i for i in s.check(p, data) if "연동" in i["message"]]
+        monkeypatch.setattr(ui_mod, "INTEGRATIONS_TTL_S", 0.0)
+        assert [i for i in s.check(p, data) if "'claude' 연동" in i["message"]]
+    finally:
+        s.httpd.server_close()

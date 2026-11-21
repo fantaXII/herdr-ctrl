@@ -36,6 +36,7 @@ from .state import LockBusy, State, digest
 COOKIE = "hctrl_ui"
 MAX_BODY = 1 << 20
 TOKEN_TTL_S = 120.0
+INTEGRATIONS_TTL_S = 15.0
 CLAUDE_MODELS = ["opus", "sonnet", "haiku"]
 # importlib.resources: works from a package dir and from inside hctrl.pyz alike
 PAGE = resources.files("herdr_ctl") / "ui_page.html"
@@ -133,6 +134,7 @@ class UIServer:
         self._models = models or opencode_models
         self._models_cache: dict | None = None
         self._integrations: dict | None = None
+        self._integrations_at = 0.0  # monotonic time of the last `herdr integration status`
         self._tokens: dict[str, float] = {}  # one-time link token -> expiry (monotonic)
         self.secret = secrets.token_urlsafe(32)
         self.page = PAGE.read_bytes()  # read once: `hctrl update` may replace the .pyz while we serve
@@ -194,8 +196,12 @@ class UIServer:
         except (HerdrError, OSError):
             return set()
 
-    def integrations(self) -> dict | None:
-        if self._integrations is None:
+    def integrations(self, fresh: bool = False) -> dict | None:
+        # short-lived cache: checks run on every edit, but an `herdr integration install` done while
+        # the page is open must show up on the next load (the _hc server lives as long as the session)
+        stale = time.monotonic() - self._integrations_at >= INTEGRATIONS_TTL_S
+        if self._integrations is None or fresh or stale:
+            self._integrations_at = time.monotonic()
             try:
                 self._integrations = self.herdr(None).integration_status()
             except (HerdrError, OSError):
@@ -205,6 +211,10 @@ class UIServer:
     def check(self, project: Project, data: Any) -> list[dict]:
         _, issues = check_data(data, root=project.root, which=self.which, integrations=self.integrations())
         return [{"level": i.level, "path": i.path, "message": i.message} for i in issues]
+
+    def _check_fresh(self, project: Project, data: Any) -> list[dict]:
+        self.integrations(fresh=True)  # page (re)load: re-read herdr integrations
+        return self.check(project, data)
 
     def models(self) -> dict:
         if self._models_cache is None:
@@ -292,7 +302,7 @@ class UIServer:
         return {"name": project.name, "root": str(project.root), "exists": text is not None,
                 "version": digest(text) if text is not None else None, "data": data,
                 "parse_error": parse_error, "running": running,
-                "issues": self.check(project, data) if data is not None else [],
+                "issues": self._check_fresh(project, data) if data is not None else [],
                 "draft": self.load_draft(project)}
 
     # ---- draft: an unfinished config kept outside the project (config.yaml stays valid)
