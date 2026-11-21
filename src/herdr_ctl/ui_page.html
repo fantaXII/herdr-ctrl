@@ -312,6 +312,10 @@ async function openProject(name) {
       return;
     }
     S.data = cfg.data; normalize(S.data); S.saved = clone(S.data);
+    if (!cfg.exists) {  // starter config for a project without config.yaml: nothing to lose yet
+      for (const t of Object.values(S.data.tabs)) for (const kind of ["agents", "shells"])
+        for (const [n, spec] of Object.entries((t && t[kind]) || {})) if (spec && typeof spec === "object") birth(n, spec);
+    }
     S.issues = cfg.issues; S.tab = Object.keys(S.data.tabs || {})[0] || null;
     S.pending = [];
     render();
@@ -414,14 +418,23 @@ function uniqueName(base) {
   for (let k = 2; ; k++) if (!used.has(base + k)) return base + k;
 }
 // Removing members also removes the flow steps that use them (after asking); flows left empty go too.
-function dropSteps(names) {
+// `asked`: the caller already confirmed (its message included stepsNote), so do not ask again.
+function stepHits(names) {
   const gone = new Set(names);
   const uses = (st) => gone.has(st.agent) || gone.has(st.shell);
   const hits = Object.entries(S.data.flows || {})
     .map(([fname, f]) => [fname, ((f && f.steps) || []).filter(uses).length]).filter(([, n]) => n);
+  return { uses, hits };
+}
+function stepsNote(names) {
+  const { hits } = stepHits(names);
+  return hits.length ? names.join(", ") + "을(를) 쓰는 " + hits.map(([f, n]) => "flow '" + f + "'의 단계 " + n + "개").join(", ") +
+    "도 함께 삭제합니다 (단계가 남지 않는 flow는 flow째 삭제)." : "";
+}
+function dropSteps(names, asked = false) {
+  const { uses, hits } = stepHits(names);
   if (!hits.length) return true;
-  const what = hits.map(([f, n]) => "flow '" + f + "'의 단계 " + n + "개").join(", ");
-  if (!confirm(names.join(", ") + "을(를) 쓰는 " + what + "도 함께 삭제합니다. 계속할까요?\n(단계가 남지 않는 flow는 flow째 삭제)")) return false;
+  if (!asked && !confirm(stepsNote(names) + "\n계속할까요?")) return false;
   for (const [fname] of hits) {
     const f = S.data.flows[fname];
     f.steps = f.steps.filter((st) => !uses(st));
@@ -548,19 +561,51 @@ function addTab() {
   const t = { orchestrator: { kind: "claude", model: "opus" }, agents: {}, shells: {} };
   d.tabs[id] = t;
   addAgents(id, t, 2);
-  t.shells[uniqueName(SHELL_BASE)] = {};
+  newShell(t);
   S.tab = id; changed();
 }
 
 // ------------------------------------------------------------ quick setup
 // new agents get hctrl init's defaults: claude/sonnet and opencode alternating,
 // role 구현 → 테스트 작성 → 리뷰 → 보조 and the matching name coder → tester → reviewer → helper (coder2 … if taken)
+// Members created by the editor remember how they looked when created, so removing an untouched one
+// (e.g. quick setup 2 → 4 → 2) needs no confirmation. Saved or edited members still ask.
+const born = new WeakMap();
+const birth = (name, spec) => { born.set(spec, { name, json: JSON.stringify(spec) }); return spec; };
+function newShell(t) { const name = uniqueName(SHELL_BASE); t.shells[name] = birth(name, {}); }
+function savedHas(tname, kind, name) {
+  if (!S.exists) return false;  // no config.yaml yet: the starter config is not "saved"
+  const st = S.saved && S.saved.tabs && S.saved.tabs[tname];
+  return !!(st && typeof st === "object" && st[kind] && Object.prototype.hasOwnProperty.call(st[kind], name));
+}
+function losesWork(tname, kind, name, spec) {
+  if (savedHas(tname, kind, name)) return "saved";
+  const b = born.get(spec);
+  return !b || b.name !== name || b.json !== JSON.stringify(spec) ? "edited" : null;
+}
+// Ask only for members whose removal loses something; true = go ahead
+function confirmLoss(tname, kind, names, what) {
+  const t = S.data.tabs[tname];
+  const saved = [], edited = [];
+  for (const n of names) {
+    const why = losesWork(tname, kind, n, t[kind][n]);
+    if (why === "saved") saved.push(n); else if (why === "edited") edited.push(n);
+  }
+  const flows = stepsNote(names);
+  if (!saved.length && !edited.length && !flows) return true;
+  const lines = [];
+  if (saved.length) lines.push(saved.join(", ") + ": 저장된 설정에 있는 " + what + "입니다.");
+  if (edited.length) lines.push(edited.join(", ") + ": 설정을 고친 " + what + "입니다.");
+  if (flows) lines.push(flows);
+  return confirm(lines.join("\n") + "\n삭제할까요?");
+}
 function addAgents(tname, t, upTo) {
   for (let i = Object.keys(t.agents).length + 1; i <= upTo; i++) {
     const slot = Math.min(i - 1, DEFAULT_ROLES.length - 1);
     const spec = i % 2 ? { kind: "claude", model: "sonnet" } : { kind: "opencode" };
     spec.role = DEFAULT_ROLES[slot];
-    t.agents[uniqueName(ROLE_NAMES[slot])] = spec;
+    const name = uniqueName(ROLE_NAMES[slot]);
+    t.agents[name] = birth(name, spec);
   }
 }
 function setAgentCount(tname, t, n) {
@@ -568,8 +613,8 @@ function setAgentCount(tname, t, n) {
   if (n > names.length) addAgents(tname, t, n);
   else if (n < names.length) {
     const gone = names.slice(n);
-    if (!confirm(gone.join(", ") + "을(를) 삭제할까요? (설정한 내용도 함께 사라집니다)")) return;
-    if (!dropSteps(gone)) return;
+    if (!confirmLoss(tname, "agents", gone, "agent")) return;  // one dialog, flow steps included
+    dropSteps(gone, true);
     for (const g of gone) delete t.agents[g];
   } else return;
   changed();
@@ -584,10 +629,14 @@ function setOrch(tname, t, on) {
   return true;
 }
 function setShells(tname, t, on) {
-  if (on) t.shells[uniqueName(SHELL_BASE)] = {};
+  if (on) newShell(t);
   else {
     const gone = Object.keys(t.shells);
-    if (!confirm("쉘 창 " + gone.join(", ") + "을(를) 삭제할까요?") || !dropSteps(gone)) return false;
+    // a shell has no settings of its own: ask only when it is in the saved config (flow steps: dropSteps asks)
+    const saved = gone.some((n) => savedHas(tname, "shells", n)), flows = stepsNote(gone);
+    if ((saved || flows) && !confirm([saved ? "쉘 창 " + gone.join(", ") + "은(는) 저장된 설정에 있습니다." : "", flows]
+      .filter(Boolean).join("\n") + "\n삭제할까요?")) return false;
+    dropSteps(gone, true);
     t.shells = {};
   }
   changed();
@@ -748,7 +797,7 @@ function renderShells(tname, t) {
     h("span", { class: "muted small" }, "bash 창"),
     h("button", { class: "danger", onclick: () => { if (dropSteps([name])) { delete t.shells[name]; changed(); } } }, "삭제")));
   return h("div", { class: "card" }, h("h3", {}, "쉘 창 (선택)", h("span", { class: "grow" }),
-    h("button", { onclick: () => { t.shells[uniqueName(SHELL_BASE)] = {}; changed(); } }, "+ 쉘")),
+    h("button", { onclick: () => { newShell(t); changed(); } }, "+ 쉘")),
     desc("빌드나 테스트 명령을 돌릴 bash 창입니다. flow의 shell 단계가 여기서 실행되고, herdr에서는 ",
       code((t.title || tname) + "-build"), " 탭에 따로 모입니다."),
     rows.length ? rows : h("p", { class: "muted small", style: "margin:0" }, "없음"));
