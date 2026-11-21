@@ -545,3 +545,52 @@ def test_integrations_reread_on_page_load(tmp_path, monkeypatch):
         assert [i for i in s.check(p, data) if "'claude' 연동" in i["message"]]
     finally:
         s.httpd.server_close()
+
+
+def _model_server(tmp_path, fn):
+    return UIServer("launcher", cwd=tmp_path, herdr=lambda session=None: FakeSessions(), which=always_found, models=fn)
+
+
+def test_opencode_models_load_in_background_and_are_cached_on_disk(tmp_path):
+    import threading
+    gate, calls = threading.Event(), []
+
+    def slow():
+        calls.append(1)
+        gate.wait(5)
+        return {"zai": ["zai/glm-5.3"]}
+    s = _model_server(tmp_path, slow)
+    try:
+        m = s.models(wait=0)
+        assert m["opencode_status"] == "loading" and m["opencode"] == {}
+        gate.set()
+        m = s.models(wait=5)
+        assert m["opencode_status"] == "ready" and m["opencode"] == {"zai": ["zai/glm-5.3"]}
+        assert s.models_cache_path().exists()
+    finally:
+        s.httpd.server_close()
+    # a new server (next `hctrl ui`) starts from the disk cache without running opencode
+    s2 = _model_server(tmp_path, lambda: calls.append(2) or {})
+    try:
+        assert s2.models(wait=0)["opencode"] == {"zai": ["zai/glm-5.3"]} and 2 not in calls
+    finally:
+        s2.httpd.server_close()
+
+
+def test_failed_model_list_is_not_kept_and_can_be_retried(tmp_path):
+    results = [{}, {"anthropic": ["anthropic/claude-sonnet-5-5"]}]
+    s = _model_server(tmp_path, lambda: results.pop(0))
+    try:
+        m = s.models(wait=5)
+        assert m["opencode_status"] == "failed" and m["opencode"] == {}
+        assert not s.models_cache_path().exists()
+        s.refresh_models(force=True)
+        m = s.models(wait=5)
+        assert m["opencode_status"] == "ready" and "anthropic" in m["opencode"]
+    finally:
+        s.httpd.server_close()
+
+
+def test_models_refresh_endpoint(client):
+    st, m = client.json("POST", "/api/models/refresh", {})
+    assert st == 200 and m["opencode"] == {"zai": ["zai/glm-5.3"]} and m["opencode_status"] == "ready"

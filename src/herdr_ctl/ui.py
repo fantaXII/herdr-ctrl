@@ -37,6 +37,9 @@ COOKIE = "hctrl_ui"
 MAX_BODY = 1 << 20
 TOKEN_TTL_S = 120.0
 INTEGRATIONS_TTL_S = 15.0
+OPENCODE_TIMEOUT_S = 60
+MODELS_TTL_S = 24 * 3600   # the opencode model list cached on disk (refresh button in the page)
+MODELS_WAIT_S = 0.5        # a request waits this long for a list still loading (the page polls after)
 CLAUDE_MODELS = ["opus", "sonnet", "haiku"]
 # importlib.resources: works from a package dir and from inside hctrl.pyz alike
 PAGE = resources.files("herdr_ctl") / "ui_page.html"
@@ -57,9 +60,12 @@ def default_config(project: Project) -> dict:
 
 
 def opencode_models(run: Callable[..., Any] = subprocess.run) -> dict[str, list[str]]:
-    """`opencode models` → {provider: [provider/model, ...]} (empty when opencode is missing)."""
+    """`opencode models` → {provider: [provider/model, ...]} (empty when opencode is missing).
+
+    It can take 10-20 s (longer right after opencode plugins change), hence the generous timeout;
+    callers run it in the background."""
     try:
-        out = run(["opencode", "models"], capture_output=True, text=True, timeout=30).stdout
+        out = run(["opencode", "models"], capture_output=True, text=True, timeout=OPENCODE_TIMEOUT_S).stdout
     except (OSError, subprocess.TimeoutExpired):
         return {}
     grouped: dict[str, list[str]] = {}
@@ -132,7 +138,10 @@ class UIServer:
         self.herdr = herdr or (lambda session=None: Herdr(session=session))
         self.which = which or shutil.which
         self._models = models or opencode_models
-        self._models_cache: dict | None = None
+        # opencode model list: loaded in the background (idle → loading → ready | failed)
+        self._oc: dict[str, list[str]] = {}
+        self._oc_status = "idle"
+        self._oc_done = threading.Event()
         self._integrations: dict | None = None
         self._integrations_at = 0.0  # monotonic time of the last `herdr integration status`
         self._tokens: dict[str, float] = {}  # one-time link token -> expiry (monotonic)
@@ -150,6 +159,7 @@ class UIServer:
 
     # lifecycle
     def start(self) -> "UIServer":
+        self.refresh_models()  # warm up: `opencode models` is slow
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self._thread.start()
         return self
@@ -216,11 +226,60 @@ class UIServer:
         self.integrations(fresh=True)  # page (re)load: re-read herdr integrations
         return self.check(project, data)
 
-    def models(self) -> dict:
-        if self._models_cache is None:
-            self._models_cache = {"kinds": list(AGENT_KINDS), "claude": CLAUDE_MODELS,
-                                  "opencode": self._models()}
-        return self._models_cache
+    # ---- opencode model list
+    @staticmethod
+    def models_cache_path() -> Path:
+        from .project import state_home
+        return state_home() / "opencode-models.json"
+
+    def refresh_models(self, force: bool = False) -> None:
+        """Start loading the opencode model list unless a fresh one is cached (disk) or loading."""
+        with self._lock:
+            if self._oc_status == "loading":
+                return
+            if not force and self._oc_status == "ready":
+                return
+            if not self._oc:
+                try:
+                    d = json.loads(self.models_cache_path().read_text())
+                    if isinstance(d.get("providers"), dict) and d["providers"]:
+                        self._oc = d["providers"]  # stale or not, better than nothing while loading
+                        if not force and time.time() - float(d.get("at") or 0) < MODELS_TTL_S:
+                            self._oc_status = "ready"
+                            return
+                except (OSError, ValueError, AttributeError, TypeError):
+                    pass
+            self._oc_status = "loading"
+            self._oc_done.clear()
+        threading.Thread(target=self._load_models, daemon=True).start()
+
+    def _load_models(self) -> None:
+        try:
+            got = self._models()
+        except Exception:
+            got = {}
+        with self._lock:
+            if got:
+                self._oc, self._oc_status = got, "ready"
+                try:
+                    p = self.models_cache_path()
+                    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    tmp = p.with_suffix(".tmp")
+                    tmp.write_text(json.dumps({"at": time.time(), "providers": got}))
+                    os.replace(tmp, p)
+                except OSError:
+                    pass
+            else:  # failed: keep an older list if there is one; never cache an empty result
+                self._oc_status = "ready" if self._oc else "failed"
+            self._oc_done.set()
+
+    def models(self, wait: float = MODELS_WAIT_S) -> dict:
+        if self._oc_status == "idle":  # first use; a failure is retried only on request (↻ / 다시 시도)
+            self.refresh_models()
+        if self._oc_status == "loading" and wait:
+            self._oc_done.wait(wait)
+        return {"kinds": list(AGENT_KINDS), "claude": CLAUDE_MODELS, "opencode": self._oc,
+                "opencode_status": self._oc_status}
 
     # -------------------------------------------------------------- API
     def api(self, method: str, path: str, body: Any) -> Any:
@@ -237,6 +296,9 @@ class UIServer:
             if method == "POST":
                 return self.add_project(body)
         if parts == ["models"] and method == "GET":
+            return self.models()
+        if parts == ["models", "refresh"] and method == "POST":
+            self.refresh_models(force=True)
             return self.models()
         if parts == ["open"] and method == "POST":
             return self.open(body)

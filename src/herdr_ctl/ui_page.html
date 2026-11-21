@@ -407,6 +407,7 @@ async function openProject(name) {
     const [cfg, models] = await Promise.all([api("GET", "/api/project/" + encodeURIComponent(name)),
                                             S.models ? Promise.resolve(S.models) : api("GET", "/api/models")]);
     S.models = models;
+    if (models.opencode_status === "loading") pollModels();
     S.project = name; S.version = cfg.version; S.running = cfg.running; S.exists = cfg.exists; S.root = cfg.root;
     if (cfg.parse_error || !cfg.data || typeof cfg.data !== "object") {
       $("app").replaceChildren(h("section", {}, h("h2", {}, name),
@@ -691,7 +692,15 @@ function modelControl(spec, onChange) {
     const prov = value.includes("/") ? value.split("/")[0] : "";
     const listed = prov && providers[prov] && providers[prov].includes(value);
     const any = Object.keys(providers).length > 0;
-    if (!any || typing.has(spec) || (value && !listed)) return textBox("제공자/모델", any);
+    const st = S.models.opencode_status;
+    const reload = h("button", { class: "link", title: "opencode models를 다시 실행해 목록을 새로 받습니다 (10~20초)", onclick: refreshModels }, "↻");
+    const note = st === "loading" ? h("span", { class: "muted small" }, "모델 목록 불러오는 중…")
+      : st === "failed" && !any ? h("button", { class: "link", onclick: refreshModels,
+          title: "opencode models가 실패했거나 너무 오래 걸렸습니다" }, "목록을 불러오지 못했습니다 · 다시 시도") : null;
+    if (!any || typing.has(spec) || (value && !listed)) {
+      const box = textBox("제공자/모델", any);
+      return note ? h("div", {}, box, note) : box;
+    }
     const provSel = h("select", { "aria-label": "제공자", onchange: (e) => {
       const p = e.target.value; pick(p === "__custom" ? p : p ? providers[p][0] : ""); } },
       h("option", { value: "" }, "(기본)"),
@@ -699,9 +708,31 @@ function modelControl(spec, onChange) {
       h("option", { value: "__custom" }, "직접 입력…"));
     const modelSel = prov ? h("select", { "aria-label": "모델", onchange: (e) => pick(e.target.value) },
       providers[prov].map((m) => h("option", { value: m, selected: m === value }, m.slice(prov.length + 1)))) : null;
-    return h("div", { class: "row" }, provSel, modelSel);
+    return h("div", { class: "row" }, provSel, modelSel, st === "loading" ? note : reload);
   }
   return textBox("모델 (선택)", false);
+}
+// opencode model list: loaded by the server in the background; poll until it settles
+let modelPoll = null;
+function pollModels() {
+  if (modelPoll) return;
+  modelPoll = setTimeout(async () => {
+    modelPoll = null;
+    try {
+      const m = await api("GET", "/api/models");
+      const was = JSON.stringify(S.models);
+      S.models = m;
+      if (S.data && JSON.stringify(m) !== was) rerenderKeepFocus();
+      if (m.opencode_status === "loading") pollModels();
+    } catch (e) { pollModels(); }
+  }, 2000);
+}
+async function refreshModels() {
+  try {
+    S.models = await api("POST", "/api/models/refresh", {});
+    rerenderKeepFocus();
+    if (S.models.opencode_status === "loading") pollModels();
+  } catch (e) { toast("모델 목록 요청 실패: " + e.message); }
 }
 function setModel(spec, v) {
   if (v === undefined) delete spec.model; else spec.model = v;
