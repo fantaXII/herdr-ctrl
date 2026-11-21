@@ -53,7 +53,7 @@ class FakeHerdr:
         self.on_prompt: dict[str, Callable] = {}
         self.default_on_prompt: Callable | None = None
         self.start_status: dict[str, str] = {}  # name -> status after start (e.g. blocked)
-        self.background_patterns = ["herdr_ctl.cli watch"]
+        self.background_patterns = [r"herdr_ctl\.cli\b.*\swatch\b"]  # regexes
         self._n = 0
 
     def _id(self) -> int:
@@ -151,7 +151,7 @@ class FakeHerdr:
         p = self._pane(pane_id)
         self.calls.append(("pane_run", pane_id, command))
         p.output += f"$ {command}\n"
-        if any(pat in command for pat in self.background_patterns):
+        if any(re.search(pat, command) for pat in self.background_patterns):
             p.busy = True  # long-running (e.g. hctrl watch): recorded, not executed
             return
         proc = subprocess.run(["bash", "-c", command], cwd=p.cwd, capture_output=True, text=True)

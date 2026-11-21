@@ -110,7 +110,13 @@ def cmd_open(name: str | None, project: Project | None = None) -> int:
         for line in up(ctx).lines():
             print("  " + line)
     else:
+        from .up import ensure_control, ensure_workspace
         from .watch import detect
+        try:  # the _hc tab may have been closed: bring it (and its watcher) back
+            ensure_control(ctx, ensure_workspace(ctx), start_watch=True)
+            ctx.state.save()
+        except HerdrError as e:
+            print(f"_hc 탭을 다시 만들지 못했습니다: {e} (hctrl up으로 다시 시도)")
         pending = detect(ctx)
         if pending:
             print(f"설정 변경 {len(pending)}건이 반영 대기 중입니다 (세션 안에서 hctrl changes).")

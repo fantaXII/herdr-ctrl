@@ -115,6 +115,14 @@ def test_open_starts_headless_then_up_then_attach(tmp_path, monkeypatch):
     n = len(fake.calls)
     assert cli.main(["projA"]) == 0
     assert not any(c[0] == "start_server" for c in fake.calls[n:])
+    assert not any(c[0] == "pane_run" for c in fake.calls[n:])  # watcher still running: left alone
+    # the user closed the _hc tab: the next open brings it back with its watcher
+    fake.tab_close(next(t["tab_id"] for t in fake.tab_list() if t["label"] == "_hc"))
+    n = len(fake.calls)
+    assert cli.main(["projA"]) == 0
+    assert any(t["label"] == "_hc" for t in fake.tab_list())
+    assert any(c[0] == "pane_run" and "watch" in c[2] for c in fake.calls[n:])
+    assert "x1" in fake.agents
 
 
 def test_open_aborts_on_config_error(tmp_path, monkeypatch, capsys):
