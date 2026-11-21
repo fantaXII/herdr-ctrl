@@ -487,8 +487,10 @@ class UIServer:
         return m
 
     def get_role(self, project: Project, name: str) -> dict:
-        one, detail = roles_mod.effective_role(project, self._member(project, name))
-        return {"one": one, "detail": detail}
+        m = self._member(project, name)
+        one, detail = roles_mod.effective_role(project, m)
+        cfg, _ = check_file(project.config_path, which=self.which)
+        return {"one": one, "detail": detail, "type": m.type, "auto": roles_mod.auto_rules(cfg, m)}
 
     def put_role(self, project: Project, name: str, body: dict) -> dict:
         m = self._member(project, name)

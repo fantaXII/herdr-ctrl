@@ -246,9 +246,12 @@ body.nohelp .form { grid-template-columns: max-content minmax(180px, 420px); }
 </dialog>
 <dialog id="roleDialog">
   <h3 style="margin-top:0" id="roleTitle">역할</h3>
-  <label class="field">한 줄 역할 (역할 파일에 저장되며 표의 '역할'보다 우선합니다)<input id="roleOne"></label>
-  <p></p>
-  <label class="field">상세 프롬프트 (.herdr-flow/roles/&lt;agent&gt;.md)<textarea id="roleDetail" rows="14"></textarea></label>
+  <label class="field"><span id="roleOneLabel">한 줄 역할</span><input id="roleOne"></label>
+  <p class="muted small" id="roleOneHelp" style="margin:4px 0 12px"></p>
+  <label class="field">상세 프롬프트 (.herdr-flow/roles/&lt;agent&gt;.md)<textarea id="roleDetail" rows="12"
+    placeholder="이 멤버만의 일을 적습니다: 담당 범위, 하지 말아야 할 것, 완료 기준 등"></textarea></label>
+  <details class="adv" style="margin-top:10px"><summary>hctrl이 자동으로 넣는 규칙 (적지 않아도 됩니다)</summary>
+    <pre id="roleAuto" class="small" style="white-space:pre-wrap;max-height:220px;overflow:auto;margin:6px 0 0"></pre></details>
   <p class="row" style="justify-content:flex-end;margin-bottom:0">
     <button id="roleCancel">취소</button><button class="primary" id="roleSave">저장</button>
   </p>
@@ -1075,7 +1078,7 @@ function renderOrch(tname, t) {
         onchange: (e) => { const v = e.target.value.trim(); if (v) o.goal = v; else delete o.goal; changed(); } }),
       "orchestrator가 늘 염두에 둘 목표 한 줄입니다 (선택)."),
     frow("역할 상세", h("button", { onclick: () => editRole(oname) }, "역할 상세 편집"),
-      "긴 지시를 씁니다. 저장한 뒤 편집할 수 있습니다.")));
+      "orchestrator 자신의 일하는 방식을 씁니다. 작업자 분담표는 각 agent의 한 줄 역할로 자동으로 만들어집니다. 저장한 뒤 편집할 수 있습니다.")));
   // rarely changed settings stay folded; non-default values are summarized on the folded line
   const changedBits = [o.permission && o.permission !== "readonly" ? "권한 " + o.permission : null,
     role !== "confirm" ? "역할 정책 " + role : null, unatt !== "off" ? "무인 모드 " + unatt : null].filter(Boolean);
@@ -1114,7 +1117,8 @@ function renderAgents(tname, t) {
           t.agents = renameKey(t.agents, name, nv); renameMember(name, nv); changed(); } }),
         h("button", { title: "상세 프롬프트", onclick: () => editRole(name) }, "상세"),
         h("button", { class: "danger", title: "삭제", onclick: () => { if (dropSteps([name])) { delete t.agents[name]; changed(); } } }, "✕")),
-      row("역할", h("input", { value: spec.role || "", placeholder: "한 줄 역할", "aria-label": "역할", onchange: (e) => {
+      row("역할", h("input", { value: spec.role || "", placeholder: "한 줄 역할 (예: 코드 작성, 테스트 코드, 문서)", "aria-label": "역할",
+        title: "orchestrator가 일을 나눌 때 보는 한 줄입니다. 보고·질문 방식은 hctrl이 자동으로 넣습니다", onchange: (e) => {
         const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } }), "role"),
       row("종류", kindSelect(spec), "kind"),
       row("모델", modelControl(spec, (v) => setModel(spec, v)), "model"),
@@ -1413,7 +1417,12 @@ async function editRole(name) {
   try {
     const r = await api("GET", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name));
     $("roleTitle").textContent = "역할: " + name;
-    $("roleOne").value = r.one; $("roleDetail").value = r.detail;
+    $("roleOne").value = r.one; $("roleDetail").value = r.detail; $("roleAuto").textContent = r.auto || "";
+    const orch = r.type === "orch";
+    $("roleOneLabel").textContent = orch ? "프로젝트 목표 (한 줄)" : "한 줄 역할";
+    $("roleOneHelp").textContent = orch
+      ? "역할 파일에 저장되며 카드의 '프로젝트 목표'보다 우선합니다. 작업자 분담은 각 agent의 한 줄 역할로 자동 전달되니 여기에 다시 적지 않아도 됩니다."
+      : "역할 파일에 저장되며 카드의 '역할'보다 우선합니다. orchestrator가 일을 나눌 때 이 한 줄을 보므로, 무엇을 맡는지 분명하게 적으세요. 다른 멤버의 일이나 보고·질문 방식은 적지 않아도 됩니다.";
     const dlg = $("roleDialog");
     $("roleCancel").onclick = () => dlg.close();
     $("roleSave").onclick = async () => {

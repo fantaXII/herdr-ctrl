@@ -283,7 +283,8 @@ def test_role_detail_roundtrip_records_history(client, tmp_path):
     st, role = client.json("GET", "/api/project/projA/role/x1")
     assert st == 200 and role["one"] == "구현"
     st, role = client.json("PUT", "/api/project/projA/role/x1", {"one": "결제 구현", "detail": "## 범위\n- 결제"})
-    assert st == 200 and role == {"one": "결제 구현", "detail": "## 범위\n- 결제"}
+    assert st == 200 and (role["one"], role["detail"]) == ("결제 구현", "## 범위\n- 결제")
+    assert role["type"] == "agent" and "결정 필요:" in role["auto"]
     assert len(R.history(p, "x1")) == 1
     assert client.json("GET", "/api/project/projA/role/nobody")[0] == 404
     assert client.json("GET", "/api/project/projA/role/xbuild")[0] == 404  # shells have no role

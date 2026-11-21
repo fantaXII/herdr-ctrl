@@ -153,6 +153,37 @@ OUT_RULES = """## 작업 규칙
 - 진행하려면 꼭 답이 필요한 질문이 있으면, 결과 파일 첫 줄에 `## QUESTION`을 쓰고 그 아래에 질문을 쓴 뒤 턴을 끝내세요. 답은 hctrl이 다음 지시로 전달합니다. 질문이 아닌 결과에는 이 제목을 쓰지 마세요.
 """
 
+# Tabs with an orchestrator: decisions go back to it inside the normal result, not as `## QUESTION`
+# (which reaches the user unless the tab runs unattended, and stops a whole flow).
+DECISION_RULES = """## 결정이 필요할 때
+- 이 탭의 지휘자는 '{orch}'입니다. 지시는 지휘자에게서 오고, 결과 파일이 곧 지휘자에게 하는 보고입니다. 따로 연락할 방법은 없습니다.
+- 설계·방향·범위·우선순위처럼 판단이 필요한 결정은 임의로 내리지 마세요. 거기까지 한 작업을 정리하고, 결과 파일에 `결정 필요:` 항목으로 선택지와 각각의 장단점(추천이 있으면 추천과 이유)을 적은 뒤 턴을 끝내세요. 지휘자가 결정해 다음 지시로 알려 줍니다.
+- `## QUESTION`은 결정이 아니라, 작업을 진행하는 데 꼭 필요한 정보(계정, 비밀번호, 외부 승인 등)를 물을 때만 쓰세요.
+"""
+
+ORCH_DECISION_RULES = """## 작업자의 결정 요청
+- 작업자는 판단이 필요한 결정을 직접 내리지 않고, 결과 파일의 `결정 필요:` 항목으로 당신에게 넘깁니다.
+- 결정이 생길 만한 일은 flow(`hctrl run`)보다 `hctrl send`로 하나씩 맡기세요. flow는 중간 단계의 `결정 필요:`에서 멈추지 않고 다음 단계로 넘어갑니다.
+- 결과 파일에 `결정 필요:`가 있으면 결정하고, 결정과 이유를 담아 다음 지시를 보내세요. 사용자만 정할 수 있는 사안(비용, 외부 공개, 되돌릴 수 없는 작업 등)이면 사용자에게 보고하세요.
+"""
+
+
+def agent_rules(cfg: Config, m: Member) -> str:
+    """The fixed part of a work agent's brief (written by hctrl, not by the user)."""
+    tab = cfg.tab(m.tab)
+    text = OUT_RULES
+    if tab and tab.orchestrator:
+        text += "\n" + DECISION_RULES.format(orch=tab.orchestrator.name)
+    return text
+
+
+def auto_rules(cfg: Config, m: Member) -> str:
+    """What hctrl adds to `m`'s prompt on its own (shown in the UI so people need not write it)."""
+    if m.type == "orch":
+        return ("- 내 탭의 작업자 목록 (각자의 한 줄 역할 포함), 사용할 수 있는 flow\n"
+                "- hctrl 명령 사용법, 금지 사항, 작업 상한\n\n" + ORCH_DECISION_RULES)
+    return agent_rules(cfg, m)
+
 
 def render_agent_brief(project: Project, cfg: Config, m: Member, handoff: Path | None = None) -> Path:
     one, detail = effective_role(project, m)
@@ -164,7 +195,7 @@ def render_agent_brief(project: Project, cfg: Config, m: Member, handoff: Path |
         lines.append(f"이 탭의 지휘자(orchestrator)는 '{tab.orchestrator.name}'입니다. 지시는 hctrl을 통해 전달됩니다.")
     if detail:
         lines += ["", "## 상세 역할", detail]
-    lines += ["", OUT_RULES]
+    lines += ["", agent_rules(cfg, m)]
     if handoff:
         lines += ["## 인수인계", f"이전 작업 상태가 {handoff} 에 있습니다. 먼저 읽고 이어서 작업하세요."]
     path = project.var_dir / "briefs" / f"{m.name}.md"
@@ -218,6 +249,7 @@ def render_orchestrator_rules(project: Project, cfg: Config, tab: TabCfg,
         "- 직접 코드를 수정하지 않습니다.",
         "- timeout이 났다고 같은 지시를 다시 보내지 않습니다. 먼저 hctrl status로 확인합니다.",
         "- 같은 파일을 두 agent에게 동시에 맡기지 않습니다.",
+        "", ORCH_DECISION_RULES.rstrip(),
         "", "## 상한 (hctrl이 강제)",
         f"- hctrl ask 1회당 지시 {lim['max_steps_per_ask']}회, {lim['max_minutes_per_ask']}분, "
         f"같은 agent에게 같은 지시 반복 {lim['max_retries_per_agent']}회",
