@@ -1,0 +1,58 @@
+# Attach dist/hctrl.pyz (single-file hctrl, used by install.sh) to each GitHub Release.
+# `npm run release` (release-it) publishes the release; this workflow then builds and uploads.
+# To retry for an existing release: Actions -> release-pyz -> Run workflow (tags v2.0.0 and older are refused).
+name: release-pyz
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and attach to (e.g. v2.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  pyz:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Require zipapp support
+        run: |
+          # tags before selfcmd.py re-invoke `python -m herdr_ctl.cli`, which breaks inside a .pyz
+          [ -f src/herdr_ctl/selfcmd.py ] || { echo "$TAG predates single-file support; release a newer version"; exit 1; }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"   # the minimum hctrl supports
+
+      - name: Test
+        run: |
+          python -m pip install --quiet pytest "PyYAML>=6"
+          python -m pytest -q
+        env:
+          HC_SKIP_LIVE: "1"
+
+      - name: Build
+        run: python scripts/build_pyz.py
+
+      - name: Smoke test
+        run: |
+          out="$(python dist/hctrl.pyz --version)"
+          echo "$out"
+          [ "$out" = "hctrl (herdr_ctl) ${TAG#v}" ] || { echo "version mismatch with tag $TAG"; exit 1; }
+          HCTRL_URL="file://$PWD/dist/hctrl.pyz" HCTRL_BIN_DIR="$RUNNER_TEMP/bin" sh install.sh
+          "$RUNNER_TEMP/bin/hctrl" --version
+
+      - name: Upload to release
+        run: gh release upload "$TAG" dist/hctrl.pyz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

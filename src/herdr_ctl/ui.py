@@ -20,6 +20,7 @@ import threading
 import time
 import webbrowser
 from http.cookies import SimpleCookie
+from importlib import resources
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -35,7 +36,8 @@ COOKIE = "hctrl_ui"
 MAX_BODY = 1 << 20
 TOKEN_TTL_S = 120.0
 CLAUDE_MODELS = ["opus", "sonnet", "haiku"]
-PAGE = Path(__file__).with_name("ui_page.html")
+# importlib.resources: works from a package dir and from inside hctrl.pyz alike
+PAGE = resources.files("herdr_ctl") / "ui_page.html"
 
 
 def session_name(name: str) -> str:

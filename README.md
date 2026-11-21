@@ -23,17 +23,36 @@
 
 ## 설치
 
-herdr가 먼저 설치되어 있어야 합니다. 없으면 `hctrl init`이 설치 방법을 안내하고 종료합니다.
+**1. herdr** (먼저 설치해야 합니다. 없으면 `hctrl init`이 설치 방법을 안내하고 종료합니다)
 
 ```bash
 curl -fsSL https://herdr.dev/install.sh | sh   # 또는 brew install herdr / mise use -g herdr
 ```
 
+**2. hctrl** (명령 한 줄. python3 3.10 이상만 있으면 되고 pip, git은 필요 없습니다)
+
 ```bash
-cd ~/study/BackEnd/herdr_ctl
-pipx install -e .       # hctrl(=herdr_ctl) 명령 등록 (의존성: PyYAML)
-# 테스트: python3 -m pytest -q   (실제 claude까지: HC_LIVE_AGENT=1 python3 -m pytest -q)
+curl -fsSL https://raw.githubusercontent.com/fantaXII/herdr-ctrl/main/install.sh | sh
 ```
+
+- GitHub Releases의 `hctrl.pyz`(PyYAML까지 포함된 단일 실행 파일)를 `~/.local/bin/hctrl`에 설치합니다. `herdr_ctl`도 같은 명령입니다.
+- 특정 버전: `... | HCTRL_VERSION=v2.1.0 sh`
+- 설치 위치 변경: `... | HCTRL_BIN_DIR=~/bin sh`
+- 업데이트: 같은 명령을 다시 실행합니다.
+- 삭제: `rm ~/.local/bin/hctrl ~/.local/bin/herdr_ctl`
+- 직접 받아 써도 됩니다. Releases에서 `hctrl.pyz`를 받아 `chmod +x hctrl.pyz && ./hctrl.pyz --version`.
+
+### 개발용 설치 (소스 수정)
+
+```bash
+git clone https://github.com/fantaXII/herdr-ctrl.git && cd herdr-ctrl
+pipx install -e .       # hctrl(=herdr_ctl) 명령 등록, 소스 수정이 바로 반영됨 (의존성: PyYAML)
+# 테스트: python3 -m pytest -q   (실제 claude까지: HC_LIVE_AGENT=1 python3 -m pytest -q)
+# 단일 파일 빌드: python3 scripts/build_pyz.py  → dist/hctrl.pyz
+#   (같은 e2e를 pyz로: HC_TEST_PYZ=dist/hctrl.pyz python3 -m pytest -q tests/test_live.py)
+```
+
+릴리스(`npm run release`)로 GitHub Release가 만들어지면 `.github/workflows/release-pyz.yml`이 `hctrl.pyz`를 빌드해 그 Release에 첨부합니다.
 
 > 명령 이름이 `hc`가 아니라 `hctrl`인 이유: herdr 설치 스크립트가 `~/.local/bin/hc`(herdr-core)를 함께 설치하므로 이름이 겹칩니다. 그 `hc`는 이 도구와 무관합니다.
 

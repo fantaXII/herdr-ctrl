@@ -6,7 +6,6 @@ import re
 import shlex
 import time
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from .config import CONTROL_TAB, Config, Member, TabCfg, agent_args
 from .herdr import HerdrError
 from .layout import TabGroup, group_tab, source_slot
 from .project import Project
+from .selfcmd import self_cmd
 from .roles import render_agent_brief, render_orchestrator_rules, role_fingerprint
 from .state import State, digest, lock_holder
 
@@ -53,7 +53,7 @@ class UpReport:
 
 def hc_command() -> list[str]:
     """How to invoke hctrl from inside panes (works even when not pip-installed)."""
-    return [sys.executable, "-m", "herdr_ctl.cli"]
+    return self_cmd()
 
 
 def fingerprint(project: Project, m: Member) -> dict:

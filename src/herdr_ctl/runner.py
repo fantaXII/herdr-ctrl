@@ -6,13 +6,13 @@ import re
 import shlex
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 from .config import Flow, Step
 from .herdr import READY_STATES, HerdrError, agent_status
 from .project import Project
+from .selfcmd import self_cmd
 from .state import LockBusy, acquire, proc_start, read_json, release, same_process_alive, write_json
 from . import unattended as ua
 
@@ -646,7 +646,7 @@ def threading_main() -> bool:
 # -------------------------------------------------------------- control
 def spawn_worker(project: Project, rec: dict, resume: bool = False, resend: bool = False) -> int:
     log = run_dir(project, rec["id"]) / "worker.log"
-    cmd = [sys.executable, "-m", "herdr_ctl.cli", "--project", str(project.root), "_worker", rec["id"]]
+    cmd = [*self_cmd(), "--project", str(project.root), "_worker", rec["id"]]
     if resume:
         cmd.append("--resume")
     if resend:

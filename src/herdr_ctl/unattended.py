@@ -16,11 +16,11 @@ import json
 import os
 import re
 import shlex
-import sys
 import time
 from pathlib import Path
 
 from .project import Project, state_home
+from .selfcmd import self_cmd
 from .state import file_lock, lock_holder, proc_start, read_json, same_process_alive, write_json
 
 KINDS = ("text", "choice", "permission")
@@ -347,7 +347,7 @@ def hook_settings(ctx, tab, m) -> Path | None:
     if m.type != "agent" or m.kind != "claude" or tab.unattended == "off":
         return None
     src = str(Path(__file__).resolve().parent.parent)
-    cmd = (f"PYTHONPATH={shlex.quote(src)} {shlex.quote(sys.executable)} -m herdr_ctl.cli "
+    cmd = (f"PYTHONPATH={shlex.quote(src)} {shlex.join(self_cmd())} "
            f"--project {shlex.quote(str(ctx.project.root))} _perm-hook {shlex.quote(m.name)}")
     matcher = "AskUserQuestion" if tab.unattended == "questions" else "*"
     timeout = int(tab.policy["answer_timeout"]) + 60

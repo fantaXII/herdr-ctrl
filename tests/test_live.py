@@ -66,11 +66,18 @@ def live_project(tmp_path_factory):
         pass
 
 
+PYZ = os.environ.get("HC_TEST_PYZ")  # e.g. dist/hctrl.pyz: run the same end-to-end against the zipapp
+
+
 def hctrl(root, *args, timeout=60):
     env = dict(os.environ)
-    env["PYTHONPATH"] = SRC
     env["HC_CONFIG_HOME"] = str(root / ".cfghome")
-    return subprocess.run([sys.executable, "-m", "herdr_ctl.cli", "--project", str(root), *args],
+    if PYZ:
+        cmd = [sys.executable, str(Path(PYZ).resolve())]
+    else:
+        env["PYTHONPATH"] = SRC
+        cmd = [sys.executable, "-m", "herdr_ctl.cli"]
+    return subprocess.run([*cmd, "--project", str(root), *args],
                           capture_output=True, text=True, env=env, timeout=timeout, cwd=str(root))
 
 
