@@ -34,3 +34,12 @@ def test_ui_role_shows_auto_rules(ctx):
     assert r["type"] == "agent" and "결정 필요:" in r["auto"]
     r = srv.get_role(ctx.project, "x-orch")
     assert r["type"] == "orch" and "작업자의 결정 요청" in r["auto"]
+
+
+def test_ui_role_summary_counts_prompt_lines(ctx):
+    srv = UIServer("session", start=ctx.project, which=always_found)
+    ctx.project.roles_dir.mkdir(parents=True, exist_ok=True)
+    (ctx.project.roles_dir / "x1.md").write_text("# 역할: 구현\n\n- a 하지 말 것\n\n- c는 x 툴로\n")
+    roles = srv.get_config(ctx.project)["roles"]
+    assert roles["x1"] == 2 and roles["x2"] == 0 and roles["x-orch"] == 0
+    assert "xbuild" not in roles  # shells have no prompt

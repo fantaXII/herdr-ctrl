@@ -197,6 +197,8 @@ code { background: var(--chip); border-radius: 4px; padding: 0 5px; font-size: 1
 .acard .arow { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 6px; align-items: center; font-size: 12px; }
 .acard .arow > span { color: var(--muted); }
 .acard .arow select, .acard .arow input { width: 100%; }
+.rolebtn { width: 100%; display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-top: 2px; }
+.rolebtn .rstat { font-size: 12px; color: var(--muted); }
 .shell-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 details.adv { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; margin-top: 10px; }
 details.adv > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); }
@@ -248,7 +250,7 @@ body.nohelp .form { grid-template-columns: max-content minmax(180px, 420px); }
   <h3 style="margin-top:0" id="roleTitle">역할</h3>
   <label class="field"><span id="roleOneLabel">한 줄 역할</span><input id="roleOne"></label>
   <p class="muted small" id="roleOneHelp" style="margin:4px 0 12px"></p>
-  <label class="field">상세 프롬프트 (.herdr-flow/roles/&lt;agent&gt;.md)<textarea id="roleDetail" rows="12"
+  <label class="field">역할 상세 (prompt): 이 멤버에게 그대로 전달되는 지시문 (.herdr-flow/roles/&lt;이름&gt;.md)<textarea id="roleDetail" rows="12"
     placeholder="이 멤버만의 일을 적습니다: 담당 범위, 하지 말아야 할 것, 완료 기준 등"></textarea></label>
   <details class="adv" style="margin-top:10px"><summary>hctrl이 자동으로 넣는 규칙 (적지 않아도 됩니다)</summary>
     <pre id="roleAuto" class="small" style="white-space:pre-wrap;max-height:220px;overflow:auto;margin:6px 0 0"></pre></details>
@@ -304,7 +306,7 @@ const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const TAB_RE = /^[A-Za-z][A-Za-z0-9_-]{0,24}$/;
 
 // -------------------------------------------------------------------- state
-const S = { tabOrigin: {}, pending: [], mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
+const S = { roles: {}, tabOrigin: {}, pending: [], mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
             running: false, tab: null, issues: [], checkTimer: null, checkSeq: 0,
             view: "tab", adv: new Set(), issuesOpen: true,
             draftJson: null, draftAt: null, ackWarn: "[]",
@@ -411,7 +413,7 @@ async function openProject(name) {
                                             S.models ? Promise.resolve(S.models) : api("GET", "/api/models")]);
     S.models = models;
     if (models.opencode_status === "loading") pollModels();
-    S.project = name; S.version = cfg.version; S.running = cfg.running; S.exists = cfg.exists; S.root = cfg.root;
+    S.project = name; S.version = cfg.version; S.running = cfg.running; S.roles = cfg.roles || {}; S.exists = cfg.exists; S.root = cfg.root;
     if (cfg.parse_error || !cfg.data || typeof cfg.data !== "object") {
       $("app").replaceChildren(h("section", {}, h("h2", {}, name),
         h("p", { class: "notice" }, "config.yaml을 읽을 수 없습니다: " + (cfg.parse_error || "형식 오류")),
@@ -1077,7 +1079,7 @@ function renderOrch(tname, t) {
       h("input", { value: o.goal || "", placeholder: "예: 로그인/결제 모듈 개발", "aria-label": "프로젝트 목표",
         onchange: (e) => { const v = e.target.value.trim(); if (v) o.goal = v; else delete o.goal; changed(); } }),
       "orchestrator가 늘 염두에 둘 목표 한 줄입니다 (선택)."),
-    frow("역할 상세", h("button", { onclick: () => editRole(oname) }, "역할 상세 편집"),
+    frow("역할 상세 (prompt)", roleButton(oname),
       "orchestrator 자신의 일하는 방식을 씁니다. 작업자 분담표는 각 agent의 한 줄 역할로 자동으로 만들어집니다. 저장한 뒤 편집할 수 있습니다.")));
   // rarely changed settings stay folded; non-default values are summarized on the folded line
   const changedBits = [o.permission && o.permission !== "readonly" ? "권한 " + o.permission : null,
@@ -1115,14 +1117,14 @@ function renderAgents(tname, t) {
           if (!NAME_RE.test(nv)) { e.target.value = name; toast("이름: 소문자로 시작, 소문자/숫자/_- 32자 이하"); return; }
           if (nv !== name && allMembers(S.data).some((m) => m.name === nv)) { e.target.value = name; toast("이미 있는 이름입니다"); return; }
           t.agents = renameKey(t.agents, name, nv); renameMember(name, nv); changed(); } }),
-        h("button", { title: "상세 프롬프트", onclick: () => editRole(name) }, "상세"),
         h("button", { class: "danger", title: "삭제", onclick: () => { if (dropSteps([name])) { delete t.agents[name]; changed(); } } }, "✕")),
       row("역할", h("input", { value: spec.role || "", placeholder: "한 줄 역할 (예: 코드 작성, 테스트 코드, 문서)", "aria-label": "역할",
         title: "orchestrator가 일을 나눌 때 보는 한 줄입니다. 보고·질문 방식은 hctrl이 자동으로 넣습니다", onchange: (e) => {
         const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } }), "role"),
       row("종류", kindSelect(spec), "kind"),
       row("모델", modelControl(spec, (v) => setModel(spec, v)), "model"),
-      row("권한", permSelect(spec, "edit"), "permission"));
+      row("권한", permSelect(spec, "edit"), "permission"),
+      roleButton(name));
   });
   return h("div", { class: "card k agent" }, h("h3", {}, h("span", { class: "dot agent" }), h("span", { class: "kname" }, "작업 agent"),
       h("span", { class: "muted small" }, cards.length + "개"), h("span", { class: "grow" }),
@@ -1412,11 +1414,18 @@ function showApply() {
 }
 
 // ------------------------------------------------------------------- roles
+// "역할 상세 (prompt)": the member's own instructions, sent to it as part of its prompt
+function roleButton(name) {
+  const n = S.roles[name];
+  const stat = n === undefined ? "저장 후 편집" : n ? n + "줄 작성됨" : "비어 있음";
+  return h("button", { class: "rolebtn", title: "이 멤버에게 그대로 전달되는 지시문 (.herdr-flow/roles/" + name + ".md)",
+    onclick: () => editRole(name) }, h("span", {}, "✎ 역할 상세 (prompt)"), h("span", { class: "rstat" }, stat));
+}
 async function editRole(name) {
   if (dirty() || !S.exists) { toast("먼저 저장하세요 (역할 상세는 저장된 설정의 agent에만 쓸 수 있습니다)"); return; }
   try {
     const r = await api("GET", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name));
-    $("roleTitle").textContent = "역할: " + name;
+    $("roleTitle").textContent = "역할 상세 (prompt): " + name;
     $("roleOne").value = r.one; $("roleDetail").value = r.detail; $("roleAuto").textContent = r.auto || "";
     const orch = r.type === "orch";
     $("roleOneLabel").textContent = orch ? "프로젝트 목표 (한 줄)" : "한 줄 역할";
@@ -1430,6 +1439,8 @@ async function editRole(name) {
         await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name),
           { one: $("roleOne").value, detail: $("roleDetail").value });
         dlg.close();
+        S.roles[name] = $("roleDetail").value.split("\n").filter((l) => l.trim()).length;
+        render();
         toast("역할을 저장했습니다.");
         if (S.running) refreshChanges(true);
       } catch (e) { toast(e.message); }

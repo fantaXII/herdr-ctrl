@@ -365,7 +365,23 @@ class UIServer:
                 "version": digest(text) if text is not None else None, "data": data,
                 "parse_error": parse_error, "running": running,
                 "issues": self._check_fresh(project, data) if data is not None else [],
-                "draft": self.load_draft(project)}
+                "draft": self.load_draft(project), "roles": self.role_summary(project)}
+
+    def role_summary(self, project: Project) -> dict:
+        """{member: lines in its role detail (prompt)} for the saved config's agents and orchestrators."""
+        cfg, _ = check_file(project.config_path, which=self.which)
+        if cfg is None:
+            return {}
+        out = {}
+        for t in cfg.tabs:
+            for m in t.members:
+                if m.is_agent:
+                    try:
+                        detail = roles_mod.effective_role(project, m)[1]
+                    except (OSError, RuntimeError):
+                        detail = ""
+                    out[m.name] = len([ln for ln in detail.splitlines() if ln.strip()])
+        return out
 
     # ---- draft: an unfinished config kept outside the project (config.yaml stays valid)
     @staticmethod
