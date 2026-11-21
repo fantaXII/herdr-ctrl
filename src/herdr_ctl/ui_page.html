@@ -301,7 +301,7 @@ const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const TAB_RE = /^[A-Za-z][A-Za-z0-9_-]{0,24}$/;
 
 // -------------------------------------------------------------------- state
-const S = { pending: [], mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
+const S = { tabOrigin: {}, pending: [], mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
             running: false, tab: null, issues: [], checkTimer: null, checkSeq: 0,
             view: "tab", adv: new Set(), issuesOpen: true,
             draftJson: null, draftAt: null, ackWarn: "[]",
@@ -415,7 +415,7 @@ async function openProject(name) {
         h("p", {}, "파일을 직접 고친 뒤 새로고침하세요.")));
       return;
     }
-    S.data = cfg.data; normalize(S.data); S.saved = clone(S.data);
+    S.data = cfg.data; normalize(S.data); S.saved = clone(S.data); S.tabOrigin = {};
     S.draftJson = null; S.draftAt = null;
     if (cfg.draft) {  // an unfinished draft wins over config.yaml until it is saved or discarded
       S.data = cfg.draft.data; normalize(S.data);
@@ -484,7 +484,7 @@ function renderHeader() {
     S.running ? h("span", { class: "badge ok" }, "● 세션 실행 중") : null,
     S.pending.length ? h("button", { onclick: () => refreshChanges(true) }, "변경 반영 (" + S.pending.length + ")") : null,
     // back to the last kept state: the draft when there is one, otherwise config.yaml
-    h("button", { disabled: !unsaved(), onclick: () => { S.data = S.draftJson !== null ? JSON.parse(S.draftJson) : clone(S.saved); changed(); } }, "되돌리기"),
+    h("button", { disabled: !unsaved(), onclick: () => { S.data = S.draftJson !== null ? JSON.parse(S.draftJson) : clone(S.saved); S.tabOrigin = {}; changed(); } }, "되돌리기"),
     S.draftJson !== null ? h("button", { title: "임시 저장본을 지우고 config.yaml 내용으로 돌아갑니다", onclick: discardDraft }, "임시본 버리기") : null,
     // incomplete settings (errors) can still be kept as a draft; once the check passes it becomes the real save
     nErr > 0 ? h("button", { class: "primary", disabled: !unsaved(), onclick: saveDraft,
@@ -543,12 +543,12 @@ async function save() {
   }
   try {
     const sent = clone(S.data);
-    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version });
-    S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues;
+    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version, renames: tabRenames() });
+    S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues; S.tabOrigin = {};
     S.ackWarn = warningKey(res.issues);
     S.draftJson = null; S.draftAt = null;  // the server removed the draft
     let msg = "저장했습니다.";
-    if (res.renamed && res.renamed.length) msg += " 탭 이름 변경: " + res.renamed.join(", ") + ".";
+    if (res.renamed && res.renamed.length) msg += " " + res.renamed.join(", ") + ".";
     toast(msg);
     render();
     if (S.running) refreshChanges(true);
@@ -561,6 +561,13 @@ async function save() {
     } else toast(e.message);
     return false;
   }
+}
+// tab ID renames since the last save ({saved id: current id}); the server moves state, files and live names
+function tabRenames() {
+  const saved = (S.saved && S.saved.tabs) || {}, out = {};
+  for (const [cur, orig] of Object.entries(S.tabOrigin))
+    if (orig !== cur && orig in saved && S.data.tabs && cur in S.data.tabs) out[orig] = cur;
+  return out;
 }
 // finishing: launcher → save + open the session; running session → save (the apply window follows)
 function finishLabel() {
@@ -604,7 +611,7 @@ async function discardDraft() {
   if (!confirm("임시 저장본을 버리고 config.yaml 내용으로 돌아갈까요?")) return;
   try {
     await api("POST", "/api/project/" + encodeURIComponent(S.project) + "/draft/discard", {});
-    S.draftJson = null; S.draftAt = null; S.data = clone(S.saved);
+    S.draftJson = null; S.draftAt = null; S.data = clone(S.saved); S.tabOrigin = {};
     changed();
   } catch (e) { toast(e.message); }
 }
@@ -1002,14 +1009,17 @@ function quickSetup(tname, t) {
 function renderTabView(tname, t) {
   if (!t || typeof t !== "object") return h("p", { class: "notice" }, "이 탭은 객체가 아닙니다. config.yaml을 직접 고치세요.");
   const d = S.data;
-  const savedIds = Object.keys((S.saved && S.saved.tabs) || {});
-  const idLocked = S.running && savedIds.includes(tname);
-  const idInput = h("input", { value: tname, disabled: idLocked, "aria-label": "탭 ID", onchange: (e) => {
+  const idLive = S.running && Object.keys((S.saved && S.saved.tabs) || {}).includes(S.tabOrigin[tname] || tname);
+  const idInput = h("input", { value: tname, "aria-label": "탭 ID", onchange: (e) => {
     const nv = e.target.value.trim();
     if (!TAB_RE.test(nv) || nv === tname) { e.target.value = tname; if (nv !== tname) toast("탭 ID: 영문으로 시작, 영문/숫자/_- 25자 이하"); return; }
     if (Object.keys(d.tabs).some((x) => x !== tname && x.toLowerCase() === nv.toLowerCase())) { e.target.value = tname; toast("이미 있는 탭 ID입니다"); return; }
     d.tabs = renameKey(d.tabs, tname, nv);
     for (const f of Object.values(d.flows || {})) if (f && f.tab === tname) f.tab = nv;
+    renameMember(tname.toLowerCase() + "-orch", nv.toLowerCase() + "-orch");  // flow steps of the orchestrator
+    const orig = S.tabOrigin[tname] || tname;
+    delete S.tabOrigin[tname];
+    if (orig !== nv) S.tabOrigin[nv] = orig;
     S.tab = nv; changed();
   } });
   const title = viewTitle(2, "탭 · " + (t.title ? t.title + " (" + tname + ")" : tname), h("span", { class: "grow" }),
@@ -1022,7 +1032,8 @@ function renderTabView(tname, t) {
       " 탭으로 이어지고, 쉘 창은 ", code("-build"), " 탭에 따로 모입니다."),
     h("div", { class: "form" },
       frow("탭 ID", idInput,
-        idLocked ? "세션 실행 중에는 바꿀 수 없습니다. 대신 표시 이름을 바꾸세요."
+        idLive ? ["명령에서 이 탭을 가리키는 이름입니다. 세션 실행 중에도 저장하면 창과 agent는 그대로 둔 채 바뀌고, orchestrator 이름(",
+            code(tname.toLowerCase() + "-orch"), ")도 따라 바뀝니다."]
           : ["명령에서 이 탭을 가리키는 이름입니다 (예: ", code("hctrl ask " + tname + " \"…\""), "). 영문으로 시작, 25자 이하."]),
       frow("표시 이름",
         h("input", { value: t.title || "", placeholder: tname, maxlength: 30, "aria-label": "표시 이름", onchange: (e) => {

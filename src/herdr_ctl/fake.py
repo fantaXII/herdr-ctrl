@@ -242,6 +242,15 @@ class FakeHerdr:
                 return {"agent": self.agent_get(a.name)}
         raise HerdrError("timeout", f"{target} still {a.status}")
 
+    def agent_rename(self, target, name):
+        a = self._agent(target)
+        if name in self.agents and self.agents[name] is not a:
+            raise HerdrError("name_in_use", name)
+        self.agents.pop(a.name)
+        a.name = name
+        self.agents[name] = a
+        self.calls.append(("agent_rename", target, name))
+
     def agent_send_keys(self, target, *keys):
         a = self._agent(target)
         a.keys.extend(keys)

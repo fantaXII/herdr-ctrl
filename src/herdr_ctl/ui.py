@@ -407,9 +407,27 @@ class UIServer:
         issues = self.check(project, data)
         if any(i["level"] == "error" for i in issues):
             raise ApiError(422, "오류가 있어 저장하지 않았습니다")
-        write_config(project, data)
+        renames = body.get("renames") or {}
+        if not isinstance(renames, dict) or not all(isinstance(k, str) and isinstance(v, str)
+                                                    for k, v in renames.items()):
+            raise ApiError(400, "renames는 {이전 탭 ID: 새 탭 ID} 객체여야 합니다")
+        tabs = data.get("tabs") if isinstance(data, dict) else None
+        renames = {o: n for o, n in renames.items() if o != n and isinstance(tabs, dict) and n in tabs}
+        moved: list[str] = []
+        if renames and current is not None:
+            from .tabrename import RenameError, rename_tabs
+            old_data, _ = load_yaml(project.config_path)
+            session = old_data.get("session") if isinstance(old_data, dict) else None
+            live = bool(session) and session in self.running_sessions()
+            try:
+                moved = rename_tabs(project, renames, lambda: write_config(project, data),
+                                    self.herdr(session) if live else None, live)
+            except RenameError as e:
+                raise ApiError(409, str(e)) from e
+        else:
+            write_config(project, data)
         self.discard_draft(project)  # the draft is now the saved config
-        renamed = self.sync_live_titles(project)
+        renamed = moved + self.sync_live_titles(project)
         return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed}
 
     def sync_live_titles(self, project: Project) -> list[str]:

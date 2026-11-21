@@ -22,7 +22,7 @@ from .up import Ctx
 
 SUBCOMMANDS = {"init", "check", "up", "down", "status", "zoom", "run", "send", "wait", "stop",
                "resume", "ask", "role", "changes", "restart", "watch", "pending", "answer",
-               "_worker", "_perm-hook", "ui", "shell-init", "update", "_update-check"}
+               "_worker", "_perm-hook", "ui", "shell-init", "update", "_update-check", "tab"}
 
 
 class Fail(Exception):
@@ -299,6 +299,39 @@ def cmd_down(args) -> int:
     if args.stop_session and args.tab is None:
         ctx.h.session_stop(ctx.cfg.session)
         print(f"세션 '{ctx.cfg.session}' 정지")
+    return 0
+
+
+def cmd_tab(args) -> int:
+    from .init_cmd import write_config
+    from .tabrename import RenameError, rename_in_data, rename_tabs
+    ctx = load_ctx(args)
+    guard(ctx, current_actor(ctx), "tab")
+    tab = ctx.cfg.tab(args.old)
+    if tab is None:
+        raise Fail(f"탭 '{args.old}'이 설정에 없습니다 (탭: {', '.join(t.name for t in ctx.cfg.tabs)})")
+    old, new = tab.name, args.new
+    if old == new:
+        print("변경 없음")
+        return 0
+    if any(t.name.lower() == new.lower() and t is not tab for t in ctx.cfg.tabs):
+        raise Fail(f"이미 있는 탭 ID입니다: {new}")
+    data = yaml.safe_load(ctx.project.config_path.read_text())
+    data = rename_in_data(data, old, new)
+    from .config import check_data
+    cfg2, issues = check_data(data, root=ctx.project.root)
+    if cfg2 is None:
+        raise Fail("바꾼 설정에 오류가 있습니다:\n" + format_issues(issues))
+    try:
+        live = ctx.h.session_running(ctx.cfg.session)
+    except HerdrError:
+        live = False
+    try:
+        report = rename_tabs(ctx.project, {old: new}, lambda: write_config(ctx.project, data), ctx.h, live)
+    except RenameError as e:
+        raise Fail(str(e)) from e
+    for line in report:
+        print(line)
     return 0
 
 
@@ -667,6 +700,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("tab", nargs="?")
     s.add_argument("--remove-worktree", action="store_true")
     s.add_argument("--stop-session", action="store_true", help="(전체 정리 시) herdr 세션도 정지")
+    s = sub.add_parser("tab", help="탭 관리 (rename: 실행 중에도 창과 agent를 유지한 채 탭 ID 변경)")
+    s.add_argument("action", choices=["rename"])
+    s.add_argument("old")
+    s.add_argument("new")
     sub.add_parser("status", help="상태")
     s = sub.add_parser("zoom", help="창 하나 크게 보기 / 복귀")
     s.add_argument("name")
@@ -733,7 +770,8 @@ HANDLERS = {"init": cmd_init, "check": cmd_check, "up": cmd_up, "down": cmd_down
             "zoom": cmd_zoom, "run": cmd_run, "send": cmd_send, "wait": cmd_wait, "stop": cmd_stop,
             "resume": cmd_resume, "ask": cmd_ask, "role": cmd_role, "changes": cmd_changes,
             "restart": cmd_restart, "watch": cmd_watch, "pending": cmd_pending, "answer": cmd_answer,
-            "_worker": cmd_worker, "update": cmd_update, "_update-check": cmd_update_check, "_perm-hook": cmd_perm_hook, "ui": cmd_ui, "shell-init": cmd_shell_init}
+            "_worker": cmd_worker, "update": cmd_update, "_update-check": cmd_update_check, "_perm-hook": cmd_perm_hook, "ui": cmd_ui, "shell-init": cmd_shell_init,
+            "tab": cmd_tab}
 
 
 # commands that may still be running when `hctrl update` swaps the .pyz (launcher/open handled in main)

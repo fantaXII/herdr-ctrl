@@ -251,7 +251,7 @@ hctrl --list     # 등록된 프로젝트와 세션 상태
 - 그 사이 누가 파일을 고쳤으면 저장하지 않고 다시 불러올지 묻습니다.
 - 세션이 실행 중일 때 저장하면 탭 표시 이름은 바로 바뀌고, 창/agent 변경(창 닫기·추가, 재시작, 역할 알리기)은 **반영 창**이 떠서 항목별로 고른 뒤 [지금 반영]으로 적용합니다. [나중에]를 누르면 상단의 "변경 반영 (N)" 버튼이나 `_hc` 탭의 `c`(= `hctrl changes`)로 반영합니다.
 
-**탭 이름 바꾸기**: 탭에는 **ID**(`X`, 명령에서 사용: `hctrl ask X ...`)와 **표시 이름**(`title`, herdr 탭에 보이는 이름)이 있습니다. 표시 이름은 세션이 실행 중이어도 저장 즉시 바뀌고, 창과 agent는 그대로입니다. ID는 세션이 없을 때만 바꿀 수 있습니다.
+**탭 이름 바꾸기**: 탭에는 **ID**(`X`, 명령에서 사용: `hctrl ask X ...`)와 **표시 이름**(`title`, herdr 탭에 보이는 이름)이 있습니다. 둘 다 세션이 실행 중이어도 저장 즉시 바뀌고, 창과 agent는 그대로입니다. ID를 바꾸면 orchestrator 이름(`x-orch` → `login-orch`), flow의 `tab`과 orchestrator 단계, 상태 파일, orchestrator 역할 파일이 함께 옮겨지고, orchestrator에게 새 이름을 알립니다. 탭의 agent가 실행 중인 작업(`hctrl send/run`)이나 답을 기다리는 질문이 있으면 끝난 뒤에 바꿀 수 있습니다. 명령으로는 `hctrl tab rename X login`입니다.
 
 ```yaml
 tabs:
@@ -493,6 +493,7 @@ hctrl up X         # 탭 X만
 hctrl status       # 탭별 agent 상태: idle / working / blocked / done / unknown
 hctrl zoom x2      # x2 창만 크게 보기 (한 번 더 실행하면 분할 화면으로 복귀)
 hctrl down X       # 탭 X의 agent와 창 정리
+hctrl tab rename X login   # 탭 ID 변경 (창과 agent는 그대로)
 ```
 
 ## 4. 파이프라인 정의와 실행

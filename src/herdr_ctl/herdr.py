@@ -288,6 +288,9 @@ class Herdr:
             args += ["--timeout", str(int(timeout_ms))]
         return self.call(*args)
 
+    def agent_rename(self, target: str, name: str) -> None:
+        self.call("agent", "rename", target, name)
+
     def agent_send_keys(self, target: str, *keys: str) -> None:
         self.call("agent", "send-keys", target, *keys)
 
