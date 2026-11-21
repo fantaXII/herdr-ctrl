@@ -194,6 +194,44 @@ def test_config_save_refuses_errors_and_keeps_unmodelled_keys(client, tmp_path):
     assert st == 409
 
 
+def test_draft_keeps_incomplete_config_outside_project(client, tmp_path, server):
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    _, cfg = client.json("GET", "/api/project/projA")
+    assert cfg["draft"] is None
+    before = p.config_path.read_text()
+    bad = json.loads(json.dumps(cfg["data"]))
+    bad["tabs"]["X"]["agents"]["x1"]["kind"] = "nosuchagent"
+    st, res = client.json("PUT", "/api/project/projA/draft", {"data": bad, "version": cfg["version"]})
+    assert st == 200 and res["saved_at"]
+    assert any(i["level"] == "error" for i in res["issues"])
+    assert p.config_path.read_text() == before  # config.yaml untouched
+    draft = server.draft_path(p)
+    assert draft.exists() and not draft.is_relative_to(p.root)
+    # reopening returns the draft next to the saved config
+    _, again = client.json("GET", "/api/project/projA")
+    assert again["draft"]["data"]["tabs"]["X"]["agents"]["x1"]["kind"] == "nosuchagent"
+    assert again["draft"]["base"] == cfg["version"]
+    # a successful save removes the draft
+    good = cfg["data"]
+    good["tabs"]["X"]["agents"]["x1"]["model"] = "opus"
+    st, _ = client.json("PUT", "/api/project/projA/config", {"data": good, "version": cfg["version"]})
+    assert st == 200 and not draft.exists()
+
+
+def test_draft_discard_and_bad_body(client, tmp_path, server):
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    st, _ = client.json("PUT", "/api/project/projA/draft", {"data": "nope"})
+    assert st == 400
+    st, _ = client.json("PUT", "/api/project/projA/draft", {"data": {"session": "x"}})
+    assert st == 200 and server.draft_path(p).exists()
+    st, _ = client.json("POST", "/api/project/projA/draft/discard", {})
+    assert st == 200 and not server.draft_path(p).exists()
+    _, cfg = client.json("GET", "/api/project/projA")
+    assert cfg["draft"] is None
+
+
 def test_new_project_gets_default_config(client, tmp_path):
     root = tmp_path / "my app"
     root.mkdir()

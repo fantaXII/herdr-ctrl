@@ -1,4 +1,5 @@
-# Attach dist/hctrl.pyz (single-file hctrl, used by install.sh) to each GitHub Release.
+# Attach dist/hctrl.pyz (single-file hctrl, used by install.sh) and its .sha256 (used by `hctrl update`)
+# to each GitHub Release.
 # `npm run release` (release-it) publishes the release; this workflow then builds and uploads.
 # To retry for an existing release: Actions -> release-pyz -> Run workflow (tags v2.0.0 and older are refused).
 name: release-pyz
@@ -42,7 +43,10 @@ jobs:
           HC_SKIP_LIVE: "1"
 
       - name: Build
-        run: python scripts/build_pyz.py
+        run: |
+          python scripts/build_pyz.py
+          # `hctrl update` refuses a release without this checksum
+          (cd dist && sha256sum hctrl.pyz > hctrl.pyz.sha256 && cat hctrl.pyz.sha256)
 
       - name: Smoke test
         run: |
@@ -53,6 +57,6 @@ jobs:
           "$RUNNER_TEMP/bin/hctrl" --version
 
       - name: Upload to release
-        run: gh release upload "$TAG" dist/hctrl.pyz --clobber
+        run: gh release upload "$TAG" dist/hctrl.pyz dist/hctrl.pyz.sha256 --clobber
         env:
           GH_TOKEN: ${{ github.token }}

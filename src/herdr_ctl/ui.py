@@ -135,6 +135,7 @@ class UIServer:
         self._integrations: dict | None = None
         self._tokens: dict[str, float] = {}  # one-time link token -> expiry (monotonic)
         self.secret = secrets.token_urlsafe(32)
+        self.page = PAGE.read_bytes()  # read once: `hctrl update` may replace the .pyz while we serve
         self.choice: Project | None = None
         self.done = threading.Event()
         self._lock = threading.Lock()
@@ -216,8 +217,10 @@ class UIServer:
         parts = [unquote(p) for p in path.strip("/").split("/")][1:]  # drop "api"
         if parts == ["state"] and method == "GET":
             here = find_project(self.cwd)
+            from . import __version__, update
             return {"mode": self.mode, "cwd": str(self.cwd), "cwd_project": here.name if here else None,
-                    "start": self.start_project.name if self.start_project else None}
+                    "start": self.start_project.name if self.start_project else None,
+                    "version": __version__, "update": update.available()}
         if parts == ["projects"]:
             if method == "GET":
                 return self.list_projects()
@@ -236,6 +239,10 @@ class UIServer:
                 return {"issues": self.check(project, body.get("data"))}
             if rest == ["config"] and method == "PUT":
                 return self.save_config(project, body)
+            if rest == ["draft"] and method == "PUT":
+                return self.save_draft(project, body)
+            if rest == ["draft", "discard"] and method == "POST":
+                return self.discard_draft(project)
             if rest == ["changes"] and method == "GET":
                 return self.get_changes(project)
             if rest == ["apply"] and method == "POST":
@@ -285,7 +292,39 @@ class UIServer:
         return {"name": project.name, "root": str(project.root), "exists": text is not None,
                 "version": digest(text) if text is not None else None, "data": data,
                 "parse_error": parse_error, "running": running,
-                "issues": self.check(project, data) if data is not None else []}
+                "issues": self.check(project, data) if data is not None else [],
+                "draft": self.load_draft(project)}
+
+    # ---- draft: an unfinished config kept outside the project (config.yaml stays valid)
+    @staticmethod
+    def draft_path(project: Project) -> Path:
+        # secure_dir: outside every agent cwd and outside git; `hctrl up` never reads it
+        return project.secure_dir / "config.draft.json"
+
+    def load_draft(self, project: Project) -> dict | None:
+        try:
+            d = json.loads(self.draft_path(project).read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(d, dict) or not isinstance(d.get("data"), dict):
+            return None
+        return {"data": d["data"], "base": d.get("base"), "saved_at": d.get("saved_at")}
+
+    def save_draft(self, project: Project, body: dict) -> dict:
+        data = body.get("data")
+        if not isinstance(data, dict):
+            raise ApiError(400, "data는 객체여야 합니다")
+        path = self.draft_path(project)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        rec = {"data": data, "base": body.get("version"), "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1))
+        os.replace(tmp, path)
+        return {"saved_at": rec["saved_at"], "issues": self.check(project, data)}
+
+    def discard_draft(self, project: Project) -> dict:
+        self.draft_path(project).unlink(missing_ok=True)
+        return {"ok": True}
 
     def save_config(self, project: Project, body: dict) -> dict:
         from .init_cmd import write_config
@@ -297,6 +336,7 @@ class UIServer:
         if any(i["level"] == "error" for i in issues):
             raise ApiError(422, "오류가 있어 저장하지 않았습니다")
         write_config(project, data)
+        self.discard_draft(project)  # the draft is now the saved config
         renamed = self.sync_live_titles(project)
         return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed}
 
@@ -439,7 +479,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(403, "인증되지 않았습니다. 터미널에 표시된 링크로 여세요.".encode(), "text/plain; charset=utf-8")
             return
         if url.path == "/":
-            self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            self._send(200, self.ui.page, "text/html; charset=utf-8")
             return
         self._dispatch("GET", url.path, None)
 

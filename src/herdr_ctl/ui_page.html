@@ -30,6 +30,7 @@ header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; back
 header h1 { font-size: 16px; margin: 0; }
 header .crumb { color: var(--muted); }
 header .spacer { flex: 1; }
+#updateBadge .badge { cursor: help; color: var(--accent); }
 main { max-width: 1360px; margin: 0 auto; padding: 20px 16px 120px; }
 section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px;
   margin-bottom: 16px; }
@@ -80,7 +81,9 @@ table.agents td:nth-child(4) { width: 130px; } table.agents td:last-child { widt
 .issues { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
   padding: 8px 20px; max-height: 30vh; overflow: auto; z-index: 5; }
 .issues ul { margin: 4px 0 0; padding-left: 18px; }
-.issues li.error { color: var(--err); } .issues li.warning { color: var(--warn); }
+.issues li.error, .ilist li.error { color: var(--err); } .issues li.warning, .ilist li.warning { color: var(--warn); }
+.ilist ul { margin: 4px 0 0; padding-left: 18px; } .ilist li { overflow-wrap: anywhere; }
+.mark { cursor: help; margin-left: 4px; }
 .notice { padding: 10px 12px; border-radius: 8px; background: var(--chip); margin-bottom: 12px; }
 .toast { position: fixed; right: 20px; top: 64px; background: var(--ink); color: var(--bg); padding: 8px 14px;
   border-radius: 8px; z-index: 20; max-width: 420px; }
@@ -172,6 +175,8 @@ code { background: var(--chip); border-radius: 4px; padding: 0 5px; font-size: 1
 .view-title { display: flex; align-items: center; gap: 10px; margin: 2px 0 14px; flex-wrap: wrap; }
 .view-title h2 { margin: 0; font-size: 18px; display: flex; align-items: center; gap: 8px; }
 .view-title .grow { flex: 1; }
+.wizard { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 18px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.wizard .grow { flex: 1; }
 /* kind-colored cards: a colored bar + tinted heading */
 .card.k { border-left: 4px solid var(--kc); padding-top: 0; overflow: hidden; }
 .card.k > h3 { margin: 0 -12px 10px; padding: 9px 12px; background: var(--kbg); color: var(--ink); }
@@ -225,6 +230,7 @@ body.nohelp .form { grid-template-columns: max-content minmax(180px, 420px); }
 <header>
   <h1>hctrl 설정</h1>
   <span class="crumb" id="crumb"></span>
+  <span id="updateBadge"></span>
   <span class="spacer"></span>
   <span id="headerActions" class="row"></span>
 </header>
@@ -297,7 +303,9 @@ const TAB_RE = /^[A-Za-z][A-Za-z0-9_-]{0,24}$/;
 // -------------------------------------------------------------------- state
 const S = { pending: [], mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
             running: false, tab: null, issues: [], checkTimer: null, checkSeq: 0,
-            view: "tab", adv: new Set(), issuesOpen: true };
+            view: "tab", adv: new Set(), issuesOpen: true,
+            draftJson: null, draftAt: null, ackWarn: "[]",
+            wizard: false };  // wizard: first setup (no config.yaml when opened) → step bar at the bottom  // ackWarn: warnings the user already accepted  // draft: unfinished settings kept outside config.yaml
 // per-viewer convenience only: whether the long explanations are shown
 function helpOn() { try { return localStorage.getItem("hctrl.help") !== "off"; } catch (e) { return true; } }
 function setHelp(on) {
@@ -307,13 +315,18 @@ function setHelp(on) {
 document.body.classList.toggle("nohelp", !helpOn());
 
 function dirty() { return S.data && JSON.stringify(S.data) !== JSON.stringify(S.saved); }
-window.addEventListener("beforeunload", (e) => { if (dirty()) { e.preventDefault(); e.returnValue = ""; } });
+// differs from config.yaml AND from the draft: leaving now loses work
+function unsaved() { return dirty() && JSON.stringify(S.data) !== S.draftJson; }
+window.addEventListener("beforeunload", (e) => { if (unsaved()) { e.preventDefault(); e.returnValue = ""; } });
 window.addEventListener("hashchange", route);
 
 async function boot() {
   try {
     const st = await api("GET", "/api/state");
     S.mode = st.mode; S.cwd = st.cwd;
+    if (st.update) $("updateBadge").replaceChildren(h("span", { class: "badge",
+      title: "현재 v" + st.version + ". 터미널에서 hctrl update를 실행하세요. 설정은 그대로 남고, 실행 중인 세션은 다시 열면 새 버전이 적용됩니다." },
+      "⬆ 새 버전 " + st.update));
     if (!location.hash && st.mode === "session" && st.start) location.hash = "#/project/" + encodeURIComponent(st.start);
   } catch (e) { $("app").replaceChildren(h("p", { class: "notice" }, "연결 실패: " + e.message)); return; }
   route();
@@ -327,8 +340,8 @@ function route() {
 
 // ----------------------------------------------------------------- launcher
 async function showLauncher() {
-  if (dirty() && !confirm("저장하지 않은 변경이 있습니다. 버릴까요?")) { location.hash = "#/project/" + encodeURIComponent(S.project); return; }
-  S.project = null; S.data = null; S.saved = null;
+  if (unsaved() && !confirm("저장하지 않은 변경이 있습니다. 버릴까요?")) { location.hash = "#/project/" + encodeURIComponent(S.project); return; }
+  S.project = null; S.data = null; S.saved = null; S.draftJson = null; S.draftAt = null;
   $("crumb").textContent = "프로젝트";
   $("headerActions").replaceChildren();
   $("issues").classList.add("hidden");
@@ -388,7 +401,7 @@ async function openSession(name) {
 // ------------------------------------------------------------------- editor
 async function openProject(name) {
   if (S.project === name && S.data) { render(); return; }
-  if (dirty() && !confirm("저장하지 않은 변경이 있습니다. 버릴까요?")) return;
+  if (unsaved() && !confirm("저장하지 않은 변경이 있습니다. 버릴까요?")) return;
   $("app").replaceChildren(h("p", { class: "muted" }, "불러오는 중…"));
   try {
     const [cfg, models] = await Promise.all([api("GET", "/api/project/" + encodeURIComponent(name)),
@@ -402,11 +415,20 @@ async function openProject(name) {
       return;
     }
     S.data = cfg.data; normalize(S.data); S.saved = clone(S.data);
-    if (!cfg.exists) {  // starter config for a project without config.yaml: nothing to lose yet
+    S.draftJson = null; S.draftAt = null;
+    if (cfg.draft) {  // an unfinished draft wins over config.yaml until it is saved or discarded
+      S.data = cfg.draft.data; normalize(S.data);
+      S.draftJson = JSON.stringify(S.data); S.draftAt = cfg.draft.saved_at;
+      toast("임시 저장본(" + (S.draftAt || "?") + ")을 불러왔습니다."
+        + (cfg.draft.base !== cfg.version ? " 그 뒤에 config.yaml이 바뀌었으니 확인한 뒤 저장하세요." : ""));
+    } else if (!cfg.exists) {  // starter config for a project without config.yaml: nothing to lose yet
       for (const t of Object.values(S.data.tabs)) for (const kind of ["agents", "shells"])
         for (const [n, spec] of Object.entries((t && t[kind]) || {})) if (spec && typeof spec === "object") birth(n, spec);
     }
     S.issues = cfg.issues; S.tab = Object.keys(S.data.tabs || {})[0] || null;
+    S.ackWarn = cfg.exists ? warningKey(cfg.issues) : "[]";  // warnings already in the saved file
+    S.wizard = !cfg.exists;  // stays on until this page leaves the project, even after [만들기]
+    if (cfg.draft) runCheck();  // cfg.issues describe config.yaml, not the draft
     S.view = cfg.exists && S.tab ? "tab" : "project";
     S.pending = [];
     render();
@@ -442,7 +464,10 @@ async function runCheck() {
   const seq = ++S.checkSeq;
   try {
     const res = await api("POST", "/api/project/" + encodeURIComponent(S.project) + "/check", { data: S.data });
-    if (seq === S.checkSeq) { S.issues = res.issues; renderIssues(); renderHeader(); }
+    if (seq !== S.checkSeq) return;
+    const changedIssues = JSON.stringify(res.issues) !== JSON.stringify(S.issues);
+    S.issues = res.issues;
+    if (changedIssues) rerenderKeepFocus(); else { renderIssues(); renderHeader(); }
   } catch (e) { toast("검사 실패: " + e.message); }
 }
 
@@ -452,13 +477,21 @@ function renderHeader() {
   const badge = nErr ? h("span", { class: "badge err" }, "오류 " + nErr + " · 경고 " + nWarn)
     : h("span", { class: "badge " + (nWarn ? "warn" : "ok") }, "검사 ✔ 경고 " + nWarn);
   $("headerActions").replaceChildren(...[badge,
-    dirty() ? h("span", { class: "badge dirty", title: "아직 저장하지 않은 변경이 있습니다" }, "● 저장 안 됨") : null,
+    !dirty() ? null : unsaved() ? h("span", { class: "badge dirty", title: "아직 저장하지 않은 변경이 있습니다" }, "● 저장 안 됨")
+      : h("span", { class: "badge dirty", title: "config.yaml에는 아직 반영되지 않았습니다. 오류를 모두 고친 뒤 [저장]하세요" },
+          "● 임시 저장됨 " + (S.draftAt || "")),
     S.running ? h("span", { class: "badge ok" }, "● 세션 실행 중") : null,
     S.pending.length ? h("button", { onclick: () => refreshChanges(true) }, "변경 반영 (" + S.pending.length + ")") : null,
-    h("button", { disabled: !dirty(), onclick: () => { S.data = clone(S.saved); changed(); } }, "되돌리기"),
-    h("button", { class: "primary", disabled: !dirty() && S.exists || nErr > 0, onclick: save }, S.exists ? "저장" : "만들기"),
-    S.mode === "launcher" && S.exists ? h("button", { disabled: dirty() || nErr > 0, onclick: () => openSession(S.project),
-      title: "저장된 설정으로 이 프로젝트 세션을 엽니다" }, "세션 열기") : null].filter(Boolean));
+    // back to the last kept state: the draft when there is one, otherwise config.yaml
+    h("button", { disabled: !unsaved(), onclick: () => { S.data = S.draftJson !== null ? JSON.parse(S.draftJson) : clone(S.saved); changed(); } }, "되돌리기"),
+    S.draftJson !== null ? h("button", { title: "임시 저장본을 지우고 config.yaml 내용으로 돌아갑니다", onclick: discardDraft }, "임시본 버리기") : null,
+    // incomplete settings (errors) can still be kept as a draft; once the check passes it becomes the real save
+    nErr > 0 ? h("button", { class: "primary", disabled: !unsaved(), onclick: saveDraft,
+        title: "오류가 남아 있어도 지금 상태를 보관합니다. config.yaml에는 쓰지 않습니다" }, "임시 저장")
+      : h("button", { class: "primary", disabled: !dirty() && S.exists, onclick: save }, S.exists ? "저장" : "만들기"),
+    S.mode === "launcher" && S.exists ? h("button", { disabled: nErr > 0, onclick: finish,
+      title: dirty() ? "저장한 뒤 이 프로젝트 세션을 엽니다" : "저장된 설정으로 이 프로젝트 세션을 엽니다" },
+      dirty() ? "저장하고 세션 열기" : "세션 열기") : null].filter(Boolean));
 }
 
 function renderIssues() {
@@ -479,27 +512,100 @@ function goIssue(path) {
   else S.view = "project";
   render();
 }
-function issuesFor(prefix) {
-  const hit = S.issues.filter((i) => String(i.path) === prefix || String(i.path).startsWith(prefix + ".") || String(i.path).startsWith(prefix + "["));
-  return hit.some((i) => i.level === "error") ? "err" : hit.length ? "warn" : null;
+function issuesUnder(prefix) {
+  return S.issues.filter((i) => String(i.path) === prefix || String(i.path).startsWith(prefix + ".") || String(i.path).startsWith(prefix + "["));
 }
-const markOf = (lvl) => lvl ? h("span", { class: "mark " + lvl, title: lvl === "err" ? "오류가 있습니다" : "경고가 있습니다" }, lvl === "err" ? "✘" : "⚠") : null;
+const issueLine = (i) => (i.level === "error" ? "✘ " : "⚠ ") + i.path + ": " + i.message;
+// ✘/⚠ next to a menu item or field; hovering shows the actual messages
+function markFor(prefix) {
+  const hit = issuesUnder(prefix);
+  if (!hit.length) return null;
+  const lvl = hit.some((i) => i.level === "error") ? "err" : "warn";
+  return h("span", { class: "mark " + lvl, title: hit.map(issueLine).join("\n") }, lvl === "err" ? "✘" : "⚠");
+}
+// the messages themselves, for a whole tab or flow (no hovering needed)
+function issueList(prefix) {
+  const hit = issuesUnder(prefix);
+  if (!hit.length) return null;
+  return h("div", { class: "notice ilist" }, h("b", {}, "검사 결과"),
+    h("ul", {}, hit.map((i) => h("li", { class: i.level }, issueLine(i)))));
+}
+const warningKey = (issues) => JSON.stringify(issues.filter((i) => i.level === "warning").map(issueLine));
 
 async function save() {
+  const warns = S.issues.filter((i) => i.level === "warning");
+  if (warns.length && warningKey(S.issues) !== S.ackWarn) {
+    const shown = warns.slice(0, 8).map(issueLine).join("\n") + (warns.length > 8 ? "\n… 외 " + (warns.length - 8) + "개" : "");
+    if (!confirm("경고 " + warns.length + "개가 있습니다 (저장은 할 수 있습니다).\n\n" + shown + "\n\n그래도 저장할까요?")) {
+      S.issuesOpen = true; renderIssues(); goIssue(warns[0].path); return false;
+    }
+  }
   try {
     const sent = clone(S.data);
     const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version });
     S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues;
+    S.ackWarn = warningKey(res.issues);
+    S.draftJson = null; S.draftAt = null;  // the server removed the draft
     let msg = "저장했습니다.";
     if (res.renamed && res.renamed.length) msg += " 탭 이름 변경: " + res.renamed.join(", ") + ".";
     toast(msg);
     render();
     if (S.running) refreshChanges(true);
+    return true;
   } catch (e) {
     if (e.status === 409 && confirm(e.message + "\n\n파일에서 다시 불러올까요? (화면의 변경은 사라집니다)")) {
       S.data = null; S.saved = null; openProject(S.project);
+    } else if (e.status === 422) {  // the check found errors after all: keep the work as a draft
+      await saveDraft(); runCheck();
     } else toast(e.message);
+    return false;
   }
+}
+// finishing: launcher → save + open the session; running session → save (the apply window follows)
+function finishLabel() {
+  if (S.mode === "launcher") return (S.exists ? "저장하고" : "만들고") + " 세션 열기";
+  return S.running ? "저장하고 반영" : "저장하고 마치기";
+}
+async function finish() {
+  const errs = S.issues.filter((i) => i.level === "error");
+  if (errs.length) { toast("오류 " + errs.length + "개를 먼저 고치세요: " + errs[0].message); S.issuesOpen = true; goIssue(errs[0].path); return; }
+  if (dirty() || !S.exists) { if (!(await save())) return; }
+  if (S.mode === "launcher") openSession(S.project);
+  else if (S.running) refreshChanges(true);
+  else toast("저장했습니다. 세션은 일반 터미널에서 hctrl로 여세요.");
+}
+// bottom step bar, first setup only: ← previous · next tab / ③ flow · finish
+function wizardBar(prev, next) {
+  if (!S.wizard) return null;
+  const nErr = S.issues.filter((i) => i.level === "error").length;
+  return h("div", { class: "wizard" },
+    prev ? h("button", { onclick: prev.go }, "← " + prev.label) : null, h("span", { class: "grow" }),
+    next ? h("button", { onclick: next.go }, next.label + " →") : null,
+    h("button", { class: "primary", onclick: finish, title: nErr ? "오류를 모두 고치면 쓸 수 있습니다" : "" }, finishLabel()));
+}
+function tabSteps(tname) {
+  const ids = Object.keys(S.data.tabs), i = ids.indexOf(tname);
+  const prev = i > 0 ? { label: "이전 탭", go: () => go("tab", ids[i - 1]) } : { label: "① 프로젝트", go: () => go("project") };
+  const next = i >= 0 && i < ids.length - 1 ? { label: "다음 탭", go: () => go("tab", ids[i + 1]) }
+    : { label: "③ flow (선택)", go: () => go("flows") };
+  return wizardBar(prev, next);
+}
+async function saveDraft() {
+  try {
+    const sent = clone(S.data);
+    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/draft", { data: sent, version: S.version });
+    S.draftJson = JSON.stringify(sent); S.draftAt = res.saved_at; S.issues = res.issues;
+    toast("임시 저장했습니다. 오류를 모두 고치면 [저장]으로 바뀝니다.");
+    render();
+  } catch (e) { toast("임시 저장 실패: " + e.message); }
+}
+async function discardDraft() {
+  if (!confirm("임시 저장본을 버리고 config.yaml 내용으로 돌아갈까요?")) return;
+  try {
+    await api("POST", "/api/project/" + encodeURIComponent(S.project) + "/draft/discard", {});
+    S.draftJson = null; S.draftAt = null; S.data = clone(S.saved);
+    changed();
+  } catch (e) { toast(e.message); }
 }
 
 // ------------------------------------------------------------- members
@@ -602,15 +708,19 @@ function setModel(spec, v) {
   changed();
 }
 function kindSelect(spec) {
-  return h("select", { "aria-label": "종류", onchange: (e) => { spec.kind = e.target.value; delete spec.model; typing.delete(spec); changed(); } },
+  return h("select", { "aria-label": "종류", onchange: (e) => {
+      spec.kind = e.target.value; delete spec.model; typing.delete(spec);
+      if (!permKind(spec)) delete spec.permission;  // claude-only permission modes do not apply
+      changed(); } },
     S.models.kinds.map((k) => h("option", { value: k, selected: k === (spec.kind || "claude") }, k)));
 }
-const PERMS = ["ask", "edit", "auto", "readonly"];
+const PERMS = ["ask", "edit", "auto", "readonly", "bypass"];
 const PERM_HELP = {
   ask: "모든 작업마다 사용자 승인을 받습니다.",
   edit: "파일 수정은 자동, 그 밖의 명령 실행은 승인을 요청합니다.",
   auto: "대부분 승인 없이 진행합니다.",
   readonly: "읽기와 hctrl 명령만 자동, 나머지는 사용자 승인을 받습니다.",
+  bypass: "⚠ 모든 권한 확인을 건너뜁니다 (claude bypassPermissions). 작업 agent만, 무인 모드가 꺼진 탭에서만 쓸 수 있습니다.",
 };
 const ROLE_HELP = {
   confirm: "orchestrator가 agent 역할을 바꾸려 하면 제안으로 남고, 사용자가 승인해야 반영됩니다 (hctrl role --review).",
@@ -622,10 +732,28 @@ const UNATTENDED_HELP = {
   questions: "agent의 질문에는 orchestrator가 대신 답하고, 권한 승인은 사용자가 합니다.",
   approve: "질문과 권한 승인 모두 orchestrator가 처리합니다. 위험한 요청(안전장치)은 사용자에게 넘깁니다.",
 };
-function permSelect(spec, dflt) {
-  return h("select", { "aria-label": "권한", onchange: (e) => { if (e.target.value) spec.permission = e.target.value; else delete spec.permission; changed(); } },
+// only claude takes a permission mode at start; other kinds follow their own config file
+const permKind = (spec) => (spec.kind || "claude") === "claude";
+function permHelp(spec, dflt) {
+  return permKind(spec) ? PERM_HELP[spec.permission || dflt]
+    : spec.kind + "는 시작 옵션으로 권한을 지정할 수 없어, " + spec.kind + " 설정 파일의 권한을 따릅니다.";
+}
+function permSelect(spec, dflt, perms = PERMS) {
+  if (!permKind(spec)) {  // nothing to choose; a leftover value stays visible so it can be cleared
+    return h("select", { "aria-label": "권한", disabled: !spec.permission, title: permHelp(spec, dflt),
+        onchange: (e) => { if (!e.target.value) { delete spec.permission; changed(); } } },
+      h("option", { value: "" }, "(" + spec.kind + " 설정 파일)"),
+      spec.permission ? h("option", { value: spec.permission, selected: true }, spec.permission + " (적용 안 됨)") : null);
+  }
+  return h("select", { "aria-label": "권한", onchange: (e) => {
+      const v = e.target.value;
+      if (v === "bypass" && !confirm("bypass는 모든 권한 확인을 건너뜁니다. 작업 폴더 밖 파일 수정이나 위험한 명령도 묻지 않고 실행합니다. 설정할까요?")) {
+        e.target.value = spec.permission || ""; return;
+      }
+      if (v) spec.permission = v; else delete spec.permission; changed(); } },
     h("option", { value: "" }, "(기본 " + dflt + ")"),
-    PERMS.map((p) => h("option", { value: p, selected: p === spec.permission }, p)));
+    // keep an unsupported current value visible so the check error can point at it
+    [...new Set([...perms, ...(spec.permission ? [spec.permission] : [])])].map((p) => h("option", { value: p, selected: p === spec.permission }, p)));
 }
 
 // ------------------------------------------------------------------ render
@@ -638,6 +766,19 @@ function render() {
   if (S.view === "tab" && !S.tab) S.view = "project";
   const view = S.view === "flows" ? renderFlows() : S.view === "tab" ? renderTabView(S.tab, S.data.tabs[S.tab]) : renderProject();
   $("app").replaceChildren(h("div", { class: "layout" }, renderNav(), h("div", { class: "content" }, view)));
+}
+// redraw for new check marks without losing the field the user moved to
+function rerenderKeepFocus() {
+  const el = document.activeElement, label = el && el.getAttribute && el.getAttribute("aria-label");
+  if (el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && el.type !== "checkbox"))) {
+    // mid-typing: a redraw would drop the uncommitted text, so wait until the field is left
+    renderIssues(); renderHeader();
+    el.addEventListener("blur", () => setTimeout(() => { if (S.data) rerenderKeepFocus(); }, 0), { once: true });
+    return;
+  }
+  const idx = label ? [...document.querySelectorAll('[aria-label="' + label + '"]')].indexOf(el) : -1;
+  render();
+  if (idx >= 0) { const again = document.querySelectorAll('[aria-label="' + label + '"]')[idx]; if (again) again.focus(); }
 }
 const go = (view, tab) => { S.view = view; if (tab !== undefined) S.tab = tab; render(); window.scrollTo && window.scrollTo(0, 0); };
 function memberDots(t) {
@@ -655,16 +796,16 @@ function renderNav() {
     const t = d.tabs[id];
     return h("button", { class: "nav-item" + (S.view === "tab" && S.tab === id ? " active" : ""), onclick: () => go("tab", id),
       title: id + (t && t.title ? " · " + t.title : "") },
-      h("span", { class: "grow" }, t && t.title ? t.title + " (" + id + ")" : id), memberDots(t), markOf(issuesFor("tabs." + id)));
+      h("span", { class: "grow" }, t && t.title ? t.title + " (" + id + ")" : id), memberDots(t), markFor("tabs." + id));
   });
   const flows = Object.keys(d.flows || {}).map((fname) => {
     const f = d.flows[fname];
     return h("button", { class: "nav-item", onclick: () => { S.flash = fname; go("flows"); } },
       h("span", { class: "dot flow" }), h("span", { class: "grow" }, fname),
-      h("span", { class: "muted small" }, ((f && f.steps) || []).length + "단계"), markOf(issuesFor("flows." + fname)));
+      h("span", { class: "muted small" }, ((f && f.steps) || []).length + "단계"), markFor("flows." + fname));
   });
   return h("nav", { class: "nav", "aria-label": "설정 단계" },
-    h("div", { class: "nav-group" }, head(1, "프로젝트", "project", markOf(issuesFor("session"))),
+    h("div", { class: "nav-group" }, head(1, "프로젝트", "project", markFor("session")),
       h("div", { class: "nav-item", style: "cursor:default" }, h("span", { class: "grow muted" }, "세션 " + (d.session || "-")))),
     h("div", { class: "nav-group" }, head(2, "탭 구성", "tab"), tabs,
       h("button", { class: "nav-item add", onclick: () => { addTab(); S.view = "tab"; render(); } }, "+ 탭 추가")),
@@ -683,7 +824,7 @@ function renderProject() {
   const d = S.data;
   const ids = Object.keys(d.tabs);
   const top = h("section", {},
-    desc("이 화면의 내용은 ", code(".herdr-flow/config.yaml"), "에 저장됩니다. 고칠 때마다 검사가 돌고, 문제가 있으면 화면 아래와 왼쪽 메뉴에 표시되며 저장 버튼이 꺼집니다."),
+    desc("이 화면의 내용은 ", code(".herdr-flow/config.yaml"), "에 저장됩니다. 고칠 때마다 검사가 돌고, 문제가 있으면 화면 아래와 왼쪽 메뉴에 표시됩니다. 오류가 남아 있는 동안에는 [저장] 대신 [임시 저장]이 나타나, config.yaml은 건드리지 않고 지금 상태만 보관합니다. 오류를 모두 고치면 [저장]으로 바뀝니다."),
     !S.exists ? h("div", { class: "notice" }, "아직 config.yaml이 없습니다. 기본값을 확인하고 고친 뒤 오른쪽 위 [만들기]를 누르세요.") : null,
     S.running ? h("div", { class: "notice" }, "세션이 실행 중입니다. 저장하면 탭 표시 이름은 바로 바뀌고, 창/agent 변경은 반영할지 묻습니다.") : null,
     h("div", { class: "form" }, frow("세션 이름",
@@ -694,7 +835,7 @@ function renderProject() {
     const t = d.tabs[id];
     if (!t || typeof t !== "object") return null;
     return h("button", { class: "ovcard", onclick: () => go("tab", id) },
-      h("span", { class: "ovt" }, t.title ? t.title + " (" + id + ")" : id, markOf(issuesFor("tabs." + id))),
+      h("span", { class: "ovt" }, t.title ? t.title + " (" + id + ")" : id, markFor("tabs." + id)),
       h("span", { class: "ovm" }, hasOrch(t) ? tag("orch", id.toLowerCase() + "-orch") : null,
         Object.keys(t.agents || {}).map((n) => tag("agent", n)), Object.keys(t.shells || {}).map((n) => tag("shell", "$ " + n))),
       h("span", { class: "muted small" }, "창 " + ((hasOrch(t) ? 1 : 0) + Object.keys(t.agents || {}).length) + "개" +
@@ -861,7 +1002,8 @@ function renderTabView(tname, t) {
     desc("저장하면 herdr에 이렇게 배치됩니다."), renderPreview(tname, t),
     h("p", { class: "legend", style: "margin-top:4px" }, h("span", { class: "dot orch" }), " orchestrator  ",
       h("span", { class: "dot agent" }), " agent  ", h("span", { class: "dot shell" }), " 쉘"));
-  return h("div", {}, title, quickSetup(tname, t), h("div", { class: "cols" }, left, h("div", {}, right)));
+  return h("div", {}, title, issueList("tabs." + tname), quickSetup(tname, t), h("div", { class: "cols" }, left, h("div", {}, right)),
+    tabSteps(tname));
 }
 
 function renderOrch(tname, t) {
@@ -880,10 +1022,11 @@ function renderOrch(tname, t) {
     return card;
   }
   const o = t.orchestrator;
+  const opath = "tabs." + tname + ".orchestrator";
   const role = t.role_update || "confirm";
   const unatt = t.unattended || "off";
   card.append(h("div", { class: "form" },
-    frow("종류 / 모델", [kindSelect(o), modelControl(o, (v) => setModel(o, v))],
+    frow(["종류 / 모델", markFor(opath + ".kind"), markFor(opath + ".model")], [kindSelect(o), modelControl(o, (v) => setModel(o, v))],
       "판단이 중요하므로 큰 모델(opus 등)을 권합니다."),
     frow("프로젝트 목표",
       h("input", { value: o.goal || "", placeholder: "예: 로그인/결제 모듈 개발", "aria-label": "프로젝트 목표",
@@ -898,12 +1041,12 @@ function renderOrch(tname, t) {
     h("summary", {}, "고급 설정 (권한 · 역할 정책 · 무인 모드)",
       h("span", { class: "advsum" }, changedBits.length ? "· " + changedBits.join(" · ") : "· 모두 기본값")),
     h("div", { class: "form" },
-      frow("권한", permSelect(o, "readonly"), PERM_HELP[o.permission || "readonly"]),
-      frow("역할 변경 정책",
+      frow(["권한", markFor(opath + ".permission")], permSelect(o, "readonly", PERMS.filter((p) => p !== "bypass")), permHelp(o, "readonly")),
+      frow(["역할 변경 정책", markFor("tabs." + tname + ".role_update")],
         h("select", { "aria-label": "역할 변경 정책", onchange: (e) => { t.role_update = e.target.value; changed(); } },
           ["confirm", "auto", "off"].map((v) => h("option", { value: v, selected: v === role }, v))),
         ROLE_HELP[role]),
-      frow("무인 모드",
+      frow(["무인 모드", markFor("tabs." + tname + ".unattended")],
         h("select", { "aria-label": "무인 모드", onchange: (e) => { if (e.target.value === "off") delete t.unattended; else t.unattended = e.target.value; changed(); } },
           [["off", "off (모두 사용자)"], ["questions", "questions (질문만 대신 답)"], ["approve", "approve (승인도 대신)"]]
             .map(([v, l]) => h("option", { value: v, selected: v === unatt }, l))),
@@ -918,9 +1061,10 @@ function renderAgents(tname, t) {
   const cards = Object.keys(t.agents).map((name) => {
     if (!t.agents[name] || typeof t.agents[name] !== "object") t.agents[name] = {};
     const spec = t.agents[name];
-    const row = (label, ctl) => h("div", { class: "arow" }, h("span", {}, label), ctl);
+    const base = "tabs." + tname + ".agents." + name;
+    const row = (label, ctl, field) => h("div", { class: "arow" }, h("span", {}, label, markFor(base + "." + field)), ctl);
     return h("div", { class: "acard" },
-      h("div", { class: "ahead" }, h("span", { class: "dot agent" }),
+      h("div", { class: "ahead" }, h("span", { class: "dot agent" }), markFor(base),
         h("input", { value: name, "aria-label": "이름", title: "창 이름. flow 단계와 hctrl send <이름>에서 씁니다", onchange: (e) => {
           const nv = e.target.value.trim();
           if (!NAME_RE.test(nv)) { e.target.value = name; toast("이름: 소문자로 시작, 소문자/숫자/_- 32자 이하"); return; }
@@ -929,10 +1073,10 @@ function renderAgents(tname, t) {
         h("button", { title: "상세 프롬프트", onclick: () => editRole(name) }, "상세"),
         h("button", { class: "danger", title: "삭제", onclick: () => { if (dropSteps([name])) { delete t.agents[name]; changed(); } } }, "✕")),
       row("역할", h("input", { value: spec.role || "", placeholder: "한 줄 역할", "aria-label": "역할", onchange: (e) => {
-        const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } })),
-      row("종류", kindSelect(spec)),
-      row("모델", modelControl(spec, (v) => setModel(spec, v))),
-      row("권한", permSelect(spec, "edit")));
+        const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } }), "role"),
+      row("종류", kindSelect(spec), "kind"),
+      row("모델", modelControl(spec, (v) => setModel(spec, v)), "model"),
+      row("권한", permSelect(spec, "edit"), "permission"));
   });
   return h("div", { class: "card k agent" }, h("h3", {}, h("span", { class: "dot agent" }), h("span", { class: "kname" }, "작업 agent"),
       h("span", { class: "muted small" }, cards.length + "개"), h("span", { class: "grow" }),
@@ -940,7 +1084,7 @@ function renderAgents(tname, t) {
     desc("실제 일을 하는 agent입니다 (구현, 테스트 작성, 리뷰 등). agent마다 herdr 창이 하나씩 열립니다. 이름은 자유롭게 바꿀 수 있고(소문자로 시작, 프로젝트 안에서 중복 불가), flow 단계에도 자동으로 반영됩니다. 명령에서는 ",
       code("hctrl send <이름> \"…\""), "처럼 씁니다."),
     cards.length ? [h("div", { class: "agrid" }, cards),
-      h("p", { class: "legend" }, "권한: ", PERMS.flatMap((p, i) => [i ? " · " : "", h("b", {}, p), p === "edit" ? " (기본) " : " ", PERM_HELP[p]]))]
+      h("p", { class: "legend" }, "권한 (claude만, 다른 종류는 각자의 설정 파일을 따름): ", PERMS.flatMap((p, i) => [i ? " · " : "", h("b", {}, p), p === "edit" ? " (기본) " : " ", PERM_HELP[p]]))]
       : h("p", { class: "muted small" }, "agent가 없습니다. 빠른 구성이나 [+ agent]로 추가하세요."));
 }
 
@@ -1111,7 +1255,9 @@ function renderFlows() {
     const name = S.flash; S.flash = null;
     setTimeout(() => { const el = document.getElementById("flow-" + name); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); });
   }
-  return h("div", {}, viewTitle(3, "flow"), sec);
+  const ids = Object.keys(d.tabs);
+  return h("div", {}, viewTitle(3, "flow"), issueList("flows"), sec,
+    wizardBar(ids.length ? { label: "탭 구성", go: () => go("tab", ids[ids.length - 1]) } : { label: "① 프로젝트", go: () => go("project") }, null));
 }
 
 // flow as a diagram: ● agent / $ shell nodes; ──▶ passes the result file on, ┄┄▶ = previous shell step may fail and continue

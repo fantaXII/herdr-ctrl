@@ -22,7 +22,7 @@ from .up import Ctx
 
 SUBCOMMANDS = {"init", "check", "up", "down", "status", "zoom", "run", "send", "wait", "stop",
                "resume", "ask", "role", "changes", "restart", "watch", "pending", "answer",
-               "_worker", "_perm-hook", "ui", "shell-init"}
+               "_worker", "_perm-hook", "ui", "shell-init", "update", "_update-check"}
 
 
 class Fail(Exception):
@@ -79,6 +79,8 @@ def cmd_open(name: str | None, project: Project | None = None) -> int:
                 return 0
         raise Fail("herdr 창 안에서는 프로젝트 세션을 열지 않습니다 (herdr 안에 herdr가 겹칩니다). "
                    "일반 터미널에서 hctrl을 실행하세요")
+    if tty():
+        show_update_notice()
     if project is None or not project.config_path.exists():
         if not tty():
             raise Fail("등록되지 않은 폴더입니다. hctrl --add [이름]으로 등록하세요" if project is None
@@ -181,6 +183,40 @@ def _managed_pane() -> dict | None:
     return entry if entry and entry.get("type") in ("orch", "agent") else None
 
 
+def show_update_notice() -> None:
+    """User terminals only: print the cached new-version notice and refresh the cache in the background."""
+    from . import update
+    if _managed_pane():
+        return
+    msg = update.notice()
+    if msg:
+        print("ℹ " + msg, flush=True)
+    update.refresh_in_background()
+
+
+def cmd_update(args) -> int:
+    import urllib.error
+    from . import update
+    if _managed_pane():
+        raise ScopeError("agent 창에서는 hctrl update를 사용할 수 없습니다 (사용자 전용)")
+    try:
+        return update.run_update(check_only=args.check)
+    except update.UpdateError as e:
+        raise Fail(str(e)) from e
+    except urllib.error.HTTPError as e:
+        raise Fail(f"릴리스 파일을 받지 못했습니다 ({e.code} {e.url}). 릴리스 직후라면 잠시 뒤 다시 실행하세요") from e
+    except urllib.error.URLError as e:
+        raise Fail(f"GitHub에 연결하지 못했습니다: {e.reason}") from e
+    except OSError as e:  # e.g. no write permission on the install directory
+        raise Fail(f"설치 파일을 바꾸지 못했습니다: {e}") from e
+
+
+def cmd_update_check(args) -> int:
+    from . import update
+    update.check_now()
+    return 0
+
+
 def cmd_init(args) -> int:
     from .init_cmd import run_init
     if _managed_pane():
@@ -206,6 +242,7 @@ def cmd_ui(args) -> int:
     else:
         start = find_project(Path(args.project) if args.project else None)
     from .ui import run_launcher, run_settings
+    show_update_notice()
     if os.environ.get("HERDR_ENV") == "1":
         return run_settings(start)  # inside herdr: settings only, sessions open from a normal terminal
     chosen = run_launcher(Path.cwd(), start=start)
@@ -599,6 +636,8 @@ def cmd_watch(args) -> int:
         watch_loop(project, h, interval=args.interval)
         return 0
     from .watch import Menu, TtyKeys
+    from . import update
+    update.refresh_in_background()  # the _hc pane is the user's: it may check (watch_loop shows it)
     with TtyKeys() as keys:  # _hc tab: key menu (settings UI, changes, status, pending)
         menu = Menu(project, cooked=keys.cooked)
         try:
@@ -678,6 +717,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("qid")
     s.add_argument("text", nargs="*", help="텍스트 답 / 선택지 번호·이름 / allow / deny [사유]")
     s.add_argument("--json", help="선택 질문이 여러 개일 때 {\"질문\": \"선택지\"}")
+    s = sub.add_parser("update", help="새 버전으로 업데이트 (hctrl.pyz 설치)")
+    s.add_argument("--check", action="store_true", help="확인만 하고 설치하지 않음")
+    sub.add_parser("_update-check")
     s = sub.add_parser("_perm-hook")
     s.add_argument("agent")
     s = sub.add_parser("_worker")
@@ -691,11 +733,19 @@ HANDLERS = {"init": cmd_init, "check": cmd_check, "up": cmd_up, "down": cmd_down
             "zoom": cmd_zoom, "run": cmd_run, "send": cmd_send, "wait": cmd_wait, "stop": cmd_stop,
             "resume": cmd_resume, "ask": cmd_ask, "role": cmd_role, "changes": cmd_changes,
             "restart": cmd_restart, "watch": cmd_watch, "pending": cmd_pending, "answer": cmd_answer,
-            "_worker": cmd_worker, "_perm-hook": cmd_perm_hook, "ui": cmd_ui, "shell-init": cmd_shell_init}
+            "_worker": cmd_worker, "update": cmd_update, "_update-check": cmd_update_check, "_perm-hook": cmd_perm_hook, "ui": cmd_ui, "shell-init": cmd_shell_init}
+
+
+# commands that may still be running when `hctrl update` swaps the .pyz (launcher/open handled in main)
+LONG_RUNNING = {"watch", "_worker", "ui", "run", "resume", "wait", "ask", "send", "up", "down", "changes",
+                "restart", "init", "role"}
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] in LONG_RUNNING or (argv[0] not in SUBCOMMANDS and not argv[0].startswith("-")):
+        from .selfcmd import preload
+        preload()  # zipapp: survive `hctrl update` replacing the archive while we run (costs ~0.2s)
     try:
         if not argv:
             return cmd_open(None)
@@ -704,8 +754,11 @@ def main(argv: list[str] | None = None) -> int:
         if argv[0] == "--add":
             return cmd_add(argv[1] if len(argv) > 1 else None)
         if argv[0] in ("-V", "--version"):
-            from . import __version__
+            from . import __version__, update
             print(f"hctrl (herdr_ctl) {__version__}")
+            msg = update.notice()  # cache only: --version stays offline and fast
+            if msg and tty():
+                print(msg)
             return 0
         if argv[0] in ("-h", "--help"):
             build_parser().print_help()

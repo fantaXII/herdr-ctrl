@@ -66,6 +66,23 @@ def test_dangerous_args_error():
     assert any(i.level == "error" and "우회" in i.message for i in issues)
 
 
+def test_bypass_permission_for_work_agents():
+    text = SAMPLE.replace('role: "구현" }', 'role: "구현", permission: bypass }')
+    cfg, issues = check(text)
+    assert cfg is not None
+    assert "tabs.X.agents.x1.permission" in paths(issues, "warning")
+    assert agent_args(cfg.member("x1"))[-2:] == ["--permission-mode", "bypassPermissions"]
+
+
+def test_bypass_refused_for_orchestrator_and_unattended_tabs():
+    cfg, issues = check(SAMPLE.replace('goal: "로그인 모듈" }', 'goal: "로그인 모듈", permission: bypass }'))
+    assert cfg is None and "tabs.X.orchestrator.permission" in paths(issues, "error")
+    text = SAMPLE.replace('role: "구현" }', 'role: "구현", permission: bypass }').replace(
+        "role_update: confirm", "role_update: confirm\n    unattended: questions")
+    cfg, issues = check(text)
+    assert cfg is None and "tabs.X.agents.x1.permission" in paths(issues, "error")
+
+
 def test_unknown_kind_and_bad_values():
     text = SAMPLE.replace("kind: opencode", "kind: opencod").replace("on_fail: continue", "on_fail: maybe")
     cfg, issues = check(text)

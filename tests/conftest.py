@@ -59,6 +59,7 @@ def isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("HC_CONFIG_HOME", str(tmp_path / "cfghome"))
     monkeypatch.setattr(project_mod, "STATE_HOME_OVERRIDE", tmp_path / "statehome")
     monkeypatch.setenv("HC_HOOK_GRACE_S", "0")
+    monkeypatch.setenv("HCTRL_NO_UPDATE_CHECK", "1")  # never reach GitHub from tests
     monkeypatch.setenv("HC_SETTLE_S", "0")
     # actor = own env only: pytest itself may run inside a herdr pane
     monkeypatch.setattr(orchestrator_mod, "_ancestor_envs", lambda max_depth=30: iter(()))

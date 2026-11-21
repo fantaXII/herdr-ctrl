@@ -30,7 +30,8 @@ POLICY_KEYS = {"answer_timeout", "max_answers_per_ask", "deny"}
 FLOW_KEYS = {"steps", "tab"}
 STEP_KEYS = {"agent", "shell", "prompt", "run", "on_fail", "max_retries", "timeout"}
 
-PERMISSIONS = ("ask", "edit", "auto", "readonly")
+# "bypass" skips every permission check (claude bypassPermissions): work agents only, opt-in per agent
+PERMISSIONS = ("ask", "edit", "auto", "readonly", "bypass")
 ROLE_UPDATE = ("confirm", "auto", "off")
 ON_FAIL = ("stop", "continue")
 UNATTENDED = ("off", "questions", "approve")
@@ -252,6 +253,13 @@ class _Checker:
         perm = data.get("permission", "readonly" if mtype == "orch" else "edit")
         if perm not in PERMISSIONS:
             self.err(f"{path}.permission", f"'{perm}' 대신 {'/'.join(PERMISSIONS)} 중 하나")
+        elif perm == "bypass" and mtype == "orch":
+            self.err(f"{path}.permission", "orchestrator에는 bypass를 쓸 수 없습니다 (작업 agent만)")
+        elif perm == "bypass" and kind == "claude":
+            self.warn(f"{path}.permission", "bypass: 모든 권한 확인을 건너뜁니다. 작업 폴더 밖 파일 수정이나 "
+                                            "위험한 명령도 묻지 않고 실행합니다. 처음 쓰는 PC라면 claude가 시작할 때 "
+                                            "확인 창을 띄우니, claude --permission-mode bypassPermissions를 "
+                                            "한 번 직접 실행해 수락해 두세요")
         elif kind == "opencode" and "permission" in data and perm != "ask":
             self.warn(f"{path}.permission", "opencode는 시작 옵션으로 권한을 지정할 수 없습니다. opencode 설정 파일에서 지정하세요")
         args = data.get("args") or []
@@ -394,6 +402,11 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
         elif unattended != "off":
             if orch is None:
                 c.err(f"{tpath}.unattended", "orchestrator가 없는 탭에서는 무인 모드를 쓸 수 없습니다 (off로 두세요)")
+            for m in agents:
+                if m.permission == "bypass":
+                    # no permission dialog → the hook never runs, and the agent can write the answer store
+                    c.err(f"{tpath}.agents.{m.name}.permission",
+                          "무인 모드 탭에서는 bypass를 쓸 수 없습니다 (승인 훅이 동작하지 않고 답변 저장소를 보호할 수 없음)")
             for m in agents:
                 if m.kind and m.kind != "claude":
                     c.warn(f"{tpath}.agents.{m.name}",
@@ -549,6 +562,7 @@ PERMISSION_ARGS = {
         "ask": ["--permission-mode", "default"],
         "edit": ["--permission-mode", "acceptEdits"],
         "auto": ["--permission-mode", "auto"],
+        "bypass": ["--permission-mode", "bypassPermissions"],
         # orchestrator: read + hctrl only; anything else asks the user (variadic option, so it must come last)
         "readonly": ["--permission-mode", "default", "--allowedTools", "Read", "Grep", "Glob", "Bash(hctrl:*)"],
     },

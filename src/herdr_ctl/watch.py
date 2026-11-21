@@ -365,6 +365,24 @@ def _pause(interval: float, keys, menu) -> None:
             menu.handle(key)
 
 
+UPDATE_POLL_S = 600.0  # how often the _hc tab re-reads the (daily) update cache
+
+
+def _update_notice(h, seen: str | None) -> str | None:
+    """Print (and notify) a newer release once per version; refresh the daily cache in the background."""
+    from . import update
+    update.refresh_in_background()
+    tag = update.available()
+    if tag and tag != seen:
+        msg = update.notice()
+        print(f"[hctrl] ℹ {msg}", flush=True)
+        try:
+            h.notify("hctrl: 새 버전", msg)
+        except Exception:  # a notice must never stop the watcher
+            pass
+    return tag or seen
+
+
 def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
                keys: Callable[[float], str | None] | None = None, menu: Menu | None = None) -> None:
     sig = _signature(project)
@@ -373,8 +391,12 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
     print(f"[hctrl watch] {project.flow_dir} 감시 중 (간격 {interval}s)", flush=True)
     if keys is not None:
         print(MENU, flush=True)
+    update_seen, update_at = None, -UPDATE_POLL_S  # interactive _hc only: new-version notice (cache read, no network)
     while iterations is None or n < iterations:
         n += 1
+        if keys is not None and time.monotonic() - update_at >= UPDATE_POLL_S:
+            update_at = time.monotonic()
+            update_seen = _update_notice(h, update_seen)
         _pause(interval, keys, menu)
         sig2, changes, err = watch_once(project, h, sig)
         if changes is None:
