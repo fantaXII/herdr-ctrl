@@ -23,26 +23,75 @@
 
 ## 설치
 
-**1. herdr** (먼저 설치해야 합니다. 없으면 `hctrl init`이 설치 방법을 안내하고 종료합니다)
+Linux, macOS, Windows(WSL 안에서)에서 동작합니다. hctrl은 herdr를 제어하는 도구라서 **herdr를 먼저 설치**합니다. herdr가 없으면 `hctrl init`이 설치 방법을 안내하고 종료합니다.
 
 ```bash
 curl -fsSL https://herdr.dev/install.sh | sh   # 또는 brew install herdr / mise use -g herdr
+herdr --version                                # 0.9.1 이상
 ```
 
-**2. hctrl** (명령 한 줄. python3 3.10 이상만 있으면 되고 pip, git은 필요 없습니다)
+그다음 hctrl을 아래 세 가지 방법 중 하나로 설치합니다. 모두 `python3` 3.10 이상이 필요합니다(`python3 --version`으로 확인).
+
+| 방법 | 이런 경우 | 필요한 것 |
+|---|---|---|
+| [A. 명령 한 줄 (추천)](#a-명령-한-줄로-설치-추천) | 대부분 | curl 또는 wget |
+| [B. 직접 다운로드](#b-직접-다운로드해서-설치) | 스크립트를 실행하기 싫거나, 인터넷이 막힌 PC에 옮겨 설치 | 브라우저 |
+| [C. 개발용 설치](#c-개발용-설치-소스-수정) | hctrl 소스를 고치면서 사용 | git, pipx |
+
+### A. 명령 한 줄로 설치 (추천)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fantaXII/herdr-ctrl/main/install.sh | sh
 ```
 
-- GitHub Releases의 `hctrl.pyz`(PyYAML까지 포함된 단일 실행 파일)를 `~/.local/bin/hctrl`에 설치합니다. `herdr_ctl`도 같은 명령입니다.
-- 특정 버전: `... | HCTRL_VERSION=v2.1.0 sh`
-- 설치 위치 변경: `... | HCTRL_BIN_DIR=~/bin sh`
-- 업데이트: 같은 명령을 다시 실행합니다.
-- 삭제: `rm ~/.local/bin/hctrl ~/.local/bin/herdr_ctl`
-- 직접 받아 써도 됩니다. Releases에서 `hctrl.pyz`를 받아 `chmod +x hctrl.pyz && ./hctrl.pyz --version`.
+설치 스크립트가 하는 일:
+1. `python3`가 3.10 이상인지 확인합니다.
+2. [GitHub Releases](https://github.com/fantaXII/herdr-ctrl/releases)의 최신 `hctrl.pyz`를 받습니다. PyYAML까지 들어 있는 실행 파일 하나라서 pip, git이 필요 없습니다.
+3. 받은 파일이 실제로 실행되는지 확인한 뒤 `~/.local/bin/hctrl`에 설치하고, `herdr_ctl`도 같은 명령으로 연결합니다.
+4. `~/.local/bin`이 PATH에 없으면 추가할 줄을 알려 줍니다. herdr가 없으면 설치 명령도 알려 줍니다.
 
-### 개발용 설치 (소스 수정)
+설치 확인:
+```bash
+hctrl --version        # hctrl (herdr_ctl) 2.1.0
+```
+
+`hctrl: command not found`가 나오면 `~/.local/bin`이 PATH에 없는 것입니다. 다음을 실행한 뒤 새 터미널을 엽니다.
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # zsh면 ~/.zshrc
+```
+
+| 하고 싶은 것 | 명령 |
+|---|---|
+| 업데이트 | 설치 명령을 다시 실행 |
+| 특정 버전 설치 | `curl -fsSL .../install.sh \| HCTRL_VERSION=v2.1.0 sh` |
+| 다른 위치에 설치 | `curl -fsSL .../install.sh \| HCTRL_BIN_DIR=~/bin sh` |
+| 삭제 | `rm ~/.local/bin/hctrl ~/.local/bin/herdr_ctl` |
+
+> 예전에 `pipx install -e .`로 설치했다면 설치 스크립트가 덮어쓰지 않고 멈춥니다. `pipx uninstall herdr-ctl`을 먼저 실행하세요.
+
+### B. 직접 다운로드해서 설치
+
+1. [Releases 페이지](https://github.com/fantaXII/herdr-ctrl/releases/latest)의 **Assets**에서 `hctrl.pyz`를 받습니다.
+   터미널에서 받으려면:
+   ```bash
+   curl -fLO https://github.com/fantaXII/herdr-ctrl/releases/latest/download/hctrl.pyz
+   ```
+   Windows 브라우저로 받았다면 WSL에서 `/mnt/c/Users/<사용자>/Downloads/hctrl.pyz` 경로로 보입니다.
+2. PATH에 있는 폴더로 옮기고 실행 권한을 줍니다.
+   ```bash
+   mkdir -p ~/.local/bin
+   mv hctrl.pyz ~/.local/bin/hctrl
+   chmod +x ~/.local/bin/hctrl
+   ln -sf hctrl ~/.local/bin/herdr_ctl     # 긴 이름도 쓰려면 (선택)
+   ```
+3. 확인합니다. 안 되면 A의 PATH 안내를 보세요.
+   ```bash
+   hctrl --version
+   ```
+
+설치하지 않고 받은 자리에서 바로 써도 됩니다: `python3 hctrl.pyz --version`.
+
+### C. 개발용 설치 (소스 수정)
 
 ```bash
 git clone https://github.com/fantaXII/herdr-ctrl.git && cd herdr-ctrl
@@ -53,6 +102,68 @@ pipx install -e .       # hctrl(=herdr_ctl) 명령 등록, 소스 수정이 바�
 ```
 
 릴리스(`npm run release`)로 GitHub Release가 만들어지면 `.github/workflows/release-pyz.yml`이 `hctrl.pyz`를 빌드해 그 Release에 첨부합니다.
+
+### 설치 후: agent 연동 확인
+
+```bash
+herdr integration status          # 쓸 agent(claude, opencode)가 current인지 확인
+herdr integration install claude  # 필요하면 설치
+```
+
+이제 [처음 사용하기 (UI)](#처음-사용하기-ui)로 넘어가세요.
+
+## 처음 사용하기 (UI)
+
+yaml을 직접 쓰지 않고 브라우저 화면에서 프로젝트를 등록하고 설정해서 여는 방법입니다. **herdr 화면 밖의 일반 터미널**에서 진행합니다.
+
+**1. 프로젝트 폴더에서 `hctrl` 실행**
+
+```bash
+cd ~/work/my-app
+hctrl
+```
+
+- 처음 보는 폴더라서 브라우저에 **런처** 화면이 열립니다. 터미널에는 `✔ hctrl UI: 브라우저를 열었습니다 (...)`가 출력됩니다.
+- 브라우저가 자동으로 열리지 않으면 터미널에 나온 주소를 **2분 안에** 브라우저에 붙여 넣습니다. 이 주소는 한 번만 쓸 수 있습니다. 자세한 동작은 아래 [브라우저 열기](#11-설정-화면-hctrl-ui) 표를 보세요.
+- 언제든 `Ctrl+C`로 끝낼 수 있습니다.
+
+**2. 프로젝트 추가**
+
+- 런처 아래쪽 **[+ 프로젝트 추가]**의 "폴더 경로"에 지금 폴더가 이미 들어 있습니다.
+- 이름을 비우면 폴더 이름(`my-app`)으로 등록됩니다.
+- **[추가하고 설정]**을 누르면 설정 화면으로 넘어갑니다.
+
+**3. 설정 만들기**
+
+| 영역 | 할 일 |
+|---|---|
+| 빠른 구성 (프로젝트와 탭 사이) | **대상 탭**을 고르고 agent 수 **[1] [2] [3] [4]**를 누르면 agent 줄과 미리보기가 바로 바뀝니다. 늘리면 기본값으로 추가되고, 줄이면 뒤에서부터 지웁니다(확인 후). 이미 고친 agent는 그대로 둡니다. orchestrator와 쉘 창도 여기서 켜고 끕니다. 한 화면은 orchestrator 포함 4칸입니다. |
+| 탭 | **[+ 탭 추가]**로 작업 묶음을 만듭니다(orchestrator + agent 2 + 쉘로 시작, `hctrl init`과 같은 기본값). 탭 ID(명령용, 기본 `work1`, `work2`…)와 표시 이름(herdr 탭에 보이는 이름, 예: `로그인 작업`)을 정합니다. |
+| orchestrator | 탭을 지휘할 LLM입니다. "사용"을 체크하면 켜지고(기본 claude/opus), 끄면 `hctrl run` / `send`로만 지시합니다. |
+| 작업 agent | 기본 이름은 역할에 맞춰 `coder`, `tester`, `reviewer`, `helper`이고(다른 탭과 겹치면 `coder2`…), 표의 이름 칸에서 자유롭게 바꿀 수 있습니다(flow에도 자동 반영). **[+ agent]**로 넣고, 종류 → (opencode면 제공자 →) 모델 순으로 고른 뒤 한 줄 역할을 적습니다. 긴 지시는 **[상세]**에서 씁니다. [상세]는 한 번 저장한 뒤에 쓸 수 있습니다. |
+| 쉘 창 | **[+ 쉘]**로 빌드나 테스트 명령을 돌릴 bash 창을 넣습니다(선택). flow의 쉘 단계가 여기서 실행됩니다. |
+| flow | 여러 단계를 정해진 순서로 실행하는 파이프라인입니다(선택, `hctrl run <이름>`). **예제로 시작하기** 카드에는 대상 탭의 agent 수에 맞춘 예제가 바로 보입니다(예: agent 2개 → 구현→테스트, 구현→테스트→빌드). 각 agent는 한 번씩만 쓰이고, 쉘 창이 있으면 빌드 단계가 들어간 예제도 나옵니다. 카드를 누르면 그 탭의 agent 이름으로 채워진 flow가 추가됩니다. 추가된 flow는 일반 flow와 같아서 단계 편집, 순서 변경(↑↓), 단계 삭제(✕), [flow 삭제]를 할 수 있습니다. flow마다 순서도가 보이고, 단계를 누르면 편집 줄로 이동합니다. |
+
+- 고칠 때마다 검사가 돌고, 오른쪽 위에 `검사 ✔` 또는 `오류 N`이 보입니다. 오류가 있으면 저장 버튼이 꺼지고, 아래 목록에서 무엇이 문제인지 알려 줍니다.
+- 오른쪽에는 실제 창 배치 미리 보기가 나옵니다. 탭당 4개까지이고, 넘치면 `-2` 탭이 생깁니다.
+- 오른쪽 위 **[만들기]**를 누르면 `.herdr-flow/config.yaml`이 생깁니다. 처음 이후로는 이 버튼이 **[저장]**입니다.
+
+**4. 세션 열기**
+
+- 오른쪽 위 **[세션 열기]**를 누르거나, 런처 목록에서 프로젝트의 **[열기]**를 누릅니다.
+- 브라우저 화면 서버가 끝나고, `hctrl`을 실행했던 **그 터미널**에 herdr 세션이 열립니다. 설정한 탭, 창, agent가 자동으로 뜹니다.
+
+**5. 다음부터는**
+
+```bash
+cd ~/work/my-app && hctrl     # 설정이 있으니 UI 없이 바로 세션이 열림
+hctrl my-app                  # 다른 폴더에서 이름으로 열기
+hctrl ui                      # 설정을 다시 고치고 싶을 때 (런처)
+```
+
+세션 안에서 설정을 고치려면 `_hc` 탭에서 `s` 키를 누릅니다. 실행 중인 세션에 저장하면 **반영 창**이 떠서 바꾼 항목을 골라 **[지금 반영]**할 수 있습니다. 나중에 반영하려면 **[나중에]**를 누르고, 이후 `_hc` 탭의 `c`로 반영합니다.
+
+터미널에서 질문에 답하며 설정하는 방식을 원하면 UI 대신 `hctrl init`을 씁니다([2장](#2-화면-배치-설정-herdr-flowconfigyaml)). UI 화면 각 부분의 자세한 동작은 [1.1 설정 화면](#11-설정-화면-hctrl-ui)에 있습니다.
 
 > 명령 이름이 `hc`가 아니라 `hctrl`인 이유: herdr 설치 스크립트가 `~/.local/bin/hc`(herdr-core)를 함께 설치하므로 이름이 겹칩니다. 그 `hc`는 이 도구와 무관합니다.
 
@@ -167,21 +278,23 @@ eval "$(hctrl shell-init bash)"
 
 ```
 $ hctrl init
-탭 이름? X
+탭 이름? [work1] >
 orchestrator? [claude/opus] / none
   프로젝트 목표 한 줄? (선택) > 로그인/결제 모듈 개발
 작업 agent 수? 2
-  x1 종류/모델? claude / sonnet
-  x1 역할? [구현] >
-  x2 종류/모델? opencode / (기본)
-  x2 역할? [테스트 작성] >
-빌드 쉘 추가? y → 빌드 명령? npm run build
+  agent 1 이름? [coder] >
+  coder 종류/모델? claude / sonnet
+  coder 역할? [구현] >
+  agent 2 이름? [tester] >
+  tester 종류/모델? opencode / (기본)
+  tester 역할? [테스트 작성] >
+빌드 쉘 추가? y → 쉘 이름? [build] → 빌드 명령? npm run build
 기본 flow(구현→테스트→빌드→검토) 만들까요? y
 ✔ .herdr-flow/config.yaml 생성
 검사 중... ✔ 오류 0, 경고 0
 ```
 
-탭을 추가할 때는 `hctrl init --tab Y`를 씁니다.
+탭을 추가할 때는 `hctrl init --tab work2`를 씁니다. 기본 이름은 탭이 `work1`, `work2`…, agent가 역할에 맞춘 `coder`, `tester`, `reviewer`, `helper`(이미 있으면 `coder2`…), 쉘이 `build`입니다.
 
 ### 검사: `hctrl check` (자동)
 

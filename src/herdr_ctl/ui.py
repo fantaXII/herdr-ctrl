@@ -27,7 +27,8 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import roles as roles_mod
-from .config import check_data, check_file, load_yaml
+from .config import (DEFAULT_AGENT_NAMES, DEFAULT_ROLES, DEFAULT_SHELL_NAME, DEFAULT_TAB_BASE, check_data, check_file,
+                     load_yaml)
 from .herdr import AGENT_KINDS, Herdr, HerdrError
 from .project import Project, _expand, find_project, load_registry, register
 from .state import LockBusy, State, digest
@@ -47,8 +48,11 @@ def session_name(name: str) -> str:
 def default_config(project: Project) -> dict:
     """Starting point for a project without config.yaml (same defaults as `hctrl init`)."""
     return {"session": session_name(project.name),
-            "tabs": {"X": {"orchestrator": "none",
-                           "agents": {"x1": {"kind": "claude", "model": "sonnet", "role": "구현"}}}}}
+            "tabs": {f"{DEFAULT_TAB_BASE}1": {
+                "orchestrator": {"kind": "claude", "model": "opus"},
+                "agents": {DEFAULT_AGENT_NAMES[0]: {"kind": "claude", "model": "sonnet", "role": DEFAULT_ROLES[0]},
+                           DEFAULT_AGENT_NAMES[1]: {"kind": "opencode", "role": DEFAULT_ROLES[1]}},
+                "shells": {DEFAULT_SHELL_NAME: {}}}}}
 
 
 def opencode_models(run: Callable[..., Any] = subprocess.run) -> dict[str, list[str]]:

@@ -26,20 +26,28 @@ def test_init_defaults_produce_valid_config(tmp_path, capsys):
     root.mkdir()
     p = Project("shop", root)
     answers = ["",          # session [shop]
-               "",          # tab name [X]
+               "",          # tab name [work1]
                "", "", "목표: 결제", "", "",  # orchestrator yes, claude/opus, goal, policy confirm, unattended off
                "", "", "", "", "", "", "",  # 2 agents: name/kind/role x2 (+ count)
                "", "", "",  # shell yes, name, build cmd
                "",          # default flow yes
+               "y",         # more tabs? yes -> defaults must not collide with the first tab
+               "", "n", "2", "", "", "", "", "", "",  # tab [work2], no orchestrator, 2 agents (defaults)
+               "", "", "",  # shell yes, name, build cmd
+               "n",         # no default flow
                ""]          # more tabs? no
     assert run_init(p, scripted(answers), which=always_found)
     data = yaml.safe_load(p.config_path.read_text())
     assert data["session"] == "shop"
-    assert data["tabs"]["X"]["orchestrator"] == {"kind": "claude", "model": "opus", "goal": "목표: 결제"}
-    assert list(data["tabs"]["X"]["agents"]) == ["x1", "x2"]
-    assert data["tabs"]["X"]["agents"]["x1"]["role"] == "구현"
-    assert data["tabs"]["X"]["agents"]["x2"]["role"] == "테스트 작성"
-    assert "build-review-x" in data["flows"]
+    w1 = data["tabs"]["work1"]
+    assert w1["orchestrator"] == {"kind": "claude", "model": "opus", "goal": "목표: 결제"}
+    assert list(w1["agents"]) == ["coder", "tester"]
+    assert w1["agents"]["coder"]["role"] == "구현"
+    assert w1["agents"]["tester"]["role"] == "테스트 작성"
+    assert list(w1["shells"]) == ["build"]
+    w2 = data["tabs"]["work2"]
+    assert list(w2["agents"]) == ["coder2", "tester2"] and list(w2["shells"]) == ["build2"]
+    assert list(data["flows"]) == ["build-review-work1"]
     cfg, issues = check_file(p.config_path, which=always_found)
     assert cfg is not None
     assert ".herdr-flow/runs/" in (root / ".gitignore").read_text()
@@ -165,4 +173,4 @@ def test_init_unattended_mode(tmp_path):
                "", "", "", "", "", "", "", "", "", "", "", ""]
     assert run_init(p, scripted(answers), which=always_found)
     data = yaml.safe_load(p.config_path.read_text())
-    assert data["tabs"]["X"]["unattended"] == "questions"
+    assert data["tabs"]["work1"]["unattended"] == "questions"

@@ -7,7 +7,8 @@ from typing import Callable
 
 import yaml
 
-from .config import DEFAULT_ROLES, NAME_RE, TAB_RE, check_data, format_issues
+from .config import (DEFAULT_AGENT_NAMES, DEFAULT_ROLES, DEFAULT_SHELL_NAME, NAME_RE, TAB_RE, check_data,
+                     format_issues, next_tab_id, unique_name)
 from .herdr import AGENT_KINDS
 from .project import Project, ensure_gitignore
 
@@ -44,7 +45,7 @@ def ask_tab(ask: Ask, existing: set[str], used_names: set[str], default: str | N
     def valid(a: str) -> bool:
         return bool(TAB_RE.match(a)) and a.lower() not in taken and a != "_hc"
     if not (default and valid(default)):
-        default = "X" if valid("X") else ""
+        default = next_tab_id(existing)
     name = _q(ask, "탭 이름", default,
               lambda a: None if valid(a) else "영문으로 시작, 영문/숫자/_- (기존 탭과 중복 불가, 대소문자 무시)")
     tab: dict = {}
@@ -66,17 +67,15 @@ def ask_tab(ask: Ask, existing: set[str], used_names: set[str], default: str | N
     else:
         tab["orchestrator"] = "none"
     n = int(_q(ask, "작업 agent 수", "2", lambda a: None if a.isdigit() and 0 <= int(a) <= 8 else "0~8"))
-    prefix = re.sub(r"[^a-z0-9]", "", name.lower())[:1] or "a"
     agents = {}
     for i in range(1, n + 1):
-        default_name = f"{prefix}{i}"
-        while default_name in used_names:
-            default_name += "x"
+        slot = min(i - 1, len(DEFAULT_ROLES) - 1)
+        default_name = unique_name(DEFAULT_AGENT_NAMES[slot], used_names)  # coder, tester, ... (coder2 if taken)
         aname = _q(ask, f"  agent {i} 이름", default_name,
                    lambda a: None if NAME_RE.match(a) and a not in used_names else "소문자 시작, 중복 불가")
         used_names.add(aname)
         kind, model = _kind_model(ask, f"  {aname}", "claude/sonnet" if i % 2 else "opencode")
-        role = _q(ask, f"  {aname} 역할 한 줄", DEFAULT_ROLES[min(i - 1, len(DEFAULT_ROLES) - 1)])
+        role = _q(ask, f"  {aname} 역할 한 줄", DEFAULT_ROLES[slot])
         a: dict = {"kind": kind}
         if model:
             a["model"] = model
@@ -85,7 +84,7 @@ def ask_tab(ask: Ask, existing: set[str], used_names: set[str], default: str | N
     tab["agents"] = agents
     build = None
     if _yes(ask, "빌드/테스트용 쉘 창을 추가할까요?", True):
-        sname = _q(ask, "  쉘 이름", f"{prefix}build",
+        sname = _q(ask, "  쉘 이름", unique_name(DEFAULT_SHELL_NAME, used_names),
                    lambda a: None if NAME_RE.match(a) and a not in used_names else "소문자 시작, 중복 불가")
         used_names.add(sname)
         build = _q(ask, "  빌드 명령 (flow용)", "npm run build")

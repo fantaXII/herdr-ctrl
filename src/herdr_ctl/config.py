@@ -42,6 +42,29 @@ DEFAULT_POLICY = {"answer_timeout": 300.0, "max_answers_per_ask": 30, "deny": []
 MANAGED_ARGS = ("--permission-mode", "--allowedTools", "--allowed-tools", "--disallowedTools",
                 "--disallowed-tools", "--settings")
 DEFAULT_ROLES = ["구현", "테스트 작성", "리뷰", "보조"]
+# default agent names, one per DEFAULT_ROLES entry (the UI page keeps the same list: ui_page.html ROLE_NAMES)
+DEFAULT_AGENT_NAMES = ["coder", "tester", "reviewer", "helper"]
+DEFAULT_TAB_BASE = "work"     # new tabs: work1, work2, ...
+DEFAULT_SHELL_NAME = "build"
+
+
+def unique_name(base: str, used: set[str]) -> str:
+    """base, base2, base3 ... — the first one not in `used`."""
+    if base not in used:
+        return base
+    k = 2
+    while f"{base}{k}" in used:
+        k += 1
+    return f"{base}{k}"
+
+
+def next_tab_id(existing: set[str]) -> str:
+    """Smallest free work<N> (tab IDs are compared case-insensitively)."""
+    taken = {e.lower() for e in existing}
+    k = 1
+    while f"{DEFAULT_TAB_BASE}{k}" in taken:
+        k += 1
+    return f"{DEFAULT_TAB_BASE}{k}"
 
 
 @dataclass

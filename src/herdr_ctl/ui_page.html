@@ -83,11 +83,65 @@ dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--p
   width: min(720px, 94vw); }
 dialog::backdrop { background: rgba(0, 0, 0, .35); }
 .hidden { display: none !important; }
+/* explanations: one line under each heading, hints beside each field */
+.desc { color: var(--muted); font-size: 12.5px; margin: -6px 0 12px; line-height: 1.55; }
+.card > .desc { margin-top: -4px; }
+code { background: var(--chip); border-radius: 4px; padding: 0 5px; font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.form { display: grid; grid-template-columns: max-content minmax(180px, 340px) minmax(0, 1fr);
+  gap: 8px 14px; align-items: center; }
+.form > .lab { font-weight: 600; white-space: nowrap; }
+.form > .ctl { display: flex; gap: 6px 8px; align-items: center; min-width: 0; flex-wrap: wrap; }
+.form > .ctl > input, .form > .ctl > select { flex: 1; width: 100%; }
+.form > .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
+@media (max-width: 760px) {
+  .form { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .form > .hint { margin-bottom: 10px; }
+}
+.legend { font-size: 12px; color: var(--muted); margin: 10px 0 0; line-height: 1.7; }
+.legend b { color: var(--ink); font-weight: 600; }
+.card h3 .grow { flex: 1; }
+.stephead { display: grid; grid-template-columns: 28px 110px 140px minmax(0, 1fr) auto; gap: 6px;
+  font-size: 12px; color: var(--muted); font-weight: 600; padding: 2px 0; }
+@media (max-width: 760px) { .stephead { display: none; } }
+/* quick setup: segmented agent-count buttons */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; border-left: 1px solid var(--line); min-width: 38px; }
+.seg button:first-child { border-left: none; }
+.seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.ctl label.row { gap: 4px; white-space: nowrap; color: var(--ink); }
+/* flow: sample cards + pipeline diagram */
+.samples-box { margin-bottom: 12px; }
+.samples { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.sample { display: flex; flex-direction: column; gap: 6px; text-align: left; white-space: normal; padding: 10px 12px;
+  border-radius: 9px; background: var(--bg); }
+.sample:hover { background: var(--chip); }
+.sample-title { font-weight: 600; }
+.sample-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chip { font-size: 12px; padding: 1px 7px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); }
+.chip.shell { border-left-color: var(--muted); background: var(--pane-shell); }
+.chip-arrow { color: var(--muted); font-size: 11px; }
+.sample-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.sample-add { margin-left: auto; color: var(--accent); font-weight: 600; white-space: nowrap; }
+.pipe { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px; background: var(--bg);
+  border-radius: 8px; margin-bottom: 8px; }
+.node { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel);
+  padding: 5px 10px; min-width: 104px; max-width: 210px; cursor: pointer; text-align: left; white-space: normal; }
+.node.shell { border-left-color: var(--muted); background: var(--pane-shell); }
+.node.missing { border-color: var(--err); }
+.node .t { display: block; font-weight: 600; font-size: 13px; }
+.node .s { display: block; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node.missing .t { color: var(--err); }
+.arrow { color: var(--muted); font-size: 11px; text-align: center; line-height: 1.1; }
+.arrow b { display: block; font-size: 16px; font-weight: 400; }
+.arrow.cont b { letter-spacing: -2px; }
+.step.flash { background: var(--chip); border-radius: 6px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>hctrl</h1>
+  <h1>hctrl 설정</h1>
   <span class="crumb" id="crumb"></span>
   <span class="spacer"></span>
   <span id="headerActions" class="row"></span>
@@ -144,7 +198,17 @@ function toast(msg) {
   document.body.append(t);
   setTimeout(() => t.remove(), 4000);
 }
+const code = (t) => h("code", {}, t);
+const desc = (...parts) => h("p", { class: "desc" }, ...parts);
+// one form line: bold label | control | muted explanation (stacks on narrow screens)
+const frow = (label, control, ...hint) => [h("span", { class: "lab" }, label),
+  h("div", { class: "ctl" }, control), h("span", { class: "hint" }, ...hint)];
 const clone = (x) => JSON.parse(JSON.stringify(x));
+// same lists as config.py DEFAULT_ROLES / DEFAULT_AGENT_NAMES / DEFAULT_SHELL_NAME / DEFAULT_TAB_BASE (hctrl init)
+const DEFAULT_ROLES = ["구현", "테스트 작성", "리뷰", "보조"];
+const ROLE_NAMES = ["coder", "tester", "reviewer", "helper"];
+const SHELL_BASE = "build", TAB_BASE = "work";
+const PANES_PER_TAB = 4;
 const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const TAB_RE = /^[A-Za-z][A-Za-z0-9_-]{0,24}$/;
 
@@ -182,7 +246,9 @@ async function showLauncher() {
   app.replaceChildren(h("p", { class: "muted" }, "불러오는 중…"));
   let rows;
   try { rows = await api("GET", "/api/projects"); } catch (e) { app.replaceChildren(h("p", { class: "notice" }, e.message)); return; }
-  const list = h("section", {}, h("h2", {}, "프로젝트"));
+  const list = h("section", {}, h("h2", {}, "프로젝트"),
+    desc("hctrl로 관리하는 프로젝트입니다. ", h("b", {}, "[열기]"), "는 hctrl을 실행한 터미널에서 그 프로젝트의 herdr 세션을 열고, ",
+      h("b", {}, "[설정]"), "은 탭·agent·flow 구성을 고칩니다. 다음부터는 프로젝트 폴더에서 ", code("hctrl"), "만 실행하면 바로 열립니다."));
   if (S.mode === "session") list.append(h("div", { class: "notice" },
     "herdr 세션 안에서 연 설정 화면입니다. 다른 프로젝트의 세션은 일반 터미널에서 hctrl로 여세요."));
   if (!rows.length) list.append(h("p", { class: "muted" }, "등록된 프로젝트가 없습니다. 아래에서 추가하세요."));
@@ -206,6 +272,8 @@ async function showLauncher() {
   const name = h("input", { placeholder: base(S.cwd), style: "width:180px", "aria-label": "프로젝트 이름" });
   path.addEventListener("input", () => { name.placeholder = base(path.value); });
   const add = h("section", {}, h("h2", {}, "+ 프로젝트 추가"),
+    desc("작업할 폴더를 등록합니다. 목록은 ", code("~/.config/herdr_ctl/projects.yaml"), "에, 탭·agent 설정은 그 폴더의 ",
+      code(".herdr-flow/config.yaml"), "에 저장됩니다."),
     h("div", { class: "row" }, h("label", { class: "field", style: "flex:1" }, "폴더 경로", path),
       h("label", { class: "field" }, "이름 (비우면 폴더 이름)", name),
       h("button", { class: "primary", style: "align-self:end", onclick: async () => {
@@ -339,9 +407,11 @@ function renameKey(obj, from, to) {
   for (const [k, v] of Object.entries(obj)) out[k === from ? to : k] = v;
   return out;
 }
-function freeName(prefix) {
+// base, base2, base3 … — the first name no agent/shell/orchestrator in the project uses (config.unique_name)
+function uniqueName(base) {
   const used = new Set(allMembers(S.data).map((m) => m.name));
-  for (let i = 1; ; i++) if (!used.has(prefix + i)) return prefix + i;
+  if (!used.has(base)) return base;
+  for (let k = 2; ; k++) if (!used.has(base + k)) return base + k;
 }
 // Removing members also removes the flow steps that use them (after asking); flows left empty go too.
 function dropSteps(names) {
@@ -415,6 +485,22 @@ function kindSelect(spec) {
     S.models.kinds.map((k) => h("option", { value: k, selected: k === (spec.kind || "claude") }, k)));
 }
 const PERMS = ["ask", "edit", "auto", "readonly"];
+const PERM_HELP = {
+  ask: "모든 작업마다 사용자 승인을 받습니다.",
+  edit: "파일 수정은 자동, 그 밖의 명령 실행은 승인을 요청합니다.",
+  auto: "대부분 승인 없이 진행합니다.",
+  readonly: "읽기와 hctrl 명령만 자동, 나머지는 사용자 승인을 받습니다.",
+};
+const ROLE_HELP = {
+  confirm: "orchestrator가 agent 역할을 바꾸려 하면 제안으로 남고, 사용자가 승인해야 반영됩니다 (hctrl role --review).",
+  auto: "orchestrator가 agent 역할을 바로 바꾸고 알림만 띄웁니다.",
+  off: "LLM은 역할을 바꿀 수 없습니다.",
+};
+const UNATTENDED_HELP = {
+  off: "agent의 질문과 권한 승인을 모두 사용자가 처리합니다.",
+  questions: "agent의 질문에는 orchestrator가 대신 답하고, 권한 승인은 사용자가 합니다.",
+  approve: "질문과 권한 승인 모두 orchestrator가 처리합니다. 위험한 요청(안전장치)은 사용자에게 넘깁니다.",
+};
 function permSelect(spec, dflt) {
   return h("select", { "aria-label": "권한", onchange: (e) => { if (e.target.value) spec.permission = e.target.value; else delete spec.permission; changed(); } },
     h("option", { value: "" }, "(기본 " + dflt + ")"),
@@ -428,11 +514,13 @@ function render() {
   renderHeader(); renderIssues();
   const app = $("app");
   const top = h("section", {}, h("h2", {}, "프로젝트 ", h("span", { class: "muted small" }, S.root)),
-    !S.exists ? h("div", { class: "notice" }, "아직 config.yaml이 없습니다. 아래 기본값을 고친 뒤 [만들기]를 누르세요.") : null,
+    desc("이 화면의 내용은 ", code(".herdr-flow/config.yaml"), "에 저장됩니다. 고칠 때마다 검사가 돌고, 문제가 있으면 화면 아래에 표시되며 저장 버튼이 꺼집니다."),
+    !S.exists ? h("div", { class: "notice" }, "아직 config.yaml이 없습니다. 아래 기본값을 고친 뒤 오른쪽 위 [만들기]를 누르세요.") : null,
     S.running ? h("div", { class: "notice" }, "세션이 실행 중입니다. 저장하면 탭 표시 이름은 바로 바뀌고, 창/agent 변경은 반영할지 묻습니다.") : null,
-    h("div", { class: "grid" }, h("label", { class: "field" }, "세션 이름",
-      h("input", { value: d.session || "", onchange: (e) => { d.session = e.target.value.trim(); changed(); } }))));
-  app.replaceChildren(top, renderTabs(), renderFlows());
+    h("div", { class: "form" }, frow("세션 이름",
+      h("input", { value: d.session || "", "aria-label": "세션 이름", onchange: (e) => { d.session = e.target.value.trim(); changed(); } }),
+      "이 프로젝트 전용 herdr 세션의 이름입니다. 영문/숫자/", code("._-"), "만 쓸 수 있습니다.")));
+  app.replaceChildren(top, renderQuick(), renderTabs(), renderFlows());
 }
 
 function renderTabs() {
@@ -443,19 +531,105 @@ function renderTabs() {
     names.map((n) => h("button", { class: "tabchip" + (n === S.tab ? " active" : ""), onclick: () => { S.tab = n; render(); } },
       (d.tabs[n] && d.tabs[n].title) ? d.tabs[n].title + " (" + n + ")" : n)),
     h("button", { onclick: addTab }, "+ 탭 추가"));
-  const sec = h("section", {}, h("h2", {}, "탭"), chips);
+  const sec = h("section", {}, h("h2", {}, "탭"),
+    desc("탭 하나는 함께 일하는 agent 묶음이고, herdr 화면에서도 탭 하나로 보입니다. 창이 4개를 넘으면 ", code("-2"),
+      " 탭으로 이어지고, 쉘 창은 ", code("-build"), " 탭에 따로 모입니다. 고칠 탭을 고르세요."), chips);
   if (S.tab) sec.append(renderTab(S.tab, d.tabs[S.tab]));
   return sec;
 }
 
 function addTab() {
   const d = S.data;
-  let id = "";
-  for (const c of "XYZWVUTSRQPONMLKJIHGFEDCBA") if (!Object.keys(d.tabs).some((t) => t.toLowerCase() === c.toLowerCase())) { id = c; break; }
-  if (!id) id = "T" + Object.keys(d.tabs).length;
-  const p = id.toLowerCase();
-  d.tabs[id] = { orchestrator: "none", agents: { [freeName(p)]: { kind: "claude", model: "sonnet", role: "구현" } } };
+  const taken = new Set(Object.keys(d.tabs).map((x) => x.toLowerCase()));
+  let k = 1;
+  while (taken.has(TAB_BASE + k)) k++;
+  const id = TAB_BASE + k;  // work1, work2 … (config.next_tab_id)
+  // same starting point as `hctrl init`: orchestrator + 2 agents + build shell (quick setup changes it)
+  const t = { orchestrator: { kind: "claude", model: "opus" }, agents: {}, shells: {} };
+  d.tabs[id] = t;
+  addAgents(id, t, 2);
+  t.shells[uniqueName(SHELL_BASE)] = {};
   S.tab = id; changed();
+}
+
+// ------------------------------------------------------------ quick setup
+// new agents get hctrl init's defaults: claude/sonnet and opencode alternating,
+// role 구현 → 테스트 작성 → 리뷰 → 보조 and the matching name coder → tester → reviewer → helper (coder2 … if taken)
+function addAgents(tname, t, upTo) {
+  for (let i = Object.keys(t.agents).length + 1; i <= upTo; i++) {
+    const slot = Math.min(i - 1, DEFAULT_ROLES.length - 1);
+    const spec = i % 2 ? { kind: "claude", model: "sonnet" } : { kind: "opencode" };
+    spec.role = DEFAULT_ROLES[slot];
+    t.agents[uniqueName(ROLE_NAMES[slot])] = spec;
+  }
+}
+function setAgentCount(tname, t, n) {
+  const names = Object.keys(t.agents);
+  if (n > names.length) addAgents(tname, t, n);
+  else if (n < names.length) {
+    const gone = names.slice(n);
+    if (!confirm(gone.join(", ") + "을(를) 삭제할까요? (설정한 내용도 함께 사라집니다)")) return;
+    if (!dropSteps(gone)) return;
+    for (const g of gone) delete t.agents[g];
+  } else return;
+  changed();
+}
+function setOrch(tname, t, on) {
+  if (on) t.orchestrator = { kind: "claude", model: "opus" };
+  else {
+    if (!dropSteps([tname.toLowerCase() + "-orch"])) return false;
+    t.orchestrator = "none"; delete t.unattended; delete t.unattended_policy;
+  }
+  changed();
+  return true;
+}
+function setShells(tname, t, on) {
+  if (on) t.shells[uniqueName(SHELL_BASE)] = {};
+  else {
+    const gone = Object.keys(t.shells);
+    if (!confirm("쉘 창 " + gone.join(", ") + "을(를) 삭제할까요?") || !dropSteps(gone)) return false;
+    t.shells = {};
+  }
+  changed();
+  return true;
+}
+const hasOrch = (t) => !!(t.orchestrator && t.orchestrator !== "none" && typeof t.orchestrator === "object");
+function renderQuick() {
+  const d = S.data;
+  const ids = Object.keys(d.tabs);
+  const sec = h("section", {}, h("h2", {}, "빠른 구성"),
+    desc("탭을 골라 agent 수와 창 구성을 한 번에 정합니다. 이름·모델·역할 같은 세부 설정은 아래 탭에서 고칩니다."));
+  if (!ids.length || !S.tab || !d.tabs[S.tab] || typeof d.tabs[S.tab] !== "object") {
+    sec.append(h("p", { class: "muted small", style: "margin:0" }, "탭이 없습니다. 아래 [+ 탭 추가]로 만드세요."));
+    return sec;
+  }
+  const tname = S.tab, t = d.tabs[tname];
+  const pick = h("select", { "aria-label": "대상 탭", onchange: (e) => { S.tab = e.target.value; render(); } },
+    ids.map((id) => h("option", { value: id, selected: id === tname }, d.tabs[id] && d.tabs[id].title ? id + " (" + d.tabs[id].title + ")" : id)));
+  sec.append(h("div", { class: "form" },
+    frow("대상 탭", pick, "아래 탭 목록에서 고른 탭과 같이 움직입니다."),
+    ...quickSetup(tname, t)));
+  return sec;
+}
+function quickSetup(tname, t) {
+  const n = Object.keys(t.agents).length;
+  const orch = hasOrch(t);
+  const shells = Object.keys(t.shells).length;
+  const seg = h("div", { class: "seg", role: "group", "aria-label": "agent 수" },
+    [1, 2, 3, 4].map((k) => h("button", { class: k === n ? "on" : null, "aria-pressed": k === n ? "true" : "false",
+      title: "작업 agent " + k + "개", onclick: () => setAgentCount(tname, t, k) }, k)));
+  const box = (label, checked, onToggle) => h("label", { class: "row small" },
+    h("input", { type: "checkbox", checked, onchange: (e) => { if (!onToggle(e.target.checked)) e.target.checked = !e.target.checked; } }), label);
+  const panes = n + (orch ? 1 : 0);
+  const title = t.title || tname;
+  const fit = panes === 0 ? "agent나 orchestrator가 하나는 있어야 창이 생깁니다."
+    : panes <= PANES_PER_TAB ? (orch ? "orchestrator + " : "") + "agent " + n + " = 한 화면 " + panes + "/" + PANES_PER_TAB + "칸" +
+      (panes === PANES_PER_TAB ? " (꽉 참)" : "") + "."
+    : "창 " + panes + "개라 한 화면(" + PANES_PER_TAB + "칸)을 넘어 '" + title + "-2' 탭으로 이어집니다.";
+  return [
+    ...frow("agent 수", seg, "늘리면 기본값(coder, tester, reviewer, helper 순)으로 추가하고, 줄이면 뒤에서부터 지웁니다(확인 후). 이미 고친 agent는 그대로 둡니다."),
+    ...frow("창 구성", [box("orchestrator", orch, (on) => setOrch(tname, t, on)), box("쉘 창", shells > 0, (on) => setShells(tname, t, on))], fit),
+  ];
 }
 
 function renderTab(tname, t) {
@@ -471,48 +645,61 @@ function renderTab(tname, t) {
     for (const f of Object.values(d.flows || {})) if (f && f.tab === tname) f.tab = nv;
     S.tab = nv; changed();
   } });
-  const head = h("div", { class: "grid" },
-    h("label", { class: "field" }, "탭 ID (명령에서 사용: hctrl ask " + tname + " …)", idInput,
-      idLocked ? h("span", { class: "muted small" }, "세션 실행 중에는 ID 대신 표시 이름을 바꾸세요") : null),
-    h("label", { class: "field" }, "표시 이름 (herdr 탭에 보이는 이름, 바로 반영)",
-      h("input", { value: t.title || "", placeholder: tname, maxlength: 30, onchange: (e) => {
-        const v = e.target.value.trim(); if (v) t.title = v; else delete t.title; changed(); } })),
-    h("div", { class: "row", style: "align-self:end" }, h("button", { class: "danger", onclick: () => {
-      if (!confirm("탭 '" + tname + "'을 삭제할까요?")) return;
-      if (!dropSteps(allMembers(d).filter((m) => m.tab === tname).map((m) => m.name))) return;
-      delete d.tabs[tname]; changed(); } }, "탭 삭제")));
-  const left = h("div", {}, head, h("p"), renderOrch(tname, t), renderAgents(tname, t), renderShells(tname, t));
-  return h("div", { class: "cols" }, left, h("div", {}, h("div", { class: "card" }, h("h3", {}, "화면 배치 미리보기"), renderPreview(tname, t))));
+  idInput.setAttribute("aria-label", "탭 ID");
+  const head = h("div", { class: "card" },
+    h("h3", {}, "탭 '" + (t.title || tname) + "' 기본 정보", h("span", { class: "grow" }),
+      h("button", { class: "danger", onclick: () => {
+        if (!confirm("탭 '" + tname + "'을 삭제할까요?")) return;
+        if (!dropSteps(allMembers(d).filter((m) => m.tab === tname).map((m) => m.name))) return;
+        delete d.tabs[tname]; changed(); } }, "탭 삭제")),
+    h("div", { class: "form" },
+      frow("탭 ID", idInput,
+        idLocked ? "세션 실행 중에는 바꿀 수 없습니다. 대신 표시 이름을 바꾸세요."
+          : ["명령에서 이 탭을 가리키는 이름입니다 (예: ", code("hctrl ask " + tname + " \"…\""), "). 영문으로 시작, 25자 이하."]),
+      frow("표시 이름",
+        h("input", { value: t.title || "", placeholder: tname, maxlength: 30, "aria-label": "표시 이름", onchange: (e) => {
+          const v = e.target.value.trim(); if (v) t.title = v; else delete t.title; changed(); } }),
+        "herdr 화면의 탭 제목입니다. 한글도 됩니다. 비우면 탭 ID를 쓰고, 세션 실행 중에도 저장하면 바로 바뀝니다.")));
+  const left = h("div", {}, head, renderOrch(tname, t), renderAgents(tname, t), renderShells(tname, t));
+  return h("div", { class: "cols" }, left, h("div", {}, h("div", { class: "card" }, h("h3", {}, "화면 배치 미리보기"),
+    desc("저장하면 herdr에 이렇게 배치됩니다. 진한 칸이 orchestrator입니다."), renderPreview(tname, t))));
 }
 
 function renderOrch(tname, t) {
-  const on = t.orchestrator && t.orchestrator !== "none" && typeof t.orchestrator === "object";
+  const on = hasOrch(t);
   const card = h("div", { class: "card" }, h("h3", {}, "orchestrator (지휘 LLM)",
     h("label", { class: "row small" }, h("input", { type: "checkbox", checked: on, onchange: (e) => {
-      if (e.target.checked) t.orchestrator = { kind: "claude", model: "opus" };
-      else if (dropSteps([tname.toLowerCase() + "-orch"])) {
-        t.orchestrator = "none"; delete t.unattended; delete t.unattended_policy;
-      }
-      changed(); } }), "사용")));
-  if (!on) { card.append(h("p", { class: "muted small" }, "없음: hctrl run / send로만 지시합니다.")); return card; }
+      if (!setOrch(tname, t, e.target.checked)) e.target.checked = !e.target.checked; } }), "사용")),
+    desc("탭을 지휘하는 LLM입니다. 작업 agent에게 일을 나눠 주고 결과를 검토하며, 직접 코딩은 하지 않습니다. 사용자는 ",
+      code("hctrl ask " + tname + " \"…\""), "로 orchestrator에게 지시합니다."));
+  if (!on) {
+    card.append(h("p", { class: "muted small", style: "margin:0" }, "사용 안 함: 사용자가 ", code("hctrl run <flow>"), " 또는 ",
+      code("hctrl send <agent> \"…\""), "로 직접 지시합니다."));
+    return card;
+  }
   const o = t.orchestrator;
   const oname = tname.toLowerCase() + "-orch";
-  card.append(h("div", { class: "grid" },
-    h("label", { class: "field" }, "종류", kindSelect(o)),
-    h("label", { class: "field" }, "모델", modelControl(o, (v) => setModel(o, v))),
-    h("label", { class: "field" }, "권한", permSelect(o, "readonly")),
-    h("label", { class: "field" }, "역할 변경 정책",
-      h("select", { onchange: (e) => { t.role_update = e.target.value; changed(); } },
-        ["confirm", "auto", "off"].map((v) => h("option", { value: v, selected: v === (t.role_update || "confirm") }, v)))),
-    h("label", { class: "field" }, "무인 모드",
-      h("select", { onchange: (e) => { if (e.target.value === "off") delete t.unattended; else t.unattended = e.target.value; changed(); } },
+  const role = t.role_update || "confirm";
+  const unatt = t.unattended || "off";
+  card.append(h("div", { class: "form" },
+    frow("종류 / 모델", [kindSelect(o), modelControl(o, (v) => setModel(o, v))],
+      "orchestrator는 판단이 중요하므로 큰 모델(opus 등)을 권합니다."),
+    frow("권한", permSelect(o, "readonly"), PERM_HELP[o.permission || "readonly"]),
+    frow("역할 변경 정책",
+      h("select", { "aria-label": "역할 변경 정책", onchange: (e) => { t.role_update = e.target.value; changed(); } },
+        ["confirm", "auto", "off"].map((v) => h("option", { value: v, selected: v === role }, v))),
+      ROLE_HELP[role]),
+    frow("무인 모드",
+      h("select", { "aria-label": "무인 모드", onchange: (e) => { if (e.target.value === "off") delete t.unattended; else t.unattended = e.target.value; changed(); } },
         [["off", "off (모두 사용자)"], ["questions", "questions (질문만 대신 답)"], ["approve", "approve (승인도 대신)"]]
-          .map(([v, l]) => h("option", { value: v, selected: v === (t.unattended || "off") }, l))))),
-    h("p"),
-    h("label", { class: "field" }, "프로젝트 목표 한 줄",
-      h("input", { value: o.goal || "", onchange: (e) => { const v = e.target.value.trim(); if (v) o.goal = v; else delete o.goal; changed(); } })),
-    h("p", { class: "row small" }, h("button", { onclick: () => editRole(oname) }, "역할 상세 편집"),
-      h("span", { class: "muted" }, "이름: " + oname)));
+          .map(([v, l]) => h("option", { value: v, selected: v === unatt }, l))),
+      UNATTENDED_HELP[unatt]),
+    frow("프로젝트 목표",
+      h("input", { value: o.goal || "", placeholder: "예: 로그인/결제 모듈 개발", "aria-label": "프로젝트 목표",
+        onchange: (e) => { const v = e.target.value.trim(); if (v) o.goal = v; else delete o.goal; changed(); } }),
+      "orchestrator가 늘 염두에 둘 목표 한 줄입니다 (선택)."),
+    frow("역할 상세", h("button", { onclick: () => editRole(oname) }, "역할 상세 편집"),
+      "창 이름은 ", code(oname), "입니다. 상세 지시는 저장한 뒤 편집할 수 있습니다.")));
   return card;
 }
 
@@ -537,10 +724,17 @@ function renderAgents(tname, t) {
         h("button", { title: "상세 프롬프트", onclick: () => editRole(name) }, "상세"),
         h("button", { class: "danger", title: "삭제", onclick: () => { if (dropSteps([name])) { delete t.agents[name]; changed(); } } }, "삭제"))));
   }
+  const COLS = [["이름", "창 이름. flow 단계와 hctrl send <이름> \"…\"에서 씁니다"], ["종류", "실행할 agent 프로그램"],
+    ["모델", "(기본)은 그 agent의 기본 모델"], ["권한", "승인 없이 할 수 있는 범위 (아래 설명)"],
+    ["역할", "agent에게 주는 한 줄 역할. 긴 지시는 [상세]"], ["", ""]];
   return h("div", { class: "card" }, h("h3", {}, "작업 agent", h("span", { class: "grow" }),
-      h("button", { onclick: () => { t.agents[freeName(tname.toLowerCase()[0])] = { kind: "claude", model: "sonnet" }; changed(); } }, "+ agent")),
-    Object.keys(t.agents).length ? h("table", { class: "agents" }, h("thead", {}, h("tr", {}, ["이름", "종류", "모델", "권한", "역할", ""].map((x) => h("th", {}, x)))), tb)
-      : h("p", { class: "muted small" }, "agent가 없습니다."));
+      h("button", { onclick: () => { addAgents(tname, t, Object.keys(t.agents).length + 1); changed(); } }, "+ agent")),
+    desc("실제 일을 하는 agent입니다 (구현, 테스트 작성, 리뷰 등). agent마다 herdr 창이 하나씩 열립니다. 이름은 자유롭게 바꿀 수 있고(소문자로 시작, 프로젝트 안에서 중복 불가), flow 단계에도 자동으로 반영됩니다. 명령에서는 ",
+      code("hctrl send <이름> \"…\""), "처럼 씁니다."),
+    Object.keys(t.agents).length ? [
+      h("table", { class: "agents" }, h("thead", {}, h("tr", {}, COLS.map(([x, tip]) => h("th", { title: tip || null }, x)))), tb),
+      h("p", { class: "legend" }, "권한: ", PERMS.flatMap((p, i) => [i ? " · " : "", h("b", {}, p), p === "edit" ? " (기본) " : " ", PERM_HELP[p]])),
+    ] : h("p", { class: "muted small" }, "agent가 없습니다. [+ agent]로 추가하세요."));
 }
 
 function renderShells(tname, t) {
@@ -551,11 +745,13 @@ function renderShells(tname, t) {
       if (!NAME_RE.test(nv)) { e.target.value = name; toast("이름: 소문자로 시작, 소문자/숫자/_- 32자 이하"); return; }
       if (nv !== name && allMembers(S.data).some((m) => m.name === nv)) { e.target.value = name; toast("이미 있는 이름입니다"); return; }
       t.shells = renameKey(t.shells, name, nv); renameMember(name, nv); changed(); } }),
-    h("span", { class: "muted small" }, "bash 창 (flow의 쉘 단계가 여기서 실행)"),
+    h("span", { class: "muted small" }, "bash 창"),
     h("button", { class: "danger", onclick: () => { if (dropSteps([name])) { delete t.shells[name]; changed(); } } }, "삭제")));
-  return h("div", { class: "card" }, h("h3", {}, "쉘 창", h("span", { class: "grow" }),
-    h("button", { onclick: () => { t.shells[freeName(tname.toLowerCase()[0] + "sh")] = {}; changed(); } }, "+ 쉘")),
-    rows.length ? rows : h("p", { class: "muted small" }, "없음"));
+  return h("div", { class: "card" }, h("h3", {}, "쉘 창 (선택)", h("span", { class: "grow" }),
+    h("button", { onclick: () => { t.shells[uniqueName(SHELL_BASE)] = {}; changed(); } }, "+ 쉘")),
+    desc("빌드나 테스트 명령을 돌릴 bash 창입니다. flow의 shell 단계가 여기서 실행되고, herdr에서는 ",
+      code((t.title || tname) + "-build"), " 탭에 따로 모입니다."),
+    rows.length ? rows : h("p", { class: "muted small", style: "margin:0" }, "없음"));
 }
 
 // layout: same rules as hctrl (orchestrator first, 4 panes per herdr tab, overflow → <title>-2 …;
@@ -585,30 +781,112 @@ function renderPreview(tname, t) {
 }
 
 // ------------------------------------------------------------------ flows
+// Sample flows sized to the selected tab: every agent appears exactly once (agent rows = agent count),
+// in table order; optional build step on the tab's first shell. More than 4 agents: the first 4 are used.
+// (`hctrl init`'s own default flow is separate: init_cmd.default_flow.)
+const BUILD_CMD = "npm run build";
+const SLOT_STEPS = [
+  { word: "구현", prompt: "요청된 기능을 구현하세요. 결과 요약을 {out} 에 쓰세요." },
+  { word: "테스트", prompt: "{prev} 를 읽고 테스트를 추가하세요. 요약은 {out}" },
+  { word: "리뷰", prompt: "직전 결과({prev})를 확인하고 변경된 코드를 리뷰하세요. 문제가 있으면 수정하고 요약은 {out}" },
+  { word: "정리", prompt: "{prev} 를 읽고 문서·정리 등 남은 작업을 마무리하세요. 요약은 {out}" },
+];
+function samplesFor(agents, sh) {
+  const a = agents.slice(0, SLOT_STEPS.length);
+  const n = a.length;
+  if (!n) return [];
+  const step = (k) => ({ agent: a[k], prompt: SLOT_STEPS[k].prompt });
+  const build = () => ({ shell: sh, run: BUILD_CMD, on_fail: "continue" });
+  const words = a.map((_, k) => SLOT_STEPS[k].word);
+  const plain = { name: "basic", title: words.join(" → "), steps: a.map((_, k) => step(k)) };
+  if (!sh) return [plain];
+  if (n === 1) return [
+    { name: "build", title: "구현 → 빌드", steps: [step(0), build()] },
+    { name: "build-fix", title: "구현 → 빌드 → 고치기", note: a[0] + "가 빌드 오류도 고칩니다",
+      steps: [step(0), build(), { agent: a[0], prompt: "{prev} 의 빌드 로그를 읽고 오류가 있으면 고치세요. 요약은 {out}" }] },
+  ];
+  // build after implement+test, before review/cleanup
+  const cut = Math.min(2, n);
+  const withBuild = [...a.slice(0, cut).map((_, k) => step(k)), build(), ...a.slice(cut).map((_, k) => step(cut + k))];
+  return [plain, { name: "build", title: [...words.slice(0, cut), "빌드", ...words.slice(cut)].join(" → "), steps: withBuild }];
+}
+function addSample(sample) {
+  const d = S.data;
+  const id = S.tab.toLowerCase();
+  let name = sample.name + "-" + id;
+  for (let k = 2; d.flows[name]; k++) name = sample.name + "-" + id + "-" + k;
+  d.flows[name] = { steps: clone(sample.steps) };
+  S.flash = name;
+  changed();
+  toast("flow '" + name + "'를 추가했습니다. 지시와 명령을 프로젝트에 맞게 고치세요.");
+}
+function renderSamples() {
+  const t = S.tab && S.data.tabs[S.tab];
+  const box = h("div", { class: "samples-box" });
+  if (!t || typeof t !== "object") { box.append(h("p", { class: "muted small" }, "예제로 시작하기: 먼저 탭을 만드세요.")); return box; }
+  const agents = Object.keys(t.agents || {});
+  const sh = Object.keys(t.shells || {})[0];
+  const tabLabel = t.title ? t.title + " (" + S.tab + ")" : S.tab;
+  if (!agents.length) {
+    box.append(h("p", { class: "muted small" }, "예제로 시작하기: 탭 '" + tabLabel + "'에 agent가 없습니다. 빠른 구성에서 agent 수를 고르세요."));
+    return box;
+  }
+  const used = agents.slice(0, SLOT_STEPS.length);
+  box.append(h("p", { class: "small", style: "margin:0 0 8px" }, h("b", {}, "예제로 시작하기"),
+    h("span", { class: "muted" }, " · 탭 '" + tabLabel + "'의 agent " + agents.length + "개(" + used.join(", ") +
+      (agents.length > used.length ? " 외 " + (agents.length - used.length) + "개" : "") + ")" +
+      (sh ? "와 쉘(" + sh + ")" : "") + "에 맞춘 예제입니다. 누르면 아래에 추가됩니다.")));
+  const cards = samplesFor(agents, sh).map((s) => {
+    const nAgents = new Set(s.steps.filter((x) => x.agent).map((x) => x.agent)).size;
+    const hasShell = s.steps.some((x) => "shell" in x);
+    const chips = [];
+    s.steps.forEach((x, i) => {
+      if (i) chips.push(h("span", { class: "chip-arrow" }, "shell" in s.steps[i - 1] && s.steps[i - 1].on_fail === "continue" ? "┄▶" : "─▶"));
+      chips.push(h("span", { class: "chip" + ("shell" in x ? " shell" : "") }, ("shell" in x ? "$ " + x.shell : "● " + x.agent)));
+    });
+    return h("button", { class: "sample", onclick: () => addSample(s) },
+      h("span", { class: "sample-title" }, s.title),
+      h("span", { class: "sample-flow" }, chips),
+      h("span", { class: "sample-meta" }, "agent " + nAgents + (hasShell ? " + 쉘" : "") + " · 단계 " + s.steps.length +
+        (s.note ? " · " + s.note : ""), h("span", { class: "sample-add" }, "+ 추가")));
+  });
+  box.append(h("div", { class: "samples" }, cards));
+  if (!sh) box.append(h("p", { class: "muted small", style: "margin:6px 0 0" }, "쉘 창을 켜면(빠른 구성) 빌드 단계가 들어간 예제도 나옵니다."));
+  return box;
+}
+
 function renderFlows() {
   const d = S.data;
   d.flows = d.flows && typeof d.flows === "object" ? d.flows : {};
   const members = allMembers(d);
-  const sec = h("section", {}, h("h2", {}, "flow (정해진 순서 실행: hctrl run <이름>)", h("span", { class: "grow" }),
+  const sec = h("section", {}, h("h2", {}, "flow (선택)", h("span", { class: "grow" }),
     h("button", { onclick: () => {
       let n = 1; while (d.flows["flow-" + n]) n++;
       const first = members.find((m) => m.type === "agent");
       d.flows["flow-" + n] = { steps: [first ? { agent: first.name, prompt: "작업하고 결과 요약을 {out} 에 쓰세요." } : { shell: "", run: "" }] };
-      changed(); } }, "+ flow")));
+      S.flash = "flow-" + n;
+      changed(); } }, "+ 빈 flow")),
+    desc("여러 단계를 정해진 순서로 실행하는 작업 흐름입니다 (예: 구현 → 테스트 → 빌드 → 검토). 각 단계는 agent에게 지시하거나 쉘 창에서 명령을 실행하고, 결과 파일을 다음 단계로 넘깁니다. 실행은 ",
+      code("hctrl run <flow 이름>"), "이며, orchestrator가 대신 실행하기도 합니다."),
+    renderSamples());
   const names = Object.keys(d.flows);
-  if (!names.length) sec.append(h("p", { class: "muted small" }, "flow가 없습니다."));
+  if (!names.length) sec.append(h("p", { class: "muted small", style: "margin:0" }, "flow가 없습니다. 위 예제를 누르거나 [+ 빈 flow]로 직접 만드세요."));
   for (const fname of names) {
     const f = d.flows[fname];
     if (!f || typeof f !== "object") continue;
     f.steps = Array.isArray(f.steps) ? f.steps : [];
-    const card = h("div", { class: "card" }, h("h3", {},
-      h("input", { value: fname, "aria-label": "flow 이름", onchange: (e) => {
+    const card = h("div", { class: "card", id: "flow-" + fname }, h("h3", {}, h("span", { class: "muted" }, "flow 이름"),
+      h("input", { value: fname, "aria-label": "flow 이름", style: "width:220px", onchange: (e) => {
         const nv = e.target.value.trim();
         if (!nv || (nv !== fname && d.flows[nv])) { e.target.value = fname; toast("비어 있거나 이미 있는 flow 이름입니다"); return; }
         d.flows = renameKey(d.flows, fname, nv); changed(); } }),
+      h("span", { class: "muted small", style: "font-weight:400" }, "실행: ", code("hctrl run " + fname)),
       h("span", { class: "grow" }),
       h("button", { class: "danger", onclick: () => { if (confirm("flow '" + fname + "'을 삭제할까요?")) { delete d.flows[fname]; changed(); } } }, "flow 삭제")));
-    f.steps.forEach((st, i) => card.append(renderStep(f, st, i, members)));
+    card.append(renderPipe(fname, f, members));
+    if (f.steps.length) card.append(h("div", { class: "stephead" }, h("span", {}, "#"), h("span", {}, "종류"),
+      h("span", {}, "대상 창"), h("span", {}, "지시 (agent) / 명령 (shell)"), h("span", {})));
+    f.steps.forEach((st, i) => card.append(renderStep(f, st, i, members, fname)));
     card.append(h("p", { class: "row small", style: "margin-bottom:0" },
       h("button", { onclick: () => {
         const prev = f.steps[f.steps.length - 1];
@@ -617,10 +895,56 @@ function renderFlows() {
       h("span", { class: "muted" }, "{out} = 이번 단계 결과 파일, {prev} = 직전 단계 결과 파일")));
     sec.append(card);
   }
+  if (S.flash) {  // bring a just-added flow into view
+    const name = S.flash; S.flash = null;
+    setTimeout(() => { const el = document.getElementById("flow-" + name); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" }); });
+  }
   return sec;
 }
 
-function renderStep(f, st, i, members) {
+// flow as a diagram: ● agent / $ shell nodes; ──▶ passes the result file on, ┄┄▶ = previous shell step may fail and continue
+function renderPipe(fname, f, members) {
+  const pipe = h("div", { class: "pipe", "aria-label": "flow 순서도" });
+  if (!f.steps.length) { pipe.append(h("span", { class: "muted small" }, "단계가 없습니다. [+ 단계]로 추가하세요.")); return pipe; }
+  const roleOf = (name) => {
+    for (const t of Object.values(S.data.tabs || {})) if (t && t.agents && t.agents[name]) return t.agents[name].role;
+    return null;
+  };
+  const short = (s, n) => { s = String(s || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+  f.steps.forEach((st, i) => {
+    if (i) {
+      const prev = f.steps[i - 1];
+      const cont = "shell" in prev && prev.on_fail === "continue";
+      pipe.append(h("span", { class: "arrow" + (cont ? " cont" : ""), title: cont ? "앞 단계가 실패해도 계속 진행하고, 결과 파일을 넘깁니다"
+        : "앞 단계의 결과 파일({prev})을 넘깁니다" + ("shell" in prev ? ". 실패하면 여기서 멈춥니다" : "") },
+        h("b", {}, cont ? "┄┄▶" : "──▶"), cont ? "실패해도 계속" : "결과"));
+    }
+    const isShell = "shell" in st;
+    const target = isShell ? st.shell : st.agent;
+    const exists = members.some((m) => m.name === target && (isShell ? m.type === "shell" : m.type !== "shell"));
+    // agent step: what this step asks, without the file placeholders ("{prev} 를 검토하고…" → "검토하고…")
+    const gist = String(st.prompt || "").replace(/\{(prev|out)\}\s*(를|을|의|에|에서)?\s*/g, "").replace(/^읽고\s+/, "").split(/[.!?]\s/)[0];
+    const sub = isShell ? (st.run ? short(st.run, 24) : "(명령 없음)") : short(gist || roleOf(target) || "(지시 없음)", 24);
+    pipe.append(h("button", { class: "node" + (isShell ? " shell" : "") + (exists ? "" : " missing"),
+      title: (isShell ? st.run : st.prompt) || "", onclick: () => focusStep(fname, i) },
+      h("span", { class: "t" }, (i + 1) + " " + (isShell ? "$ " : "● ") + (target || "(대상 없음)") + (exists || !target ? "" : " (없음)")),
+      h("span", { class: "s" }, sub || " ")));
+  });
+  pipe.append(h("span", { class: "muted small", style: "flex-basis:100%" },
+    "● agent 단계 · $ shell 단계 · ──▶ 결과 파일 전달 · ┄┄▶ 실패해도 계속 · 단계를 누르면 아래 편집 줄로 이동"));
+  return pipe;
+}
+function focusStep(fname, i) {
+  const row = document.getElementById("step-" + fname + "-" + i);
+  if (!row) return;
+  if (row.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.classList.add("flash");
+  setTimeout(() => row.classList.remove("flash"), 1200);
+  const input = row.querySelector("textarea, input");
+  if (input) input.focus({ preventScroll: true });
+}
+
+function renderStep(f, st, i, members, fname) {
   const isShell = "shell" in st;
   const pool = members.filter((m) => (isShell ? m.type === "shell" : m.type !== "shell"));
   const cur = isShell ? st.shell : st.agent;
@@ -639,7 +963,7 @@ function renderStep(f, st, i, members) {
           ["stop", "continue"].map((v) => h("option", { value: v, selected: v === (st.on_fail || "stop") }, v)))))
     : h("textarea", { rows: 2, value: st.prompt || "", placeholder: "지시 ({out}에 결과 요약을 쓰게 하세요)", onchange: (e) => { st.prompt = e.target.value; changed(); } });
   const move = (delta) => { const j = i + delta; if (j < 0 || j >= f.steps.length) return; [f.steps[i], f.steps[j]] = [f.steps[j], f.steps[i]]; changed(); };
-  return h("div", { class: "step" }, h("span", { class: "num" }, i + 1), typeSel, targetSel, body,
+  return h("div", { class: "step", id: "step-" + fname + "-" + i }, h("span", { class: "num" }, i + 1), typeSel, targetSel, body,
     h("div", { class: "row", style: "flex-wrap:nowrap" },
       h("button", { title: "위로", onclick: () => move(-1), disabled: i === 0 }, "↑"),
       h("button", { title: "아래로", onclick: () => move(1), disabled: i === f.steps.length - 1 }, "↓"),
