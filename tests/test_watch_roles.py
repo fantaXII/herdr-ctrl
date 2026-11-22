@@ -5,6 +5,7 @@ import pytest
 
 from herdr_ctl import cli
 from herdr_ctl import roles as R
+from herdr_ctl.herdr import HerdrError
 from herdr_ctl.orchestrator import Actor, LimitExceeded, ScopeError, ask, current_actor, enforce, start_ask
 from herdr_ctl.up import up
 from herdr_ctl.watch import apply_change, default_actions, detect, restart, watch_once
@@ -369,3 +370,86 @@ def test_missing_handoff_error_points_to_fresh(live):
     live.h.on_prompt["x1"] = lambda a, t: "idle"
     with pytest.raises(RuntimeError, match=r"\[f\]"):
         restart(live, "x1")
+
+
+# ----------------------------------------------- restart robustness (stalled prompt, start race)
+@pytest.fixture
+def no_sleep(monkeypatch):
+    from herdr_ctl import watch as W
+    monkeypatch.setattr(W, "_sleep", lambda s: None)
+
+
+def test_restart_survives_a_stalled_handoff_prompt(live, no_sleep):
+    """herdr returns agent_prompt_stalled when the agent does not look busy within 5 s,
+    but the prompt went in and the agent writes the handoff a moment later."""
+    c2 = reload(live, SAMPLE.replace("model: sonnet", "model: opus"))
+    polls = {"n": 0}
+
+    def on_prompt(agent, text):
+        if text == "/exit":
+            c2.h.kill_agent(agent.name)
+            return "idle"
+        polls["path"] = Path(text.rsplit(": ", 1)[1].strip())
+        return "stalled"
+    c2.h.on_prompt["x1"] = on_prompt
+    c2.h.on_prompt["x-orch"] = lambda a, t: "idle"
+    real_list = c2.h.agent_list
+
+    def agent_list():  # the file shows up on the 3rd status poll
+        polls["n"] += 1
+        if polls["n"] == 3 and "path" in polls:
+            polls["path"].write_text("진행 중: 로그인")
+        return real_list()
+    c2.h.agent_list = agent_list
+    real_get = c2.h.agent_get
+
+    def agent_get(t):
+        agent_list()
+        return real_get(t)
+    c2.h.agent_get = agent_get
+    msg = restart(c2, "x1")
+    assert "재시작 완료" in msg and "opus" in c2.h.agents["x1"].args
+
+
+def test_restart_retries_when_herdr_still_sees_the_old_agent(live, no_sleep):
+    c2 = reload(live, SAMPLE.replace("model: sonnet", "model: opus"))
+    c2.h.on_prompt["x-orch"] = lambda a, t: "idle"
+
+    def on_prompt(agent, text):
+        if text == "/exit":
+            c2.h.kill_agent(agent.name)
+        return "idle"
+    c2.h.on_prompt["x1"] = on_prompt
+    real_start, tries = c2.h.agent_start, []
+
+    def flaky_start(name, *a, **k):
+        tries.append(name)
+        if len(tries) == 1:
+            raise HerdrError("pane_not_available", "agent still detected")
+        return real_start(name, *a, **k)
+    c2.h.agent_start = flaky_start
+    assert "재시작 완료" in restart(c2, "x1", handoff=False) and len(tries) == 2
+
+
+def test_failed_start_stays_pending_and_reuses_the_handoff(live, no_sleep):
+    c2 = reload(live, SAMPLE.replace("model: sonnet", "model: opus"))
+    c2.h.on_prompt["x-orch"] = lambda a, t: "idle"
+
+    def on_prompt(agent, text):
+        if text == "/exit":
+            c2.h.kill_agent(agent.name)
+            return "idle"
+        Path(text.rsplit(": ", 1)[1].strip()).write_text("진행: 폼")
+        return "idle"
+    c2.h.on_prompt["x1"] = on_prompt
+    real_start = c2.h.agent_start
+
+    def down(*a, **k):
+        raise HerdrError("pane_not_available", "nope")
+    c2.h.agent_start = down
+    with pytest.raises(RuntimeError, match="시작 실패.*인수인계 파일로"):
+        restart(c2, "x1")
+    assert "x1" not in c2.h.agents and any(c.name == "x1" for c in detect(c2))
+    c2.h.agent_start = real_start  # next apply: the agent is gone, its handoff is reused
+    msg = restart(c2, "x1")
+    assert "인수인계 x1.md" in msg and "handoff/x1.md" in (c2.project.var_dir / "briefs" / "x1.md").read_text()

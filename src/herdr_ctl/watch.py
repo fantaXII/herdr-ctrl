@@ -89,6 +89,47 @@ def notify_role(ctx: Ctx, name: str) -> str:
     return f"{name}: 새 역할을 알렸습니다"
 
 
+STALLED_IDLE_S = 90.0  # a stalled handoff prompt: give up if the agent stays idle with no file this long
+_sleep = time.sleep    # tests replace it
+
+
+def _await_handoff(ctx: Ctx, name: str, path, timeout_s: float) -> None:
+    """herdr's `prompt --wait` gives up (agent_prompt_stalled) when the agent does not LOOK busy
+    within 5 s, but the prompt was already typed in. Wait for the file and for the turn to end."""
+    start = time.time()
+    seen_busy = False
+    while time.time() - start < timeout_s:
+        st = agent_status(ctx.h, name)
+        if st == "blocked":
+            raise RuntimeError(f"'{name}'가 인수인계 중 승인 대기에 걸렸습니다. 화면에서 처리한 뒤 다시 반영하세요")
+        if st is None:
+            raise RuntimeError(f"'{name}'가 인수인계 중에 종료됐습니다")
+        seen_busy = seen_busy or st not in READY_STATES
+        written = path.exists() and path.read_text().strip()
+        if written and st in READY_STATES:
+            return
+        if not written and not seen_busy and time.time() - start > STALLED_IDLE_S:
+            break  # the prompt never started a turn
+        _sleep(1.0)
+    raise RuntimeError(f"인수인계 파일이 작성되지 않았습니다: {path} (인수인계 없이 재시작하려면 "
+                       f"변경 반영에서 [f] 또는 hctrl restart {name} --no-handoff)")
+
+
+def _wait_agent_gone(ctx: Ctx, name: str, timeout_s: float = 10.0) -> bool:
+    """The shell prompt can be back a moment before herdr notices the agent exited; starting the
+    new agent in that gap is refused. Wait until herdr no longer lists it."""
+    deadline = time.time() + timeout_s
+    while True:
+        try:
+            if not any(a.get("name") == name for a in ctx.h.agent_list()):
+                return True
+        except HerdrError:
+            pass
+        if time.time() >= deadline:
+            return False
+        _sleep(0.3)
+
+
 def _wait_shell(ctx: Ctx, pane: str, timeout_s: float = 20.0) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -120,24 +161,39 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
             if st == "blocked":
                 raise RuntimeError(f"'{name}'가 승인 대기 중이라 재시작하지 않습니다")
         handoff_path = None
+        hp = (ctx.project.handoff_dir / f"{name}.md").resolve()
         if handoff and st is not None:
             ctx.project.handoff_dir.mkdir(parents=True, exist_ok=True)
-            handoff_path = (ctx.project.handoff_dir / f"{name}.md").resolve()
+            handoff_path = hp
             handoff_path.unlink(missing_ok=True)
             try:
                 ctx.h.agent_prompt(name, HANDOFF_PROMPT.format(path=handoff_path), wait=True,
                                    timeout_ms=int(timeout_s * 1000))
             except HerdrError as e:
-                raise RuntimeError(f"인수인계 요청 실패: {e}") from e
+                if e.code != "agent_prompt_stalled":
+                    raise RuntimeError(f"인수인계 요청 실패: {e}") from e
+                _await_handoff(ctx, name, handoff_path, timeout_s)
             if not (handoff_path.exists() and handoff_path.read_text().strip()):
                 raise RuntimeError(f"인수인계 파일이 작성되지 않았습니다: {handoff_path} (인수인계 없이 재시작하려면 "
                                    f"변경 반영에서 [f] 또는 hctrl restart {name} --no-handoff)")
+        elif handoff and st is None and hp.exists() and hp.read_text().strip() \
+                and hp.stat().st_mtime > float(rec.get("started_at") or 0):
+            handoff_path = hp  # an earlier attempt got the handoff written, then failed to start
         if st is not None:
             _stop_agent(ctx, name, pane)
         if not ctx.h.pane_shell_idle(pane):
             raise RuntimeError(f"'{name}' 창이 쉘 프롬프트로 돌아오지 않았습니다")
+        _wait_agent_gone(ctx, name)
         why = start_agent(ctx, m, pane, handoff_path)
+        if why and why.startswith("시작 실패"):  # one more try: herdr may still be settling the pane
+            _sleep(2.0)
+            if ctx.h.pane_shell_idle(pane):
+                _wait_agent_gone(ctx, name)
+                why = start_agent(ctx, m, pane, handoff_path)
         ctx.state.save()
+        if why and why.startswith("시작 실패"):
+            raise RuntimeError(f"'{name}' {why}. 창은 쉘 상태입니다. 다시 반영하면 "
+                               + ("이미 써 둔 인수인계 파일로 " if handoff_path else "") + "시작합니다")
     finally:
         release(ctx.project, name, "restart")
     _tell_orchestrator(ctx, m, f"[hctrl] '{name}'가 새 설정으로 재시작됐습니다." +
