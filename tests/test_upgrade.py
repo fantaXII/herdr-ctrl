@@ -23,10 +23,13 @@ def checks_on(monkeypatch):
 
 
 def installed(monkeypatch, tmp_path, version, name="hctrl"):
-    """Pretend this process runs from a .pyz whose file on disk now holds `version`."""
+    """Pretend this process runs from a .pyz whose file on disk now holds `version`. Like `hctrl update`
+    the new file replaces the old one (os.replace: a new inode), never a same-size in-place rewrite."""
     pyz = tmp_path / name
-    with zipfile.ZipFile(pyz, "w") as z:
+    tmp = tmp_path / f".{name}.{version}.tmp"
+    with zipfile.ZipFile(tmp, "w") as z:
         z.writestr("herdr_ctl/__init__.py", f'"""x"""\n__version__ = "{version}"\n')
+    os.replace(tmp, pyz)
     monkeypatch.setattr(selfcmd, "PKG_PARENT", pyz)
     return pyz
 
