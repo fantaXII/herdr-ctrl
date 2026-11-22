@@ -378,9 +378,9 @@ function updateBody(msg) {
     body = [h("p", { class: "muted small" }, "새 릴리스는 하루에 한 번 자동으로 확인합니다.")];
     actions = [check, close];
   }
-  $("updateBody").replaceChildren(h("h3", { style: "margin-top:0" }, title), info, ...body,
+  $("updateBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, title), info, body,
     msg ? h("pre", { class: "small" }, msg) : null,
-    h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" }, ...actions));
+    h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" }, actions)));
 }
 async function checkNow() {
   try { renderUpdate((await api("POST", "/api/update/check", {})).status); updateBody(); }
