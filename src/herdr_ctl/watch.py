@@ -18,7 +18,8 @@ from .state import State, acquire, digest, read_json, release, write_json
 from .up import Ctx, flows_fingerprint, fingerprint, hc_command, start_agent, up
 
 HANDOFF_PROMPT = ("[hctrl] 곧 새 설정으로 다시 시작됩니다. 지금까지의 작업 상태(완료한 것, 진행 중인 것, "
-                  "다음에 할 일, 주의점)를 이 파일에 요약해 쓰세요: {path}")
+                  "다음에 할 일, 주의점)를 이 파일에 요약해 쓰세요. 전에 쓴 적이 있어도 지금 상태로 "
+                  "다시 써야 합니다 (파일을 새로 만드세요): {path}")
 
 
 @dataclass
@@ -93,11 +94,25 @@ STALLED_IDLE_S = 90.0  # a stalled handoff prompt: give up if the agent stays id
 _sleep = time.sleep    # tests replace it
 
 
+class HandoffMissing(RuntimeError):
+    """The agent answered the handoff prompt (turned=True) or never started on it, without a file."""
+
+    def __init__(self, msg: str, turned: bool):
+        super().__init__(msg)
+        self.turned = turned
+
+
+def _missing(name: str, path, turned: bool) -> HandoffMissing:
+    return HandoffMissing(f"인수인계 파일이 작성되지 않았습니다: {path} (인수인계 없이 재시작하려면 "
+                          f"변경 반영에서 [f] 또는 hctrl restart {name} --no-handoff)", turned)
+
+
 def _await_handoff(ctx: Ctx, name: str, path, timeout_s: float) -> None:
     """herdr's `prompt --wait` gives up (agent_prompt_stalled) when the agent does not LOOK busy
     within 5 s, but the prompt was already typed in. Wait for the file and for the turn to end."""
     start = time.time()
     seen_busy = False
+    idle_since = None
     while time.time() - start < timeout_s:
         st = agent_status(ctx.h, name)
         if st == "blocked":
@@ -110,9 +125,14 @@ def _await_handoff(ctx: Ctx, name: str, path, timeout_s: float) -> None:
             return
         if not written and not seen_busy and time.time() - start > STALLED_IDLE_S:
             break  # the prompt never started a turn
+        if not written and seen_busy and st in READY_STATES:  # the turn ended without writing it
+            idle_since = idle_since or time.time()
+            if time.time() - idle_since > 5:
+                raise _missing(name, path, turned=True)
+        else:
+            idle_since = None
         _sleep(1.0)
-    raise RuntimeError(f"인수인계 파일이 작성되지 않았습니다: {path} (인수인계 없이 재시작하려면 "
-                       f"변경 반영에서 [f] 또는 hctrl restart {name} --no-handoff)")
+    raise _missing(name, path, turned=seen_busy)
 
 
 def _wait_agent_gone(ctx: Ctx, name: str, timeout_s: float = 10.0) -> bool:
@@ -165,17 +185,24 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
         if handoff and st is not None:
             ctx.project.handoff_dir.mkdir(parents=True, exist_ok=True)
             handoff_path = hp
+            # an earlier handoff of this agent: it may answer "already written, nothing changed"
+            previous = hp.read_text() if hp.exists() else ""
             handoff_path.unlink(missing_ok=True)
+            turned = True  # `prompt --wait` returned: the agent finished a turn on it
             try:
-                ctx.h.agent_prompt(name, HANDOFF_PROMPT.format(path=handoff_path), wait=True,
-                                   timeout_ms=int(timeout_s * 1000))
-            except HerdrError as e:
-                if e.code != "agent_prompt_stalled":
-                    raise RuntimeError(f"인수인계 요청 실패: {e}") from e
-                _await_handoff(ctx, name, handoff_path, timeout_s)
+                try:
+                    ctx.h.agent_prompt(name, HANDOFF_PROMPT.format(path=handoff_path), wait=True,
+                                       timeout_ms=int(timeout_s * 1000))
+                except HerdrError as e:
+                    if e.code != "agent_prompt_stalled":
+                        raise RuntimeError(f"인수인계 요청 실패: {e}") from e
+                    _await_handoff(ctx, name, handoff_path, timeout_s)
+            except HandoffMissing as e:
+                turned = e.turned
             if not (handoff_path.exists() and handoff_path.read_text().strip()):
-                raise RuntimeError(f"인수인계 파일이 작성되지 않았습니다: {handoff_path} (인수인계 없이 재시작하려면 "
-                                   f"변경 반영에서 [f] 또는 hctrl restart {name} --no-handoff)")
+                if not (turned and previous.strip()):
+                    raise _missing(name, handoff_path, turned)
+                handoff_path.write_text(previous)  # the agent kept its earlier handoff as current
         elif handoff and st is None and hp.exists() and hp.read_text().strip() \
                 and hp.stat().st_mtime > float(rec.get("started_at") or 0):
             handoff_path = hp  # an earlier attempt got the handoff written, then failed to start

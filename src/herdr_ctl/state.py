@@ -166,6 +166,23 @@ def acquire(project: Project, name: str, owner: str, pid: int | None = None) -> 
             json.dump({"owner": owner, "pid": pid, "start": proc_start(pid), "ts": time.time()}, f)
 
 
+def release_own(project: Project, pid: int | None = None) -> list[str]:
+    """Drop locks held by this pid. Used when a process starts over in place (os.execv keeps the pid
+    and start time, so its old locks would look alive forever)."""
+    pid = pid or os.getpid()
+    d = lock_path(project, "x").parent
+    dropped = []
+    if not d.exists():
+        return dropped
+    with _guard(project):
+        for p in d.glob("*.lock"):
+            info = read_json(p) or {}
+            if str(info.get("pid")) == str(pid):
+                p.unlink(missing_ok=True)
+                dropped.append(p.stem)
+    return dropped
+
+
 def release(project: Project, name: str, owner: str | None = None) -> None:
     p = lock_path(project, name)
     if not p.exists():

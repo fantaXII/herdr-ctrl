@@ -688,6 +688,8 @@ def cmd_watch(args) -> int:
     from . import __version__, update
     from .selfcmd import self_cmd
     update.refresh_in_background()  # the _hc pane is the user's: it may check (watch_loop shows it)
+    from .state import release_own
+    release_own(project)  # locks left by this same pid before an in-place restart (os.execv)
     again: Reexec | None = None
     resume = None
     with TtyKeys() as keys:  # _hc tab: key menu (settings UI, changes, status, pending)

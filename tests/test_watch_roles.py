@@ -453,3 +453,52 @@ def test_failed_start_stays_pending_and_reuses_the_handoff(live, no_sleep):
     c2.h.agent_start = real_start  # next apply: the agent is gone, its handoff is reused
     msg = restart(c2, "x1")
     assert "인수인계 x1.md" in msg and "handoff/x1.md" in (c2.project.var_dir / "briefs" / "x1.md").read_text()
+
+
+def test_restart_keeps_an_earlier_handoff_the_agent_calls_current(live, no_sleep):
+    """Seen live: asked again, the agent answered 'the handoff I wrote is still current' and wrote
+    nothing; hctrl had removed that file and then waited 30 minutes for it."""
+    c2 = reload(live, SAMPLE.replace("model: sonnet", "model: opus"))
+    hp = c2.project.handoff_dir / "x1.md"
+    hp.parent.mkdir(parents=True, exist_ok=True)
+    hp.write_text("진행: 로그인 폼 (이전 인수인계)")
+    c2.h.on_prompt["x-orch"] = lambda a, t: "idle"
+
+    def on_prompt(agent, text):
+        if text == "/exit":
+            c2.h.kill_agent(agent.name)
+        return "idle"  # answers without writing the file
+    c2.h.on_prompt["x1"] = on_prompt
+    msg = restart(c2, "x1")
+    assert "재시작 완료" in msg and hp.read_text() == "진행: 로그인 폼 (이전 인수인계)"
+
+
+def test_stalled_turn_that_ends_without_a_file_fails_fast(live, no_sleep, monkeypatch):
+    from herdr_ctl import watch as W
+    c2 = reload(live, SAMPLE.replace("model: sonnet", "model: opus"))
+    states = iter(["idle", "working", "working"] + ["idle"] * 10000)
+    real_list = c2.h.agent_list
+
+    def agent_list():
+        out = real_list()
+        for a in out:
+            if a["name"] == "x1":
+                a["agent_status"] = next(states)
+        return out
+    c2.h.agent_list = agent_list
+    c2.h.on_prompt["x1"] = lambda a, t: "stalled"
+    clock = iter(range(0, 100000))
+    monkeypatch.setattr(W.time, "time", lambda: float(next(clock)))
+    with pytest.raises(RuntimeError, match="인수인계 파일"):
+        restart(c2, "x1")
+    assert "x1" in c2.h.agents  # not stopped
+
+
+def test_watcher_start_drops_its_own_stale_locks(tmp_path):
+    from herdr_ctl.state import acquire, release_own
+    from herdr_ctl.project import Project
+    p = Project("p", tmp_path)
+    p.var_dir.mkdir(parents=True, exist_ok=True)
+    acquire(p, "coder", "restart")
+    assert release_own(p) == ["coder"]
+    acquire(p, "coder", "restart")  # free again
