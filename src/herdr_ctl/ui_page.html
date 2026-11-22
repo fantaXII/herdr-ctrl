@@ -33,6 +33,7 @@ header .spacer { flex: 1; }
 #updateBadge .badge { cursor: pointer; border: none; font: inherit; font-size: 12px; color: var(--muted); }
 #updateBadge .badge.up { color: var(--accent); } #updateBadge .badge.ok { color: var(--ok); }
 #updateDialog { max-width: 440px; }
+#copyDialog { max-width: 480px; } #copyDialog .map { margin: 4px 0 10px; } #copyDialog .map td { border: none; padding: 1px 6px; }
 #updateDialog dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 12px; }
 #updateDialog dt { color: var(--muted); } #updateDialog dd { margin: 0; font-weight: 600; }
 #updateDialog pre { white-space: pre-wrap; margin: 8px 0; }
@@ -251,6 +252,7 @@ body.nohelp .form { grid-template-columns: max-content minmax(180px, 420px); }
     <button id="applyLater">나중에</button><button class="primary" id="applyNow">지금 반영</button>
   </p>
 </dialog>
+<dialog id="copyDialog"><div id="copyBody"></div></dialog>
 <dialog id="updateDialog"><div id="updateBody"></div></dialog>
 <dialog id="roleDialog">
   <h3 style="margin-top:0" id="roleTitle">역할</h3>
@@ -493,6 +495,7 @@ async function openProject(name) {
     S.models = models;
     if (models.opencode_status === "loading") pollModels();
     S.project = name; S.version = cfg.version; S.running = cfg.running; S.roles = cfg.roles || {}; S.exists = cfg.exists; S.root = cfg.root;
+    S.git = !!cfg.git; S.copies = {};
     if (cfg.parse_error || !cfg.data || typeof cfg.data !== "object") {
       $("app").replaceChildren(h("section", {}, h("h2", {}, name),
         h("p", { class: "notice" }, "config.yaml을 읽을 수 없습니다: " + (cfg.parse_error || "형식 오류")),
@@ -627,12 +630,14 @@ async function save() {
   }
   try {
     const sent = clone(S.data);
-    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version, renames: tabRenames() });
+    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version, renames: tabRenames(), copies: S.copies || {} });
     S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues; S.tabOrigin = {};
     S.ackWarn = warningKey(res.issues);
     S.draftJson = null; S.draftAt = null;  // the server removed the draft
     let msg = "저장했습니다.";
     if (res.renamed && res.renamed.length) msg += " " + res.renamed.join(", ") + ".";
+    if (res.copied && res.copied.length) msg += " 역할 상세 복사: " + res.copied.join(", ") + ".";
+    S.copies = {};
     toast(msg);
     render();
     if (S.running) refreshChanges(true);
@@ -700,6 +705,98 @@ async function discardDraft() {
   } catch (e) { toast(e.message); }
 }
 
+// ------------------------------------------------------------- tab copy
+// Copy a tab as a new team: members get "-<new tab id>" (coder → coder-login), the tab's flows and
+// role details (prompt files, copied by the server on save: S.copies) come along, and the copy can
+// work in its own git worktree so the two teams do not edit the same files.
+function copyPlan(src, id) {
+  const d = S.data, t = d.tabs[src], low = id.toLowerCase();
+  const used = new Set(allMembers(d).map((m) => m.name)), names = {};
+  const fresh = (base) => {
+    base = base.slice(0, 32).replace(/[-_]+$/, "");
+    let n = base;
+    for (let k = 2; used.has(n) || !NAME_RE.test(n); k++) n = base.slice(0, 32 - String(k).length - 1) + "-" + k;
+    used.add(n); return n;
+  };
+  if (hasOrch(t)) { names[src.toLowerCase() + "-orch"] = low + "-orch"; used.add(low + "-orch"); }
+  for (const n of [...Object.keys(t.agents || {}), ...Object.keys(t.shells || {})]) names[n] = fresh(n + "-" + low);
+  const mine = new Set(allMembers(d).filter((m) => m.tab === src).map((m) => m.name));
+  const flows = Object.keys(d.flows || {}).filter((f) => {
+    const fl = d.flows[f];
+    if (!fl || typeof fl !== "object") return false;
+    if (fl.tab) return fl.tab === src;
+    const steps = Array.isArray(fl.steps) ? fl.steps : [];
+    return steps.length > 0 && steps.every((st) => st && mine.has(st.agent || st.shell));
+  });
+  return { names, flows };
+}
+function copyIdError(id) {
+  if (!TAB_RE.test(id)) return "탭 이름: 영문으로 시작, 영문/숫자/_- 25자 이하";
+  if (Object.keys(S.data.tabs).some((x) => x.toLowerCase() === id.toLowerCase())) return "이미 있는 탭 이름입니다";
+  if (allMembers(S.data).some((m) => m.name === id.toLowerCase() + "-orch")) return "'" + id.toLowerCase() + "-orch' 이름을 이미 쓰고 있습니다";
+  return "";
+}
+function openCopyTab(src) {
+  const taken = new Set(Object.keys(S.data.tabs).map((x) => x.toLowerCase()));
+  let k = 2;
+  while (taken.has((src + k).toLowerCase())) k++;
+  const o = { src, id: src + k, roles: true, flows: true, wt: !!S.git, branch: "" };
+  o.branch = "feat/" + o.id.toLowerCase();
+  copyBody(o);
+  $("copyDialog").showModal();
+}
+function copyBody(o) {
+  const err = copyIdError(o.id), plan = err ? null : copyPlan(o.src, o.id);
+  const branchErr = o.wt && !/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(o.branch) ? "브랜치 이름을 확인하세요" : "";
+  const rerender = () => { const f = document.activeElement && document.activeElement.id; copyBody(o); if (f && $(f)) { $(f).focus(); const v = $(f).value; if (typeof v === "string" && $(f).setSelectionRange) $(f).setSelectionRange(v.length, v.length); } };
+  const idIn = h("input", { id: "copyId", value: o.id, oninput: (e) => {
+    const auto = o.branch === "feat/" + o.id.toLowerCase();
+    o.id = e.target.value.trim(); if (auto) o.branch = "feat/" + o.id.toLowerCase(); rerender(); } });
+  const check = (key, label, extra) => h("label", { class: "row" }, h("input", { type: "checkbox", checked: o[key], disabled: extra && extra.disabled,
+    onchange: (e) => { o[key] = e.target.checked; rerender(); } }), label, extra && extra.hint ? h("span", { class: "muted small" }, extra.hint) : null);
+  $("copyBody").replaceChildren(h("div", {},
+    h("h3", { style: "margin-top:0" }, "탭 복사: " + o.src),
+    h("label", { class: "field" }, "새 탭 이름", idIn),
+    err ? h("p", { class: "small", style: "color:var(--err);margin:4px 0" }, err) : null,
+    plan ? [h("p", { class: "muted small", style: "margin:10px 0 0" }, "멤버 이름"),
+      h("table", { class: "map small" }, Object.entries(plan.names).map(([a, b]) => h("tr", {}, h("td", {}, a), h("td", {}, "→"), h("td", {}, h("b", {}, b)))))] : null,
+    check("roles", "역할 상세(prompt)도 복사", { hint: "저장할 때 복사됩니다" }),
+    check("flows", "이 탭의 flow 복사", { hint: plan ? (plan.flows.length ? plan.flows.join(", ") : "없음") : "" }),
+    check("wt", "별도 worktree에서 작업 (권장)", S.git ? { hint: "같은 폴더에서 두 팀이 같은 파일을 고치는 충돌을 막습니다" } : { disabled: true, hint: "git 저장소가 아니라 쓸 수 없습니다" }),
+    o.wt ? h("label", { class: "field", style: "margin-left:24px" }, "브랜치",
+      h("input", { id: "copyBranch", value: o.branch, oninput: (e) => { o.branch = e.target.value.trim(); rerender(); } })) : null,
+    branchErr ? h("p", { class: "small", style: "color:var(--err);margin:4px 0 0 24px" }, branchErr) : null,
+    h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" },
+      h("button", { onclick: () => $("copyDialog").close() }, "취소"),
+      h("button", { class: "primary", disabled: !!(err || branchErr), onclick: () => { copyTab(o, plan); $("copyDialog").close(); } }, "복사"))));
+}
+function copyTab(o, plan) {
+  const d = S.data, t = clone(d.tabs[o.src]), map = plan.names;
+  const rekey = (obj) => Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [map[k] || k, v]));
+  t.agents = rekey(t.agents); t.shells = rekey(t.shells);
+  for (const a of Object.values(t.agents)) if (a && typeof a === "object") delete a.role_file;  // own file, not a shared one
+  delete t.title; delete t.worktree;
+  if (o.wt) t.worktree = { branch: o.branch };
+  d.tabs[o.id] = t;
+  if (o.flows) for (const f of plan.flows) {
+    let n = f + "-" + o.id.toLowerCase();
+    for (let k = 2; n in d.flows; k++) n = f + "-" + o.id.toLowerCase() + "-" + k;
+    const c = clone(d.flows[f]);
+    if (c.tab) c.tab = o.id;  // untabbed flows stay untabbed (their steps now name the copy's members)
+    for (const st of c.steps || []) { if (st.agent in map) st.agent = map[st.agent]; if (st.shell in map) st.shell = map[st.shell]; }
+    d.flows[n] = c;
+  }
+  if (o.roles) {
+    S.copies = S.copies || {};
+    for (const [a, b] of Object.entries(map)) {
+      if (o.src in d.tabs && (d.tabs[o.src].shells || {})[a] !== undefined) continue;  // shells have no role
+      S.copies[b] = S.copies[a] || a;  // copy of an unsaved copy: take the saved original
+    }
+  }
+  S.tab = o.id; S.view = "tab"; changed();
+  toast("'" + o.src + "' 탭을 '" + o.id + "'(으)로 복사했습니다. 저장하면 반영됩니다.");
+}
+
 // ------------------------------------------------------------- members
 function allMembers(d) {
   const out = [];
@@ -749,6 +846,7 @@ function dropSteps(names, asked = false) {
   return true;
 }
 function renameMember(oldName, newName) {
+  if (S.copies && oldName in S.copies) { S.copies[newName] = S.copies[oldName]; delete S.copies[oldName]; }  // unsaved tab copy
   for (const f of Object.values(S.data.flows || {}))
     for (const st of (f && f.steps) || []) {
       if (st.agent === oldName) st.agent = newName;
@@ -1107,6 +1205,7 @@ function renderTabView(tname, t) {
     S.tab = nv; changed();
   } });
   const title = viewTitle(2, "탭 · " + (t.title ? t.title + " (" + tname + ")" : tname), h("span", { class: "grow" }),
+    h("button", { title: "같은 구성의 탭을 하나 더 만듭니다 (멤버 이름은 새 탭 이름이 붙어 바뀝니다)", onclick: () => openCopyTab(tname) }, "⧉ 탭 복사"),
     h("button", { class: "danger", onclick: () => {
       if (!confirm("탭 '" + tname + "'을 삭제할까요?")) return;
       if (!dropSteps(allMembers(d).filter((m) => m.tab === tname).map((m) => m.name))) return;

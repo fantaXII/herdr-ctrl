@@ -402,7 +402,8 @@ class UIServer:
                 "version": digest(text) if text is not None else None, "data": data,
                 "parse_error": parse_error, "running": running,
                 "issues": self._check_fresh(project, data) if data is not None else [],
-                "draft": self.load_draft(project), "roles": self.role_summary(project)}
+                "draft": self.load_draft(project), "roles": self.role_summary(project),
+                "git": (project.root / ".git").exists()}  # worktree needs a git repository
 
     def role_summary(self, project: Project) -> dict:
         """{member: lines in its role detail (prompt)} for the saved config's agents and orchestrators."""
@@ -464,6 +465,11 @@ class UIServer:
         if not isinstance(renames, dict) or not all(isinstance(k, str) and isinstance(v, str)
                                                     for k, v in renames.items()):
             raise ApiError(400, "renames는 {이전 탭 ID: 새 탭 ID} 객체여야 합니다")
+        copies = body.get("copies") or {}
+        if not isinstance(copies, dict) or not all(isinstance(k, str) and isinstance(v, str)
+                                                  for k, v in copies.items()):
+            raise ApiError(400, "copies는 {새 멤버: 원본 멤버} 객체여야 합니다")
+        old_cfg = check_file(project.config_path, which=self.which)[0] if current is not None else None
         tabs = data.get("tabs") if isinstance(data, dict) else None
         renames = {o: n for o, n in renames.items() if o != n and isinstance(tabs, dict) and n in tabs}
         moved: list[str] = []
@@ -481,7 +487,31 @@ class UIServer:
             write_config(project, data)
         self.discard_draft(project)  # the draft is now the saved config
         renamed = moved + self.sync_live_titles(project)
-        return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed}
+        copied = self.copy_roles(project, old_cfg, copies)
+        return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed,
+                "copied": copied}
+
+    def copy_roles(self, project: Project, old_cfg, copies: dict[str, str]) -> list[str]:
+        """Tab copy: give each new member its source's role detail (as its own file, with history).
+        Sources come from the config as it was before this save; a member that already has a role
+        file keeps it."""
+        if not copies or old_cfg is None:
+            return []
+        new_cfg, _ = check_file(project.config_path, which=self.which)
+        done = []
+        for new, src in copies.items():
+            m, s = (new_cfg.member(new) if new_cfg else None), old_cfg.member(src)
+            if m is None or s is None or m.type == "shell" or s.type == "shell" or new == src:
+                continue
+            try:
+                if not roles_mod.role_file(project, s).exists() or roles_mod.role_file(project, m).exists():
+                    continue
+                one, detail = roles_mod.effective_role(project, s)
+                roles_mod.write_role(project, m, one, detail, actor="user", reason=f"탭 복사: {src}")
+            except (OSError, RuntimeError):  # unreadable source / role_file outside the project
+                continue
+            done.append(new)
+        return done
 
     def sync_live_titles(self, project: Project) -> list[str]:
         """Running session: apply tab titles now (other changes go through `hctrl changes`)."""
