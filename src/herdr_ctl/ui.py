@@ -133,7 +133,7 @@ class UIServer:
     def __init__(self, mode: str = "launcher", cwd: Path | None = None, start: Project | None = None,
                  port: int = 0, herdr: Callable[[str | None], Any] | None = None,
                  which: Callable[[str], str | None] | None = None,
-                 models: Callable[[], dict[str, list[str]]] | None = None):
+                 models: Callable[[], dict[str, list[str]]] | None = None, secret: str | None = None):
         self.mode = mode
         self.cwd = (cwd or Path.cwd()).resolve()
         self.start_project = start
@@ -149,7 +149,9 @@ class UIServer:
         self._tokens: dict[str, float] = {}  # one-time link token -> expiry (monotonic)
         self.last_seen = time.monotonic()  # last link or API call: an open page pings (see in_use)
         self.restart_requested = False  # session mode: the page asked the _hc watcher to restart
-        self.secret = secrets.token_urlsafe(32)
+        # cookie value; a restarted _hc watcher passes the old one (with the old port) so an open page
+        # keeps working across the restart
+        self.secret = secret or secrets.token_urlsafe(32)
         self.page = PAGE.read_bytes()  # read once: `hctrl update` may replace the .pyz while we serve
         self.choice: Project | None = None
         self.done = threading.Event()
@@ -348,7 +350,8 @@ class UIServer:
                     "start": self.start_project.name if self.start_project else None,
                     "version": __version__, "update": update.status()}
         if parts == ["ping"] and method == "GET":
-            return {"ok": True}
+            from . import __version__
+            return {"ok": True, "version": __version__}  # the page reloads when the server got newer
         if parts and parts[0] == "update" and method == "POST":
             return self.update_action(parts[1:])
         if parts and parts[0] == "templates":

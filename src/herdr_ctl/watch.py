@@ -413,6 +413,19 @@ class Menu:
             self.ui = UIServer("session", cwd=self.project.root, start=self.project).start()
         announce(self.ui, self.project.name)
 
+    def resume_ui(self, port: int, secret: str) -> bool:
+        """After a watcher restart: serve the settings UI again on the same port with the same cookie,
+        so a page that was open keeps working (it reloads itself into the new version)."""
+        from .ui import UIServer
+        try:
+            self.ui = UIServer("session", cwd=self.project.root, start=self.project, port=port,
+                               secret=secret).start()
+        except OSError as e:
+            print(f"[hctrl watch] 설정 UI를 같은 주소(포트 {port})로 다시 열지 못했습니다 ({e.strerror or e}). "
+                  "[s]로 새로 여세요", flush=True)
+            return False
+        return True
+
     def close(self) -> None:
         if self.ui is not None:
             self.ui.stop()

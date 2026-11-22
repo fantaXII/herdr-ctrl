@@ -672,6 +672,7 @@ def cmd_restart(args) -> int:
 
 
 REOPEN_UI_ENV = "HCTRL_REOPEN_UI"  # set across a watcher restart that the settings UI asked for
+RESUME_UI_ENV = "HCTRL_RESUME_UI"  # "<port>:<cookie secret>" of the settings UI across a watcher restart
 
 
 def cmd_watch(args) -> int:
@@ -688,14 +689,20 @@ def cmd_watch(args) -> int:
     from .selfcmd import self_cmd
     update.refresh_in_background()  # the _hc pane is the user's: it may check (watch_loop shows it)
     again: Reexec | None = None
+    resume = None
     with TtyKeys() as keys:  # _hc tab: key menu (settings UI, changes, status, pending)
         menu = Menu(project, cooked=keys.cooked)
         try:
-            if os.environ.pop(REOPEN_UI_ENV, None):  # restarted from the settings UI: bring it back
+            reopen = os.environ.pop(REOPEN_UI_ENV, None)
+            port, _, secret = os.environ.pop(RESUME_UI_ENV, "").partition(":")
+            resumed = port.isdigit() and bool(secret) and menu.resume_ui(int(port), secret)
+            if reopen and not resumed:  # restarted from the settings UI: bring it back
                 menu.settings()
             watch_loop(project, h, interval=args.interval, keys=keys, menu=menu)
         except Reexec as e:
             again = e
+            if menu.ui is not None:
+                resume = f"{menu.ui.port}:{menu.ui.secret}"
         finally:
             menu.close()
     if again is None:
@@ -704,6 +711,8 @@ def cmd_watch(args) -> int:
     print(f"[hctrl watch] v{__version__} → v{again.new} 로 다시 시작", flush=True)
     if again.reopen_ui:
         os.environ[REOPEN_UI_ENV] = "1"
+    if resume:  # the new process serves the same address, so an open settings page keeps working
+        os.environ[RESUME_UI_ENV] = resume
     cmd = self_cmd() + ["--project", str(project.root), "watch", "--interval", str(args.interval)]
     os.execv(cmd[0], cmd)
     return 0  # not reached

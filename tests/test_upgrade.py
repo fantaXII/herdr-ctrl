@@ -7,6 +7,7 @@ import pytest
 from herdr_ctl import __version__, cli, selfcmd, update
 from herdr_ctl import watch as W
 from herdr_ctl.fake import FakeHerdr
+from herdr_ctl.project import Project
 from herdr_ctl.ui import UIServer
 from conftest import always_found
 from test_ui import Client, FakeSessions
@@ -177,7 +178,7 @@ def test_state_reports_version_status(session_ui):
 def test_page_in_use_until_idle(session_ui, monkeypatch):
     c = Client(session_ui)
     c.login()
-    assert c.json("GET", "/api/ping") == (200, {"ok": True}) and session_ui.in_use()
+    assert c.json("GET", "/api/ping") == (200, {"ok": True, "version": __version__}) and session_ui.in_use()
     session_ui.last_seen -= 1000
     assert not session_ui.in_use()
 
@@ -209,3 +210,73 @@ def test_update_endpoints(session_ui, monkeypatch):
     monkeypatch.setattr(update, "check_now", lambda fetch=update._fetch: None)
     st, res = c.json("POST", "/api/update/check", {})
     assert st == 502
+
+
+# ------------------------------------------------------------ open settings page survives the restart
+def test_cmd_watch_hands_the_ui_address_to_the_new_process(project, monkeypatch):
+    """The exiting watcher passes port+cookie; the new one serves the same address, so the page
+    that was open keeps working (and the old cookie still authenticates)."""
+    class Keys:
+        cooked = None
+
+        def __call__(self, timeout):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+    execs = []
+
+    def loop(*a, menu=None, **k):
+        if not execs:  # first process: the user had opened the settings UI
+            menu.ui = UIServer("session", cwd=project.root, start=project, herdr=FakeSessions(),
+                               which=always_found, models=lambda: {}).start()
+            raise W.Reexec(NEXT)
+        seen.append(menu.ui)
+    seen = []
+    monkeypatch.setattr(cli, "tty", lambda: True)
+    monkeypatch.setattr(W, "TtyKeys", Keys)
+    monkeypatch.setattr(W, "watch_loop", loop)
+    monkeypatch.setattr(update, "refresh_in_background", lambda: None)
+    monkeypatch.delenv(cli.RESUME_UI_ENV, raising=False)
+    monkeypatch.setattr(os, "execv", lambda path, argv: execs.append(argv))
+    monkeypatch.setattr(UIServer, "refresh_models", lambda self: None)
+    cli.main(["--project", str(project.root), "watch"])
+    port, _, secret = os.environ[cli.RESUME_UI_ENV].partition(":")
+    cli.main(["--project", str(project.root), "watch"])  # what execv would run
+    assert cli.RESUME_UI_ENV not in os.environ  # consumed: never left in the environment
+    [ui] = seen  # the second process served the same address with the same cookie
+    assert ui is not None and ui.port == int(port) and ui.secret == secret and len(execs) == 1
+
+
+def test_resumed_server_accepts_the_old_cookie(tmp_path, monkeypatch):
+    monkeypatch.setattr(UIServer, "refresh_models", lambda self: None)
+    a = UIServer("session", cwd=tmp_path, herdr=FakeSessions(), which=always_found, models=lambda: {}).start()
+    c = Client(a)
+    c.login()
+    port, secret = a.port, a.secret
+    a.stop()
+    menu = W.Menu(Project("p", tmp_path))
+    assert menu.resume_ui(port, secret)
+    try:
+        assert menu.ui.port == port
+        c.server = menu.ui
+        st, res = c.json("GET", "/api/ping")
+        assert st == 200 and res["version"] == __version__
+    finally:
+        menu.close()
+
+
+def test_resume_on_a_taken_port_falls_back(tmp_path, capsys):
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen()
+    try:
+        menu = W.Menu(Project("p", tmp_path))
+        assert not menu.resume_ui(s.getsockname()[1], "x" * 20) and menu.ui is None
+        assert "[s]로 새로 여세요" in capsys.readouterr().out
+    finally:
+        s.close()
