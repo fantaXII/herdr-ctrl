@@ -815,6 +815,15 @@ function copyBody(o) {
         if (o.replace && dirty() && !confirm("지금 고친 내용 대신 템플릿 '" + o.src.id + "'으로 시작할까요?")) return;
         copyTab(o, plan); $("copyDialog").close(); } }, tpl ? "추가" : "복사"))));
 }
+// template texts name members, flows and the team work folder (.herdr-flow/work/<template>/):
+// when an add renames any of them, the copied prompts follow (whole names only, one pass)
+function renameRefs(text, map) {
+  const keys = Object.keys(map).filter((k) => k && map[k] !== k).sort((a, b) => b.length - a.length);
+  if (!keys.length || typeof text !== "string") return text;
+  const esc = (k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp("(^|[^\\w-])(" + keys.map(esc).join("|") + ")(?![\\w-])", "g");
+  return text.replace(re, (m, pre, k) => pre + map[k]);
+}
 function copyTab(o, plan, quiet) {
   if (o.replace) { S.data.tabs = {}; S.data.flows = {}; S.copies = {}; S.roleTexts = {}; S.tabOrigin = {}; }
   const d = S.data, src = o.src, t = clone(src.tab), map = plan.names;
@@ -825,19 +834,30 @@ function copyTab(o, plan, quiet) {
   if (o.wt) t.worktree = { branch: o.branch };
   d.tabs[o.id] = t;
   const orchName = o.id.toLowerCase() + "-orch";
+  const flowNames = {};
   if (o.flows) for (const f of plan.flows) {
     let n = f in d.flows ? f + "-" + o.id.toLowerCase() : f;
     for (let k = 2; n in d.flows; k++) n = f + "-" + o.id.toLowerCase() + "-" + k;
+    flowNames[f] = n; d.flows[n] = null;  // reserve the name for the next flow
+  }
+  const refs = src.kind === "tpl" ? { ...Object.fromEntries(Object.entries(map).filter(([k]) => !k.startsWith("@"))), ...flowNames } : {};
+  const work = (txt) => src.kind === "tpl" && src.id !== o.id ? txt.split(".herdr-flow/work/" + src.id + "/").join(".herdr-flow/work/" + o.id + "/") : txt;
+  const fix = (txt) => typeof txt === "string" ? work(renameRefs(txt, refs)) : txt;
+  if (o.flows) for (const f of plan.flows) {
+    const n = flowNames[f];
     const c = clone(src.flows[f]);
     if (c.tab) c.tab = o.id;  // pinned flows follow the new tab; untabbed ones stay untabbed
-    for (const st of c.steps || []) { if (st.agent in map) st.agent = map[st.agent]; if (st.shell in map) st.shell = map[st.shell]; }
+    for (const st of c.steps || []) {
+      if (st.agent in map) st.agent = map[st.agent]; if (st.shell in map) st.shell = map[st.shell];
+      if (st.prompt) st.prompt = fix(st.prompt); if (st.run) st.run = fix(st.run);
+    }
     d.flows[n] = c;
   }
   if (o.roles) {
     const shells = new Set(Object.keys(src.tab.shells || {}));
     for (const [a, b] of Object.entries(map)) {
       if (shells.has(a)) continue;  // shells have no role
-      if (src.kind === "tpl") { if (src.roles[a] !== undefined) S.roleTexts[b] = src.roles[a]; }
+      if (src.kind === "tpl") { if (src.roles[a] !== undefined) S.roleTexts[b] = fix(src.roles[a]); }
       else if (S.roleTexts[a] !== undefined) S.roleTexts[b] = S.roleTexts[a];  // copy of an unsaved template tab
       else S.copies[b] = S.copies[a] || a;  // copy of an unsaved copy: take the saved original
     }

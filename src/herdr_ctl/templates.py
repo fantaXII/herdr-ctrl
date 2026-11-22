@@ -232,13 +232,20 @@ def instantiate(t: dict, tab_id: str) -> tuple[dict, dict, dict[str, str]]:
     """(tab, flows, role texts by member) for a NEW project: member names stay as saved
     (nothing to collide with); the orchestrator follows the tab id."""
     tab = copy.deepcopy(t["tab"])
+    old, new = f".herdr-flow/work/{t['name']}/", f".herdr-flow/work/{tab_id}/"  # the team work folder
+    fix = (lambda x: x.replace(old, new) if isinstance(x, str) else x) if old != new else (lambda x: x)
     flows = {}
     for fname, f in (t.get("flows") or {}).items():
         f = copy.deepcopy(f)
         if f.get("tab") == TAB_MARK:
             f["tab"] = tab_id
+        for st in f.get("steps") or []:
+            if isinstance(st, dict):
+                for key in ("prompt", "run"):
+                    if key in st:
+                        st[key] = fix(st[key])
         flows[fname] = f
     texts = {}
     for k, v in (t.get("roles") or {}).items():
-        texts[f"{tab_id.lower()}-orch" if k == ORCH else k] = v
+        texts[f"{tab_id.lower()}-orch" if k == ORCH else k] = fix(v)
     return tab, flows, texts

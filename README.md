@@ -263,7 +263,7 @@ hctrl --list     # 등록된 프로젝트와 세션 상태
 | `design-review-team` | orchestrator(opus), designer(opus), reviewer(sonnet), critic(opus) | 요구 → 설계 문서 → 일반 리뷰 + **적대적 리뷰** 반복(최대 3회, 사용자 확인) → 코드를 포함한 구현 spec. flow `design-draft`, `design-review`, `design-spec` |
 | `debug-team` | orchestrator(opus), investigator(opus), fixer(sonnet), verifier(haiku), 쉘 test | 증상 → root cause 확인 → 실패하는 재현 테스트 → 최소 수정 → 재현 테스트 + 기존 전체 테스트 통과. flow `debug` |
 
-- 작업 내용은 orchestrator 창에 말로 주면 됩니다. orchestrator가 `.herdr-flow/work/<dev|design|debug>/` 아래 작업 파일(task.md / brief.md / issue.md)에 정리한 뒤 flow를 돌리고, 반복(리뷰 재실행, 수정 후 재검증)과 판정을 맡습니다.
+- 작업 내용은 orchestrator 창에 말로 주면 됩니다. orchestrator가 `.herdr-flow/work/<탭 ID>/` 아래 작업 파일(task.md / brief.md / issue.md)에 정리한 뒤 flow를 돌리고, 반복(리뷰 재실행, 수정 후 재검증)과 판정을 맡습니다. 같은 템플릿을 두 번 추가하면(기능별 팀) 두 번째 팀의 멤버·flow 이름과 작업 폴더가 바뀌고, 역할 상세와 flow prompt 속 이름도 함께 바뀝니다.
 - 기본 템플릿은 hctrl에 들어 있어 고칠 수 없습니다. 탭으로 추가해 고친 뒤 **[☆ 현재 탭을 템플릿으로 저장]**(템플릿 화면 위쪽)하면 내 템플릿이 됩니다. 같은 이름으로 저장하면 기본 템플릿을 덮어쓰고, 그 내 템플릿을 지우면(**[기본값으로 되돌리기]**) 기본 템플릿이 돌아옵니다.
 - 내 템플릿은 프로젝트 밖(`~/.config/herdr_ctl/templates/`)에 저장됩니다. 담기는 것은 탭 구성(모델·역할·권한·limits 등), 그 탭의 flow, 멤버별 역할 상세(prompt) 전문이고, 작업 폴더(`cwd`)·`worktree`·표시 이름은 빠집니다. 저장된 설정으로 만들어지므로 먼저 [저장]하세요. 이름 바꾸기·삭제는 템플릿 화면에서 합니다.
 - 내 템플릿이 생기면 목록에서 내 템플릿이 위에 펼쳐지고 기본 템플릿은 접힙니다(펼침 상태는 브라우저가 기억합니다).

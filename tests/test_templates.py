@@ -233,3 +233,23 @@ def test_api_builtin_protection(client, proj):
     st, res = client.json("POST", "/api/templates", {"project": "projA", "tab": "X", "name": "x-team",
                                                      "description": "로그인 팀"})
     assert st == 200 and res["templates"][0]["description"] == "로그인 팀"
+
+
+def test_builtin_flows_only_read_what_exists():
+    """A step may read {prev}, files in the same run folder, or the team work file the orchestrator
+    wrote BEFORE the run; never a note the orchestrator only writes after judging the run."""
+    for name in BUILTINS:
+        t = T.load(name)
+        for fname, f in t["flows"].items():
+            for i, st in enumerate(f["steps"]):
+                p = st.get("prompt", "")
+                assert "{out}" in p, (name, fname, i)
+                assert "'재현'" not in p and "리뷰 기록" not in p, (name, fname, i)
+                if "step-1.md" in p:
+                    assert i >= 1 and "{prev}" in p
+
+
+def test_instantiate_moves_the_team_work_folder():
+    tab, flows, texts = T.instantiate(T.load("dev-team"), "web")
+    assert ".herdr-flow/work/web/task.md" in flows["dev"]["steps"][0]["prompt"]
+    assert ".herdr-flow/work/web/" in texts["web-orch"] and "work/dev-team/" not in texts["coder"]

@@ -24,21 +24,21 @@ flows:
     tab: "@tab"
     steps:
       - agent: designer
-        prompt: ".herdr-flow/work/design/brief.md 를 읽고 설계 문서 초안을 brief에 적힌 경로(docs/design/<주제>.md)에 써줘. 문서 경로와 핵심 결정, 열린 질문을 {out} 에 써줘"
+        prompt: ".herdr-flow/work/design-review-team/brief.md 를 읽고 설계 문서 초안을 brief에 적힌 경로(docs/design/<주제>.md)에 써줘. 문서 경로와 핵심 결정, 열린 질문을 {out} 에 써줘"
   design-review:
     tab: "@tab"
     steps:
       - agent: reviewer
-        prompt: ".herdr-flow/work/design/brief.md 와 그 안에 적힌 설계 문서를 리뷰해줘. 지적은 blocker/major/minor로 나눠서 {out} 에 써줘"
+        prompt: ".herdr-flow/work/design-review-team/brief.md 와 그 안에 적힌 설계 문서를 리뷰해줘. 지적은 blocker/major/minor로 나눠서 {out} 에 써줘"
       - agent: critic
-        prompt: ".herdr-flow/work/design/brief.md 와 설계 문서를 적대적으로 리뷰해줘 (일반 리뷰 결과 {prev} 와 겹치는 지적은 빼고). blocker/major/minor로 나눠서 {out} 에 써줘"
+        prompt: ".herdr-flow/work/design-review-team/brief.md 와 설계 문서를 적대적으로 리뷰해줘 (일반 리뷰 결과 {prev} 와 겹치는 지적은 빼고). blocker/major/minor로 나눠서 {out} 에 써줘"
       - agent: designer
-        prompt: "일반 리뷰 결과는 .herdr-flow/work/design/brief.md 의 '리뷰 기록'에, 적대적 리뷰 결과는 {prev} 에 있어. 지적마다 반영하거나 반박 근거를 남기고 설계 문서를 고쳐줘. 지적별 처리 결과와 남은 blocker를 {out} 에 써줘"
+        prompt: "일반 리뷰 결과는 {prev} 와 같은 폴더의 step-1.md 에, 적대적 리뷰 결과는 {prev} 에 있어. 지적마다 반영하거나 반박 근거를 남기고 설계 문서를 고쳐줘. 지적별 처리 결과와 남은 blocker를 {out} 에 써줘"
   design-spec:
     tab: "@tab"
     steps:
       - agent: designer
-        prompt: ".herdr-flow/work/design/brief.md 와 확정된 설계 문서로 구현 spec(docs/design/<주제>-spec.md)을 써줘. spec 경로와 요약을 {out} 에 써줘"
+        prompt: ".herdr-flow/work/design-review-team/brief.md 와 확정된 설계 문서로 구현 spec(docs/design/<주제>-spec.md)을 써줘. spec 경로와 요약을 {out} 에 써줘"
       - agent: reviewer
         prompt: "{prev} 의 구현 spec이 설계 문서와 일치하는지, 그대로 구현할 수 있는지 확인해줘. 빠진 것·모순을 blocker/major/minor로 {out} 에 써줘"
 roles:
@@ -49,13 +49,14 @@ roles:
     직접 설계 문서를 쓰지 않는다 (designer의 일). 과정을 진행하고 판정한다.
 
     ## 진행 방법
-    1. **요구 정리**: 사용자 요구를 `.herdr-flow/work/design/brief.md`에 쓴다.
+    1. **요구 정리**: 사용자 요구를 `.herdr-flow/work/design-review-team/brief.md`에 쓴다.
        - 주제 이름(영문 kebab-case), 설계 문서 경로 `docs/design/<주제>.md`, spec 경로 `docs/design/<주제>-spec.md`
        - 목표, 비목표, 제약, 완료 기준, 참고 자료
        - 모호한 점은 **먼저 사용자에게 묻고** brief에 답을 기록한다.
     2. **초안**: `hctrl run design-draft --detach` → `hctrl wait <run-id>`.
-    3. **리뷰 반복**: `design-review`를 실행하기 전에 직전 일반 리뷰 결과 경로를 brief의 '리뷰 기록'에 추가한다.
-       - 매 회차 후 남은 blocker를 판정한다. blocker가 없거나 3회를 채우면 멈춘다.
+    3. **리뷰 반복**: `design-review`를 실행한다 (일반 리뷰 → 적대적 리뷰 → designer 반영).
+       - 매 회차 후 brief의 '리뷰 기록'에 회차, run-id, 남은 blocker를 적는다.
+       - 남은 blocker를 판정한다. blocker가 없거나 3회를 채우면 멈춘다.
        - critic의 지적이 근거 없이 반박되었으면 designer에게 다시 따진다.
        - 3회 후에도 blocker가 남으면 쟁점을 정리해 사용자에게 결정을 받는다.
     4. **사용자 확인**: 설계 요약(핵심 결정, 남은 위험, 리뷰 회차)을 보여 주고 승인을 받는다.
