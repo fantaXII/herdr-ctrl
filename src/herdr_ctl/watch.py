@@ -91,7 +91,8 @@ def notify_role(ctx: Ctx, name: str) -> str:
 
 
 STALLED_IDLE_S = 90.0  # a stalled handoff prompt: give up if the agent stays idle with no file this long
-_sleep = time.sleep    # tests replace it
+_sleep = time.sleep    # tests replace these two
+_now = time.time
 
 
 class HandoffMissing(RuntimeError):
@@ -110,10 +111,10 @@ def _missing(name: str, path, turned: bool) -> HandoffMissing:
 def _await_handoff(ctx: Ctx, name: str, path, timeout_s: float) -> None:
     """herdr's `prompt --wait` gives up (agent_prompt_stalled) when the agent does not LOOK busy
     within 5 s, but the prompt was already typed in. Wait for the file and for the turn to end."""
-    start = time.time()
+    start = _now()
     seen_busy = False
     idle_since = None
-    while time.time() - start < timeout_s:
+    while _now() - start < timeout_s:
         st = agent_status(ctx.h, name)
         if st == "blocked":
             raise RuntimeError(f"'{name}'가 인수인계 중 승인 대기에 걸렸습니다. 화면에서 처리한 뒤 다시 반영하세요")
@@ -123,11 +124,11 @@ def _await_handoff(ctx: Ctx, name: str, path, timeout_s: float) -> None:
         written = path.exists() and path.read_text().strip()
         if written and st in READY_STATES:
             return
-        if not written and not seen_busy and time.time() - start > STALLED_IDLE_S:
+        if not written and not seen_busy and _now() - start > STALLED_IDLE_S:
             break  # the prompt never started a turn
         if not written and seen_busy and st in READY_STATES:  # the turn ended without writing it
-            idle_since = idle_since or time.time()
-            if time.time() - idle_since > 5:
+            idle_since = idle_since or _now()
+            if _now() - idle_since > 5:
                 raise _missing(name, path, turned=True)
         else:
             idle_since = None

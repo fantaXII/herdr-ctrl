@@ -587,7 +587,7 @@ hctrl wait <job-id>
 hctrl stop <run-id|job-id>                       # 실행 중인 flow나 지시 중단
 ```
 
-orchestrator에는 상한(`limits`)이 걸립니다. 한 번의 `hctrl ask`에서 지시할 수 있는 횟수와 시간이 정해져 있고, 넘으면 `hctrl`이 멈추고 알려줍니다. LLM이 이 상한을 무시할 수 없습니다.
+orchestrator에는 상한(`limits`)이 걸립니다. 사용자의 지시 한 번(`hctrl ask` 또는 orchestrator 창에 직접 입력한 새 메시지)마다 지시할 수 있는 횟수와 시간이 정해져 있고, 넘으면 `hctrl`이 멈추고 알려줍니다. 새 지시를 입력하면 상한이 다시 시작됩니다. 직접 입력은 orchestrator의 claude 대화 기록에서 확인하며, `[hctrl]`로 시작하는 hctrl의 알림이나 도구 결과로는 초기화되지 않으므로 LLM이 이 상한을 무시할 수 없습니다.
 
 ## 5. 멈췄을 때
 
@@ -597,7 +597,7 @@ orchestrator에는 상한(`limits`)이 걸립니다. 한 번의 `hctrl ask`에�
 | 쉘 명령 실패 | `on_fail` 설정에 따라 계속하거나 중단 | 로그 확인 후 `hctrl resume <run-id>` |
 | 시간 초과 | 실행이 멈춤. 프롬프트를 자동으로 재전송하지 **않음** | `hctrl status`로 상태 확인 |
 | 중단하고 싶을 때 | `hctrl stop <run-id>` (agent에게 중단 신호, 잠금 해제) | 필요하면 `hctrl resume <run-id>` |
-| orchestrator 상한 도달 | 추가 지시를 거부하고 알림 | 확인 후 `hctrl ask`로 다시 지시 |
+| orchestrator 상한 도달 | 추가 지시를 거부하고 알림 | 확인 후 orchestrator 창에 새 지시를 입력하거나 `hctrl ask`로 다시 지시 |
 | agent가 질문함 (`question`) | 실행은 살아서 답을 기다림, 알림 | `hctrl pending`으로 보고 `hctrl answer <qid> ...` ([6장](#6-무인-모드-unattended)) |
 
 실행 기록은 `.herdr-flow/runs/<run-id>/`에 단계별 결과 파일과 `run.json`으로 남습니다.

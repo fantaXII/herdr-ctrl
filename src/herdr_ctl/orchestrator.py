@@ -1,10 +1,12 @@
 """Actor detection and orchestrator limits (enforced by hctrl, not by the LLM)."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .config import TabCfg, orch_name
@@ -153,6 +155,81 @@ def start_ask(ctx, tab: TabCfg) -> None:
         write_json(_budget_path(ctx, tab), {"started": time.time(), "steps": 0, "repeats": {}})
 
 
+TAIL_BYTES = 4 << 20  # transcript tail scanned for the last user message
+
+
+def claude_transcript(session_id: str) -> Path | None:
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    if not re.fullmatch(r"[0-9A-Za-z-]{8,80}", session_id or ""):
+        return None
+    try:
+        return next(base.glob(f"*/{session_id}.jsonl"), None)
+    except OSError:
+        return None
+
+
+def _user_text(row: dict) -> str | None:
+    """Text of a message the user typed (not a tool result, not a meta/command line)."""
+    if row.get("type") != "user" or row.get("isMeta"):
+        return None
+    c = (row.get("message") or {}).get("content")
+    if isinstance(c, list):
+        if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in c):
+            return None
+        c = " ".join(x.get("text") or "" for x in c if isinstance(x, dict) and x.get("type") == "text")
+    if not isinstance(c, str) or not c.strip():
+        return None
+    return c
+
+
+def last_user_prompt(ctx, name: str) -> float | None:
+    """When the user last typed a new instruction straight into orchestrator `name` (epoch), read
+    from its claude transcript. Prompts hctrl itself sends start with "[hctrl]" and do not count, and
+    the orchestrator cannot write user turns, so this is a reset only the user can trigger."""
+    try:
+        a = ctx.h.agent_get(name)
+    except (HerdrError, KeyError):
+        return None
+    sess = a.get("agent_session") if isinstance(a, dict) else None
+    if not isinstance(sess, dict) or sess.get("agent") != "claude":
+        return None
+    path = claude_transcript(str(sess.get("value") or ""))
+    if path is None:
+        return None
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - TAIL_BYTES))
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for raw in reversed(lines):
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        text = _user_text(row) if isinstance(row, dict) else None
+        if text is None or text.lstrip().startswith(("[hctrl]", "<")):
+            continue
+        try:
+            return datetime.fromisoformat(str(row.get("timestamp")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _budget(ctx, tab: TabCfg) -> dict:
+    """The tab's ask budget; a newer instruction typed into the orchestrator starts a fresh one
+    (only `hctrl ask` used to, so talking to the orchestrator directly hit the limit after 2 hours)."""
+    budget = read_json(_budget_path(ctx, tab)) or {"started": time.time(), "steps": 0, "repeats": {}}
+    if tab.orchestrator is not None:
+        typed = last_user_prompt(ctx, tab.orchestrator.name)
+        if typed is not None and typed > float(budget.get("started") or 0):
+            budget = {"started": typed, "steps": 0, "repeats": {}}
+    return budget
+
+
 def enforce(ctx, actor: Actor, targets: list[str], prompt: str | None) -> None:
     """Called before hctrl send/run. No-op for the user; checks scope + budget for an orchestrator."""
     if actor.kind == "foreign":
@@ -169,7 +246,7 @@ def enforce(ctx, actor: Actor, targets: list[str], prompt: str | None) -> None:
         raise ScopeError("orchestrator 자신에게는 지시할 수 없습니다")
     path = _budget_path(ctx, tab)
     with _budget_lock(ctx, tab):  # parallel tool calls must not both pass the same budget check
-        budget = read_json(path) or {"started": time.time(), "steps": 0, "repeats": {}}
+        budget = _budget(ctx, tab)
         lim = tab.limits
         minutes = (time.time() - budget["started"]) / 60
         if budget["steps"] >= lim["max_steps_per_ask"]:
@@ -190,7 +267,7 @@ def consume_answer(ctx, actor: Actor, tab: TabCfg) -> None:
     """Count one `hctrl answer` by an orchestrator against max_answers_per_ask (hctrl enforces it)."""
     path = _budget_path(ctx, tab)
     with _budget_lock(ctx, tab):
-        budget = read_json(path) or {"started": time.time(), "steps": 0, "repeats": {}}
+        budget = _budget(ctx, tab)
         used = budget.get("answers", 0)
         cap = tab.policy["max_answers_per_ask"]
         if used >= cap:
@@ -223,7 +300,7 @@ def guard(ctx, actor: Actor, command: str, targets: list[str] | None = None,
 def _limit(ctx, tab: TabCfg, msg: str) -> None:
     ctx.h.notify(f"hctrl: 탭 {tab.name} orchestrator 상한", msg)
     raise LimitExceeded(msg + ". 사용자에게 상황을 보고하고 멈추세요. "
-                        "(상한은 사용자가 hctrl ask로 새 지시를 줄 때 초기화됩니다)")
+                        "(상한은 사용자가 orchestrator 창에 새 지시를 입력하거나 hctrl ask로 지시할 때 초기화됩니다)")
 
 
 def ask(ctx, tab_name: str, text: str) -> None:

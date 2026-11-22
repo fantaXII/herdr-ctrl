@@ -488,7 +488,7 @@ def test_stalled_turn_that_ends_without_a_file_fails_fast(live, no_sleep, monkey
     c2.h.agent_list = agent_list
     c2.h.on_prompt["x1"] = lambda a, t: "stalled"
     clock = iter(range(0, 100000))
-    monkeypatch.setattr(W.time, "time", lambda: float(next(clock)))
+    monkeypatch.setattr(W, "_now", lambda: float(next(clock)))
     with pytest.raises(RuntimeError, match="인수인계 파일"):
         restart(c2, "x1")
     assert "x1" in c2.h.agents  # not stopped

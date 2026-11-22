@@ -303,3 +303,66 @@ def test_second_worker_on_same_run_refused(rx):
     with pytest.raises(RuntimeError, match="다른 프로세스"):
         execute(rx, rec)
     assert load_run(rx.project, rec["id"])["status"] == "pending"  # untouched
+
+
+# --------------------------------------------------------------- ask budget follows the user's own turns
+def _transcript(tmp_path, monkeypatch, a, rows):
+    """Give the fake orchestrator a claude session whose transcript holds `rows`."""
+    import json
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    d = tmp_path / "claude" / "projects" / "-proj"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "sess-0001-abcd.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+    real = a.h.agent_get
+    a.h.agent_get = lambda t: {**real(t), "agent_session": {"agent": "claude", "kind": "id", "value": "sess-0001-abcd"}}
+
+
+def _user(ts, text):
+    return {"type": "user", "timestamp": ts, "message": {"role": "user", "content": text}}
+
+
+def test_typing_to_the_orchestrator_starts_a_fresh_budget(two, tmp_path, monkeypatch):
+    """Seen live: the user talked to the orchestrator directly for hours; the budget still dated from
+    the last `hctrl ask` (the day before) and every hctrl send hit the 120-minute limit."""
+    import time as _t
+    a, _ = two
+    tab = a.cfg.tab("X")
+    orch = Actor("orch", "x-orch", "X")
+    start_ask(a, tab)
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import read_json, write_json
+    b = read_json(_budget_path(a, tab))
+    b["started"] = _t.time() - 26 * 3600  # yesterday
+    write_json(_budget_path(a, tab), b)
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, orch, ["x1"], "a")
+    now = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - 60))
+    old = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - 27 * 3600))
+    _transcript(tmp_path, monkeypatch, a, [
+        _user(old, "어제 지시"),
+        _user(now, "진행해줘."),
+        {"type": "user", "timestamp": now, "message": {"content": [{"type": "tool_result", "content": "x"}]}},
+        _user(now, "[hctrl] 'coder'가 재시작됐습니다"),
+    ])
+    enforce(a, orch, ["x1"], "b")  # the typed "진행해줘." 1 minute ago started a new budget
+    assert read_json(_budget_path(a, tab))["steps"] == 1
+
+
+def test_hctrl_and_tool_turns_do_not_reset_the_budget(two, tmp_path, monkeypatch):
+    import time as _t
+    a, _ = two
+    tab = a.cfg.tab("X")
+    tab.limits["max_steps_per_ask"] = 2
+    orch = Actor("orch", "x-orch", "X")
+    start_ask(a, tab)
+    enforce(a, orch, ["x1"], "a")
+    enforce(a, orch, ["x1"], "b")
+    soon = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() + 5))
+    _transcript(tmp_path, monkeypatch, a, [
+        _user(soon, "[hctrl] 역할이 변경됐습니다"),
+        _user(soon, "<command-name>/clear</command-name>"),
+        {"type": "user", "timestamp": soon, "isMeta": True, "message": {"content": "meta"}},
+        {"type": "user", "timestamp": soon, "message": {"content": [{"type": "tool_result", "content": "결과"}]}},
+    ])
+    with pytest.raises(LimitExceeded, match="지시 상한"):
+        enforce(a, orch, ["x1"], "c")
