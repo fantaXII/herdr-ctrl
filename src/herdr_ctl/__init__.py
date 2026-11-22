@@ -1,2 +1,2 @@
 """herdr_ctl: project sessions, layouts and agent pipelines on top of herdr."""
-__version__ = "2.6.0"
+__version__ = "2.7.0"
