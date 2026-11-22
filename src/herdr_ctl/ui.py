@@ -290,6 +290,34 @@ class UIServer:
         return {"kinds": list(AGENT_KINDS), "claude": CLAUDE_MODELS, "opencode": self._oc,
                 "opencode_status": self._oc_status}
 
+    def templates_api(self, method: str, rest: list[str], body: Any) -> Any:
+        """Team templates (templates.py): list / get / save from a saved tab / rename / delete."""
+        from . import templates as T
+        try:
+            if rest == [] and method == "GET":
+                return {"templates": T.list_templates()}
+            if rest == [] and method == "POST":
+                project = self.project(str(body.get("project") or ""))
+                name, tab = body.get("name"), str(body.get("tab") or "")
+                T.path_for(name)  # validate the name first
+                try:
+                    path = T.save(name, T.build(project, tab), {"project": project.name, "tab": tab},
+                                  overwrite=bool(body.get("overwrite")))
+                except FileExistsError:
+                    raise ApiError(409, f"템플릿 '{name}'이 이미 있습니다") from None
+                return {"name": name, "path": str(path), "templates": T.list_templates()}
+            if len(rest) == 1 and method == "GET":
+                return T.load(rest[0])
+            if len(rest) == 2 and rest[1] == "delete" and method == "POST":
+                T.delete(rest[0])
+                return {"templates": T.list_templates()}
+            if len(rest) == 2 and rest[1] == "rename" and method == "POST":
+                T.rename(rest[0], body.get("name"))
+                return {"templates": T.list_templates()}
+        except T.TemplateError as e:
+            raise ApiError(400, str(e)) from e
+        raise ApiError(404, "없음")
+
     def update_action(self, rest: list[str]) -> dict:
         """POST /api/update (install the latest release) and /api/update/check (ask GitHub now)."""
         from . import update
@@ -322,6 +350,8 @@ class UIServer:
             return {"ok": True}
         if parts and parts[0] == "update" and method == "POST":
             return self.update_action(parts[1:])
+        if parts and parts[0] == "templates":
+            return self.templates_api(method, parts[1:], body)
         if parts == ["restart"] and method == "POST":
             if self.mode != "session":
                 raise ApiError(400, "세션 밖에서는 hctrl을 다시 실행하면 새 버전이 적용됩니다")
@@ -470,6 +500,10 @@ class UIServer:
                                                   for k, v in copies.items()):
             raise ApiError(400, "copies는 {새 멤버: 원본 멤버} 객체여야 합니다")
         old_cfg = check_file(project.config_path, which=self.which)[0] if current is not None else None
+        role_texts = body.get("role_texts") or {}
+        if not isinstance(role_texts, dict) or not all(isinstance(k, str) and isinstance(v, str)
+                                                      for k, v in role_texts.items()):
+            raise ApiError(400, "role_texts는 {멤버: 역할 상세 전문} 객체여야 합니다")
         tabs = data.get("tabs") if isinstance(data, dict) else None
         renames = {o: n for o, n in renames.items() if o != n and isinstance(tabs, dict) and n in tabs}
         moved: list[str] = []
@@ -487,9 +521,27 @@ class UIServer:
             write_config(project, data)
         self.discard_draft(project)  # the draft is now the saved config
         renamed = moved + self.sync_live_titles(project)
-        copied = self.copy_roles(project, old_cfg, copies)
+        copied = self.copy_roles(project, old_cfg, copies) + self.write_role_texts(project, role_texts)
         return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed,
                 "copied": copied}
+
+    def write_role_texts(self, project: Project, texts: dict[str, str]) -> list[str]:
+        """Team template: create each new member's role file from the template text (never overwrite)."""
+        if not texts:
+            return []
+        cfg, _ = check_file(project.config_path, which=self.which)
+        done = []
+        for name, text in texts.items():
+            m = cfg.member(name) if cfg else None
+            if m is None or m.type == "shell":
+                continue
+            try:
+                if roles_mod.write_role_text(project, name, text, roles_mod.role_file(project, m),
+                                             reason="팀 템플릿"):
+                    done.append(name)
+            except (OSError, RuntimeError):
+                continue
+        return done
 
     def copy_roles(self, project: Project, old_cfg, copies: dict[str, str]) -> list[str]:
         """Tab copy: give each new member its source's role detail (as its own file, with history).

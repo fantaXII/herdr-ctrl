@@ -90,6 +90,19 @@ def write_role(project: Project, m: Member, one: str | None = None, detail: str 
     _record(project, m.name, actor, reason, before, text)
 
 
+def write_role_text(project: Project, name: str, text: str, path: Path | None = None,
+                    actor: str = "user", reason: str = "") -> bool:
+    """Create a member's role file from a whole text (tab copy / team template). An existing file is
+    never overwritten: returns False then."""
+    f = path or project.roles_dir / f"{name}.md"
+    if f.exists():
+        return False
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text)
+    _record(project, name, actor, reason, "", text)
+    return True
+
+
 def revert(project: Project, m: Member, n: int, actor: str = "user") -> None:
     entries = {e["n"]: e for e in history(project, m.name)}
     if n not in entries:

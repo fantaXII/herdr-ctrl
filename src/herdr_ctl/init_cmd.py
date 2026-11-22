@@ -210,3 +210,34 @@ def run_init(project: Project, ask: Ask = input, add_tab: str | None = None, whi
                 flows.pop(fname, None)
             print(f"--- 탭 {bt} 다시 입력 ---")
             add_one(bt, "기본 flow를 만들까요?")
+
+
+def run_init_template(project: Project, name: str, ask: Ask = input, which=None) -> bool:
+    """`hctrl init --template <name>`: a new config.yaml with the template's tab (tab id = template
+    name), its flows and its role details. Nothing to ask except overwriting an existing config."""
+    from . import roles, templates
+    try:
+        t = templates.load(name)
+    except templates.TemplateError as e:
+        print(f"✘ {e}")
+        return False
+    if project.config_path.exists() and \
+            not _yes(ask, f"{project.config_path}가 이미 있습니다. 템플릿으로 덮어쓸까요?", False):
+        return False
+    tab_id = name[:25].rstrip("-_")  # tab ids: 25 chars (TAB_RE); template names start with a letter
+    tab, flows, texts = templates.instantiate(t, tab_id)
+    session = re.sub(r"[^A-Za-z0-9_.-]", "-", project.name) or "project"
+    data = build_config(session, {tab_id: tab}, flows)
+    kw = {"which": which} if which else {}
+    _, issues = check_data(data, root=project.root, **kw)
+    write_config(project, data)
+    members = ([f"{tab_id.lower()}-orch"] if isinstance(tab.get("orchestrator"), dict) else []) \
+        + list(tab.get("agents") or {}) + list(tab.get("shells") or {})
+    print(f"✔ {project.config_path} 생성 (템플릿 {name}: {', '.join(members)})")
+    made = [m for m, text in texts.items() if roles.write_role_text(project, m, text, reason=f"템플릿 {name}")]
+    if made:
+        print(f"✔ 역할 상세 {len(made)}개 생성 ({project.roles_dir})")
+    print("검사 중... " + format_issues(issues).splitlines()[-1])
+    for i in issues:
+        print("  " + str(i))
+    return not any(i.level == "error" for i in issues)

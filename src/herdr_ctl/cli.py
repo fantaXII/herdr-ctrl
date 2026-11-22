@@ -234,6 +234,12 @@ def cmd_init(args) -> int:
     if project is None:
         cwd = Path(args.project or Path.cwd()).resolve()
         project = Project(cwd.name, cwd)
+    if args.template:
+        if args.tab:
+            raise Fail("--template은 새 설정에만 씁니다. 기존 설정에 템플릿 탭을 더하려면 설정 화면의 "
+                       "[+ 템플릿에서 추가]를 쓰세요")
+        from .init_cmd import run_init_template
+        return 0 if run_init_template(project, args.template) else 1
     ok = run_init(project, add_tab=args.tab)
     return 0 if ok else 1
 
@@ -711,6 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init", help="대화형으로 config.yaml 생성 (끝나면 자동 검사)")
     s.add_argument("--tab", help="기존 설정에 탭 추가")
+    s.add_argument("--template", help="저장한 팀 템플릿으로 새 config.yaml 만들기 (설정 화면의 [☆ 템플릿으로 저장])")
     sub.add_parser("check", help="설정 검사")
     s = sub.add_parser("ui", help="브라우저 설정 화면 (프로젝트 선택/추가, config 편집)")
     s.add_argument("name", nargs="?", help="처음 보여 줄 프로젝트 ('.' = 현재 폴더)")

@@ -33,7 +33,8 @@ header .spacer { flex: 1; }
 #updateBadge .badge { cursor: pointer; border: none; font: inherit; font-size: 12px; color: var(--muted); }
 #updateBadge .badge.up { color: var(--accent); } #updateBadge .badge.ok { color: var(--ok); }
 #updateDialog { max-width: 440px; }
-#copyDialog { max-width: 480px; } #copyDialog .map { margin: 4px 0 10px; } #copyDialog .map td { border: none; padding: 1px 6px; }
+#copyDialog, #tplDialog { max-width: 520px; } #tplDialog .tplrow { border-top: 1px solid var(--line); padding: 6px 0; }
+.tplstart { margin-bottom: 12px; gap: 10px; } #copyDialog .map { margin: 4px 0 10px; } #copyDialog .map td { border: none; padding: 1px 6px; }
 #updateDialog dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 12px; }
 #updateDialog dt { color: var(--muted); } #updateDialog dd { margin: 0; font-weight: 600; }
 #updateDialog pre { white-space: pre-wrap; margin: 8px 0; }
@@ -253,6 +254,7 @@ body.nohelp .form { grid-template-columns: max-content minmax(180px, 420px); }
   </p>
 </dialog>
 <dialog id="copyDialog"><div id="copyBody"></div></dialog>
+<dialog id="tplDialog"><div id="tplBody"></div></dialog>
 <dialog id="updateDialog"><div id="updateBody"></div></dialog>
 <dialog id="roleDialog">
   <h3 style="margin-top:0" id="roleTitle">역할</h3>
@@ -495,7 +497,8 @@ async function openProject(name) {
     S.models = models;
     if (models.opencode_status === "loading") pollModels();
     S.project = name; S.version = cfg.version; S.running = cfg.running; S.roles = cfg.roles || {}; S.exists = cfg.exists; S.root = cfg.root;
-    S.git = !!cfg.git; S.copies = {};
+    S.git = !!cfg.git; S.copies = {}; S.roleTexts = {}; S.tplStarted = false;
+    await loadTemplates();
     if (cfg.parse_error || !cfg.data || typeof cfg.data !== "object") {
       $("app").replaceChildren(h("section", {}, h("h2", {}, name),
         h("p", { class: "notice" }, "config.yaml을 읽을 수 없습니다: " + (cfg.parse_error || "형식 오류")),
@@ -630,14 +633,14 @@ async function save() {
   }
   try {
     const sent = clone(S.data);
-    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version, renames: tabRenames(), copies: S.copies || {} });
+    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version, renames: tabRenames(), copies: S.copies || {}, role_texts: S.roleTexts || {} });
     S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues; S.tabOrigin = {};
     S.ackWarn = warningKey(res.issues);
     S.draftJson = null; S.draftAt = null;  // the server removed the draft
     let msg = "저장했습니다.";
     if (res.renamed && res.renamed.length) msg += " " + res.renamed.join(", ") + ".";
-    if (res.copied && res.copied.length) msg += " 역할 상세 복사: " + res.copied.join(", ") + ".";
-    S.copies = {};
+    if (res.copied && res.copied.length) msg += " 역할 상세 생성: " + res.copied.join(", ") + ".";
+    S.copies = {}; S.roleTexts = {};
     toast(msg);
     render();
     if (S.running) refreshChanges(true);
@@ -705,30 +708,36 @@ async function discardDraft() {
   } catch (e) { toast(e.message); }
 }
 
-// ------------------------------------------------------------- tab copy
-// Copy a tab as a new team: members get "-<new tab id>" (coder → coder-login), the tab's flows and
-// role details (prompt files, copied by the server on save: S.copies) come along, and the copy can
-// work in its own git worktree so the two teams do not edit the same files.
-function copyPlan(src, id) {
-  const d = S.data, t = d.tabs[src], low = id.toLowerCase();
-  const used = new Set(allMembers(d).map((m) => m.name)), names = {};
-  const fresh = (base) => {
-    base = base.slice(0, 32).replace(/[-_]+$/, "");
-    let n = base;
-    for (let k = 2; used.has(n) || !NAME_RE.test(n); k++) n = base.slice(0, 32 - String(k).length - 1) + "-" + k;
-    used.add(n); return n;
-  };
-  if (hasOrch(t)) { names[src.toLowerCase() + "-orch"] = low + "-orch"; used.add(low + "-orch"); }
-  for (const n of [...Object.keys(t.agents || {}), ...Object.keys(t.shells || {})]) names[n] = fresh(n + "-" + low);
-  const mine = new Set(allMembers(d).filter((m) => m.tab === src).map((m) => m.name));
-  const flows = Object.keys(d.flows || {}).filter((f) => {
-    const fl = d.flows[f];
-    if (!fl || typeof fl !== "object") return false;
-    if (fl.tab) return fl.tab === src;
+// ------------------------------------------------------------- tab copy / team templates
+// A source is a team to add as a new tab: another tab of this project (tab copy) or a team template
+// (templates.py, kept outside every project). Members keep their names when free, else get
+// "-<new tab id>" (coder → coder-login); the orchestrator follows the tab id. Role details come along
+// on save (S.copies: from another member's file, S.roleTexts: template text). The new tab can work in
+// its own git worktree so two teams do not edit the same files.
+function tabSource(tid) {
+  const d = S.data, mine = new Set(allMembers(d).filter((m) => m.tab === tid).map((m) => m.name)), flows = {};
+  for (const [f, fl] of Object.entries(d.flows || {})) {
+    if (!fl || typeof fl !== "object") continue;
     const steps = Array.isArray(fl.steps) ? fl.steps : [];
-    return steps.length > 0 && steps.every((st) => st && mine.has(st.agent || st.shell));
-  });
-  return { names, flows };
+    if (fl.tab ? fl.tab === tid : steps.length > 0 && steps.every((st) => st && mine.has(st.agent || st.shell))) flows[f] = fl;
+  }
+  return { kind: "tab", id: tid, tab: d.tabs[tid], flows, orchKey: tid.toLowerCase() + "-orch" };
+}
+function tplSource(t) {
+  return { kind: "tpl", id: t.name, tab: t.tab, flows: t.flows || {}, orchKey: "@orch", roles: t.roles || {} };
+}
+function copyPlan(src, id) {
+  const t = src.tab, low = id.toLowerCase();
+  const used = new Set(allMembers(S.data).map((m) => m.name)), names = {};
+  const fresh = (n) => {
+    if (!used.has(n) && NAME_RE.test(n)) { used.add(n); return n; }
+    let base = (n + "-" + low).slice(0, 32).replace(/[-_]+$/, ""), out = base;
+    for (let k = 2; used.has(out) || !NAME_RE.test(out); k++) out = base.slice(0, 32 - String(k).length - 1) + "-" + k;
+    used.add(out); return out;
+  };
+  if (hasOrch(t)) { names[src.orchKey] = low + "-orch"; used.add(low + "-orch"); }
+  for (const n of [...Object.keys(t.agents || {}), ...Object.keys(t.shells || {})]) names[n] = fresh(n);
+  return { names, flows: Object.keys(src.flows) };
 }
 function copyIdError(id) {
   if (!TAB_RE.test(id)) return "탭 이름: 영문으로 시작, 영문/숫자/_- 25자 이하";
@@ -736,16 +745,22 @@ function copyIdError(id) {
   if (allMembers(S.data).some((m) => m.name === id.toLowerCase() + "-orch")) return "'" + id.toLowerCase() + "-orch' 이름을 이미 쓰고 있습니다";
   return "";
 }
-function openCopyTab(src) {
+function freeTabId(base) {
+  base = base.slice(0, 25).replace(/[-_]+$/, "") || TAB_BASE;
   const taken = new Set(Object.keys(S.data.tabs).map((x) => x.toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
   let k = 2;
-  while (taken.has((src + k).toLowerCase())) k++;
-  const o = { src, id: src + k, roles: true, flows: true, wt: !!S.git, branch: "" };
-  o.branch = "feat/" + o.id.toLowerCase();
+  while (taken.has((base.slice(0, 24 - String(k).length) + k).toLowerCase())) k++;
+  return base.slice(0, 24 - String(k).length) + k;
+}
+function openCopyTab(tid) { openAddTeam(tabSource(tid), freeTabId(tid + "2")); }
+function openAddTeam(src, id) {
+  const o = { src, id, roles: true, flows: true, wt: !!S.git, branch: "feat/" + id.toLowerCase() };
   copyBody(o);
   $("copyDialog").showModal();
 }
 function copyBody(o) {
+  const tpl = o.src.kind === "tpl";
   const err = copyIdError(o.id), plan = err ? null : copyPlan(o.src, o.id);
   const branchErr = o.wt && !/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(o.branch) ? "브랜치 이름을 확인하세요" : "";
   const rerender = () => { const f = document.activeElement && document.activeElement.id; copyBody(o); if (f && $(f)) { $(f).focus(); const v = $(f).value; if (typeof v === "string" && $(f).setSelectionRange) $(f).setSelectionRange(v.length, v.length); } };
@@ -754,47 +769,160 @@ function copyBody(o) {
     o.id = e.target.value.trim(); if (auto) o.branch = "feat/" + o.id.toLowerCase(); rerender(); } });
   const check = (key, label, extra) => h("label", { class: "row" }, h("input", { type: "checkbox", checked: o[key], disabled: extra && extra.disabled,
     onchange: (e) => { o[key] = e.target.checked; rerender(); } }), label, extra && extra.hint ? h("span", { class: "muted small" }, extra.hint) : null);
+  const note = (a, b) => !tpl || a === o.src.orchKey ? null : h("td", { class: "muted" }, a === b ? "(그대로)" : "(겹침)");
   $("copyBody").replaceChildren(h("div", {},
-    h("h3", { style: "margin-top:0" }, "탭 복사: " + o.src),
+    h("h3", { style: "margin-top:0" }, (tpl ? "템플릿에서 추가: " : "탭 복사: ") + o.src.id),
     h("label", { class: "field" }, "새 탭 이름", idIn),
     err ? h("p", { class: "small", style: "color:var(--err);margin:4px 0" }, err) : null,
     plan ? [h("p", { class: "muted small", style: "margin:10px 0 0" }, "멤버 이름"),
-      h("table", { class: "map small" }, Object.entries(plan.names).map(([a, b]) => h("tr", {}, h("td", {}, a), h("td", {}, "→"), h("td", {}, h("b", {}, b)))))] : null,
-    check("roles", "역할 상세(prompt)도 복사", { hint: "저장할 때 복사됩니다" }),
-    check("flows", "이 탭의 flow 복사", { hint: plan ? (plan.flows.length ? plan.flows.join(", ") : "없음") : "" }),
+      h("table", { class: "map small" }, Object.entries(plan.names).map(([a, b]) => a === "@orch"
+        ? h("tr", {}, h("td", {}, h("b", {}, b)), h("td", {}), h("td", {}))
+        : h("tr", {}, h("td", {}, a), h("td", {}, "→"), h("td", {}, h("b", {}, b)), note(a, b))))] : null,
+    check("roles", tpl ? "역할 상세(prompt)도 가져오기" : "역할 상세(prompt)도 복사", { hint: "저장할 때 만들어집니다" }),
+    check("flows", tpl ? "flow 가져오기" : "이 탭의 flow 복사", { hint: plan ? (plan.flows.length ? plan.flows.join(", ") : "없음") : "" }),
     check("wt", "별도 worktree에서 작업 (권장)", S.git ? { hint: "같은 폴더에서 두 팀이 같은 파일을 고치는 충돌을 막습니다" } : { disabled: true, hint: "git 저장소가 아니라 쓸 수 없습니다" }),
     o.wt ? h("label", { class: "field", style: "margin-left:24px" }, "브랜치",
       h("input", { id: "copyBranch", value: o.branch, oninput: (e) => { o.branch = e.target.value.trim(); rerender(); } })) : null,
     branchErr ? h("p", { class: "small", style: "color:var(--err);margin:4px 0 0 24px" }, branchErr) : null,
     h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" },
       h("button", { onclick: () => $("copyDialog").close() }, "취소"),
-      h("button", { class: "primary", disabled: !!(err || branchErr), onclick: () => { copyTab(o, plan); $("copyDialog").close(); } }, "복사"))));
+      h("button", { class: "primary", disabled: !!(err || branchErr), onclick: () => { copyTab(o, plan); $("copyDialog").close(); } }, tpl ? "추가" : "복사"))));
 }
-function copyTab(o, plan) {
-  const d = S.data, t = clone(d.tabs[o.src]), map = plan.names;
+function copyTab(o, plan, quiet) {
+  const d = S.data, src = o.src, t = clone(src.tab), map = plan.names;
   const rekey = (obj) => Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [map[k] || k, v]));
   t.agents = rekey(t.agents); t.shells = rekey(t.shells);
   for (const a of Object.values(t.agents)) if (a && typeof a === "object") delete a.role_file;  // own file, not a shared one
-  delete t.title; delete t.worktree;
+  delete t.title; delete t.worktree; delete t.cwd;
   if (o.wt) t.worktree = { branch: o.branch };
   d.tabs[o.id] = t;
+  const orchName = o.id.toLowerCase() + "-orch";
   if (o.flows) for (const f of plan.flows) {
-    let n = f + "-" + o.id.toLowerCase();
+    let n = f in d.flows ? f + "-" + o.id.toLowerCase() : f;
     for (let k = 2; n in d.flows; k++) n = f + "-" + o.id.toLowerCase() + "-" + k;
-    const c = clone(d.flows[f]);
-    if (c.tab) c.tab = o.id;  // untabbed flows stay untabbed (their steps now name the copy's members)
+    const c = clone(src.flows[f]);
+    if (c.tab) c.tab = o.id;  // pinned flows follow the new tab; untabbed ones stay untabbed
     for (const st of c.steps || []) { if (st.agent in map) st.agent = map[st.agent]; if (st.shell in map) st.shell = map[st.shell]; }
     d.flows[n] = c;
   }
   if (o.roles) {
-    S.copies = S.copies || {};
+    const shells = new Set(Object.keys(src.tab.shells || {}));
     for (const [a, b] of Object.entries(map)) {
-      if (o.src in d.tabs && (d.tabs[o.src].shells || {})[a] !== undefined) continue;  // shells have no role
-      S.copies[b] = S.copies[a] || a;  // copy of an unsaved copy: take the saved original
+      if (shells.has(a)) continue;  // shells have no role
+      if (src.kind === "tpl") { if (src.roles[a] !== undefined) S.roleTexts[b] = src.roles[a]; }
+      else if (S.roleTexts[a] !== undefined) S.roleTexts[b] = S.roleTexts[a];  // copy of an unsaved template tab
+      else S.copies[b] = S.copies[a] || a;  // copy of an unsaved copy: take the saved original
     }
   }
   S.tab = o.id; S.view = "tab"; changed();
-  toast("'" + o.src + "' 탭을 '" + o.id + "'(으)로 복사했습니다. 저장하면 반영됩니다.");
+  if (!quiet) toast(src.kind === "tpl"
+    ? "템플릿 '" + src.id + "'을 '" + o.id + "' 탭으로 추가했습니다. prompt에 이전 프로젝트 얘기가 있으면 고치세요. 저장하면 반영됩니다."
+    : "'" + src.id + "' 탭을 '" + o.id + "'(으)로 복사했습니다. 저장하면 반영됩니다.");
+  return orchName;
+}
+
+// team templates: save a saved tab, pick one to add, rename/delete
+const tplName = (s) => { const n = s.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[^a-z]+/, "").slice(0, 40); return n || "team"; };
+const TPL_RE = /^[a-z][a-z0-9_-]{0,39}$/;
+async function loadTemplates() {
+  try { S.templates = (await api("GET", "/api/templates")).templates; } catch (e) { S.templates = []; }
+}
+function tplMembers(t) {
+  return [t.orch ? "◆ orch" : null, ...t.agents, ...t.shells.map((x) => "■ " + x)].filter(Boolean).join(" · ");
+}
+function openSaveTpl(tname) {
+  const o = { tab: tname, name: tplName(tname) };
+  saveTplBody(o);
+  $("tplDialog").showModal();
+}
+function saveTplBody(o, msg) {
+  const close = h("button", { onclick: () => $("tplDialog").close() }, "닫기");
+  const saved = S.saved && S.saved.tabs && S.saved.tabs[o.tab];
+  if (unsaved() || !saved) {
+    $("tplBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, "템플릿으로 저장: " + o.tab),
+      h("p", {}, "⚠ 저장하지 않은 변경이 있습니다. 템플릿은 저장된 설정으로 만들어지니 먼저 [저장]하세요."),
+      h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" }, close)));
+    return;
+  }
+  const src = tabSource(o.tab), t = src.tab, lines = (n) => S.roles[n] ? "역할 상세 " + S.roles[n] + "줄" : "역할 상세 없음";
+  const model = (m) => (m.kind || "claude") + (m.model ? "/" + m.model : "");
+  const rows = [hasOrch(t) ? h("tr", {}, h("td", {}, "◆ " + src.orchKey), h("td", {}, model(t.orchestrator)), h("td", { class: "muted" }, lines(src.orchKey))) : null,
+    ...Object.entries(t.agents || {}).map(([n, m]) => h("tr", {}, h("td", {}, "● " + n), h("td", {}, model(m || {})), h("td", { class: "muted" }, lines(n)))),
+    ...Object.keys(t.shells || {}).map((n) => h("tr", {}, h("td", {}, "■ " + n), h("td", {}, "쉘"), h("td", {})))];
+  const nameErr = TPL_RE.test(o.name) ? "" : "템플릿 이름: 영문 소문자로 시작, 소문자/숫자/_- 40자 이하";
+  const nameIn = h("input", { id: "tplName", value: o.name, oninput: (e) => {
+    o.name = e.target.value.trim(); saveTplBody(o); $("tplName").focus(); $("tplName").setSelectionRange(o.name.length, o.name.length); } });
+  $("tplBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, "템플릿으로 저장: " + o.tab),
+    h("label", { class: "field" }, "템플릿 이름", nameIn),
+    nameErr ? h("p", { class: "small", style: "color:var(--err);margin:4px 0" }, nameErr) : null,
+    h("p", { class: "muted small", style: "margin:10px 0 0" }, "담기는 것"),
+    h("table", { class: "map small" }, rows),
+    h("p", { class: "small", style: "margin:4px 0" }, "flow: " + (Object.keys(src.flows).join(", ") || "없음")),
+    h("p", { class: "muted small" }, "빼는 것: 작업 폴더(cwd), worktree, 표시 이름. 저장 위치: ~/.config/herdr_ctl/templates/"),
+    msg ? h("p", { class: "small", style: "color:var(--err)" }, msg) : null,
+    h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" }, close,
+      h("button", { class: "primary", disabled: !!nameErr, onclick: () => saveTpl(o, false) }, "저장"))));
+}
+async function saveTpl(o, overwrite) {
+  try {
+    const r = await api("POST", "/api/templates", { project: S.project, tab: o.tab, name: o.name, overwrite });
+    S.templates = r.templates; $("tplDialog").close();
+    toast("템플릿 '" + o.name + "'으로 저장했습니다. 다른 프로젝트의 [+ 템플릿에서 추가]에서 쓸 수 있습니다.");
+    render();
+  } catch (e) {
+    if (e.status === 409 && !overwrite) {
+      const t = (S.templates || []).find((x) => x.name === o.name);
+      if (confirm("'" + o.name + "'이 이미 있습니다" + (t && t.saved_at ? " (" + t.saved_at.replace("T", " ") + " 저장)" : "") + ". 덮어쓸까요?")) saveTpl(o, true);
+    } else saveTplBody(o, e.message);
+  }
+}
+async function openTplList() {
+  await loadTemplates();
+  const o = { pick: S.templates.length ? S.templates[0].name : null };
+  tplListBody(o);
+  $("tplDialog").showModal();
+}
+function tplListBody(o, msg) {
+  const list = S.templates || [];
+  const act = async (fn) => { try { S.templates = (await fn()).templates; if (!list.some((t) => t.name === o.pick)) o.pick = S.templates.length ? S.templates[0].name : null; tplListBody(o); } catch (e) { tplListBody(o, e.message); } };
+  const rows = list.map((t) => h("div", { class: "tplrow" },
+    h("label", { class: "row" }, h("input", { type: "radio", name: "tplpick", checked: o.pick === t.name, onchange: () => { o.pick = t.name; } }),
+      h("b", {}, t.name), h("span", { class: "muted small grow" }, tplMembers(t)), h("span", { class: "muted small" }, (t.saved_at || "").slice(5, 10).replace("-", "/"))),
+    h("span", { class: "row small", style: "justify-content:flex-end" },
+      h("button", { class: "link", onclick: () => { const n = prompt("새 템플릿 이름", t.name); if (n && n !== t.name) act(() => api("POST", "/api/templates/" + encodeURIComponent(t.name) + "/rename", { name: n.trim() })); } }, "이름 바꾸기"),
+      h("button", { class: "link danger", onclick: () => { if (confirm("템플릿 '" + t.name + "'을 삭제할까요? (이미 만든 탭은 그대로입니다)")) act(() => api("POST", "/api/templates/" + encodeURIComponent(t.name) + "/delete", {})); } }, "삭제"))));
+  $("tplBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, "템플릿"),
+    rows.length ? rows : h("p", { class: "muted" }, "저장된 템플릿이 없습니다. 탭 화면의 [☆ 템플릿으로 저장]으로 만드세요."),
+    msg ? h("p", { class: "small", style: "color:var(--err)" }, msg) : null,
+    h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" },
+      h("button", { onclick: () => $("tplDialog").close() }, "취소"),
+      h("button", { class: "primary", disabled: !o.pick, onclick: () => pickTpl(o) }, "다음 →"))));
+}
+async function pickTpl(o) {
+  try {
+    const t = await api("GET", "/api/templates/" + encodeURIComponent(o.pick));
+    $("tplDialog").close();
+    openAddTeam(tplSource(t), freeTabId(t.name));
+  } catch (e) { tplListBody(o, e.message); }
+}
+// new project (no config.yaml yet): start from a template instead of the default work1 tab
+function tplStartBanner() {
+  if (!S.wizard || S.exists || S.tplStarted || !(S.templates || []).length) return null;
+  const sel = h("select", { "aria-label": "템플릿" }, S.templates.map((t) => h("option", { value: t.name }, t.name)));
+  return h("div", { class: "notice tplstart row" }, h("b", {}, "★ 템플릿으로 시작"), sel,
+    h("button", { onclick: () => startFromTpl(sel.value) }, "적용"),
+    h("span", { class: "muted small" }, "기본 탭(" + Object.keys(S.data.tabs).join(", ") + ") 대신 템플릿의 탭·flow·prompt로 시작합니다"));
+}
+async function startFromTpl(name) {
+  if (dirty() && !confirm("지금 고친 내용 대신 템플릿 '" + name + "'으로 시작할까요?")) return;
+  try {
+    const t = await api("GET", "/api/templates/" + encodeURIComponent(name));
+    S.data.tabs = {}; S.data.flows = {}; S.copies = {}; S.roleTexts = {}; S.tabOrigin = {};
+    const src = tplSource(t), id = freeTabId(t.name);
+    S.tplStarted = true;  // the banner goes away; [+ 템플릿에서 추가] still adds more
+    copyTab({ src, id, roles: true, flows: true, wt: false }, copyPlan(src, id), true);
+    toast("템플릿 '" + name + "'으로 시작합니다. 확인한 뒤 [만들기]를 누르세요.");
+  } catch (e) { toast(e.message); }
 }
 
 // ------------------------------------------------------------- members
@@ -846,7 +974,8 @@ function dropSteps(names, asked = false) {
   return true;
 }
 function renameMember(oldName, newName) {
-  if (S.copies && oldName in S.copies) { S.copies[newName] = S.copies[oldName]; delete S.copies[oldName]; }  // unsaved tab copy
+  for (const pend of [S.copies, S.roleTexts])  // unsaved tab copy / template tab: its role follows the name
+    if (pend && oldName in pend) { pend[newName] = pend[oldName]; delete pend[oldName]; }
   for (const f of Object.values(S.data.flows || {}))
     for (const st of (f && f.steps) || []) {
       if (st.agent === oldName) st.agent = newName;
@@ -985,7 +1114,7 @@ function render() {
   if (!names.includes(S.tab)) S.tab = names[0] || null;
   if (S.view === "tab" && !S.tab) S.view = "project";
   const view = S.view === "flows" ? renderFlows() : S.view === "tab" ? renderTabView(S.tab, S.data.tabs[S.tab]) : renderProject();
-  $("app").replaceChildren(h("div", { class: "layout" }, renderNav(), h("div", { class: "content" }, view)));
+  $("app").replaceChildren(h("div", { class: "layout" }, renderNav(), h("div", { class: "content" }, tplStartBanner(), view)));
 }
 // redraw for new check marks without losing the field the user moved to
 function rerenderKeepFocus() {
@@ -1028,7 +1157,8 @@ function renderNav() {
     h("div", { class: "nav-group" }, head(1, "프로젝트", "project", markFor("session")),
       h("div", { class: "nav-item", style: "cursor:default" }, h("span", { class: "grow muted" }, "세션 " + (d.session || "-")))),
     h("div", { class: "nav-group" }, head(2, "탭 구성", "tab"), tabs,
-      h("button", { class: "nav-item add", onclick: () => { addTab(); S.view = "tab"; render(); } }, "+ 탭 추가")),
+      h("button", { class: "nav-item add", onclick: () => { addTab(); S.view = "tab"; render(); } }, "+ 탭 추가"),
+      h("button", { class: "nav-item add", onclick: openTplList }, "+ 템플릿에서 추가")),
     h("div", { class: "nav-group" }, head(3, "flow", "flows"), flows,
       h("button", { class: "nav-item add", onclick: () => go("flows") }, flows.length ? "+ flow 추가" : "+ 예제로 시작")),
     h("div", { class: "nav-legend" },
@@ -1205,6 +1335,7 @@ function renderTabView(tname, t) {
     S.tab = nv; changed();
   } });
   const title = viewTitle(2, "탭 · " + (t.title ? t.title + " (" + tname + ")" : tname), h("span", { class: "grow" }),
+    h("button", { title: "이 탭의 구성과 역할 상세(prompt)를 다른 프로젝트에서도 쓸 수 있게 저장합니다", onclick: () => openSaveTpl(tname) }, "☆ 템플릿으로 저장"),
     h("button", { title: "같은 구성의 탭을 하나 더 만듭니다 (멤버 이름은 새 탭 이름이 붙어 바뀝니다)", onclick: () => openCopyTab(tname) }, "⧉ 탭 복사"),
     h("button", { class: "danger", onclick: () => {
       if (!confirm("탭 '" + tname + "'을 삭제할까요?")) return;
