@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Callable
 
@@ -116,19 +117,64 @@ def refresh_in_background(spawn: Callable[..., object] = subprocess.Popen) -> No
         pass
 
 
+# ------------------------------------------------------------------ installed copy
+_disk: dict = {}  # (path, inode, mtime_ns, size) -> version: re-read only when the file changes
+
+
+def disk_version() -> str | None:
+    """Version of the hctrl installed on disk now, which may differ from this running process
+    (`hctrl update` / install.sh replaced the .pyz, or `git pull` in a source install)."""
+    from .selfcmd import PKG_PARENT, is_zipapp
+    path = PKG_PARENT if is_zipapp() else PKG_PARENT / "herdr_ctl" / "__init__.py"
+    try:
+        st = path.stat()
+        key = (str(path), st.st_ino, st.st_mtime_ns, st.st_size)
+        if key not in _disk:
+            if is_zipapp():
+                with zipfile.ZipFile(path) as z:
+                    text = z.read("herdr_ctl/__init__.py").decode()
+            else:
+                text = path.read_text()
+            m = re.search(r"""__version__\s*=\s*["']([^"']+)["']""", text)
+            _disk.clear()
+            _disk[key] = m.group(1) if m and parse_version(m.group(1)) else None
+        return _disk[key]
+    except (OSError, KeyError, zipfile.BadZipFile, UnicodeDecodeError):
+        return None  # mid-replace or unreadable: treat as "no change"
+
+
+def status() -> dict:
+    """What the user should know about versions (cache + one stat, no network).
+
+    state: "update"    a newer release exists than the installed copy -> update it
+           "installed" the installed copy differs from this running process -> restart applies it
+           None        nothing to do
+    """
+    installed = disk_version() or __version__
+    latest = None if disabled() else read_cache().get("latest")
+    if is_newer(latest, installed):
+        state = "update"
+    elif installed != __version__:
+        state = "installed"
+    else:
+        state = None
+    return {"version": __version__, "installed": installed, "latest": latest, "state": state,
+            "pyz": install_target() is not None}
+
+
 def available() -> str | None:
-    """Newer release tag known from the cache, else None (no network)."""
+    """Newer release tag (than the installed copy) known from the cache, else None (no network)."""
     if disabled():
         return None
     tag = read_cache().get("latest")
-    return tag if is_newer(tag) else None
+    return tag if is_newer(tag, disk_version() or __version__) else None
 
 
 def notice() -> str | None:
     tag = available()
     if not tag:
         return None
-    return f"새 버전 {tag}이 나왔습니다 (현재 v{__version__}). 업데이트: hctrl update"
+    return f"새 버전 {tag}이 나왔습니다 (현재 v{disk_version() or __version__}). 업데이트: hctrl update"
 
 
 # ------------------------------------------------------------------ update
@@ -146,16 +192,17 @@ def run_update(check_only: bool = False, fetch: Fetch = _fetch, target: Path | N
                python: str = sys.executable, out: Callable[[str], None] = print) -> int:
     tag = latest_release(fetch)
     write_cache({"checked_at": time.time(), "latest": tag, "failed": False})
-    if not is_newer(tag):
-        out(f"최신 버전입니다 (v{__version__}).")
+    current = (disk_version() if target is None else None) or __version__  # the installed copy
+    if not is_newer(tag, current):
+        out(f"최신 버전입니다 (v{current}).")
         return 0
-    out(f"새 버전 {tag} (현재 v{__version__})")
+    out(f"새 버전 {tag} (현재 v{current})")
     if check_only:
         return 0
     target = target or install_target()
     if target is None:
-        raise UpdateError("hctrl.pyz 설치가 아닙니다 (pipx 또는 소스 실행). "
-                          "pipx upgrade herdr-ctl 또는 git pull로 업데이트하세요")
+        raise UpdateError("hctrl.pyz 설치가 아닙니다 (개발용 소스 설치). "
+                          "소스 폴더에서 git pull로 업데이트하세요")
     out("다운로드: " + DOWNLOAD.format(tag=tag, name=ASSET))
     data = fetch(DOWNLOAD.format(tag=tag, name=ASSET), 60.0)
     try:
@@ -177,7 +224,7 @@ def run_update(check_only: bool = False, fetch: Fetch = _fetch, target: Path | N
         os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
-    out(f"✔ 업데이트 완료: v{__version__} → {tag}")
+    out(f"✔ 업데이트 완료: v{current} → {tag}")
     out("  설정(config.yaml, 프로젝트 목록, 상태)은 그대로입니다. "
-        "실행 중인 herdr 세션의 _hc 탭은 세션을 다시 열어야 새 버전으로 바뀝니다.")
+        "실행 중인 herdr 세션의 _hc 탭은 설정 UI를 쓰고 있지 않으면 곧 새 버전으로 다시 시작합니다.")
     return 0

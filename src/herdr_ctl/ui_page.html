@@ -30,7 +30,12 @@ header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; back
 header h1 { font-size: 16px; margin: 0; }
 header .crumb { color: var(--muted); }
 header .spacer { flex: 1; }
-#updateBadge .badge { cursor: help; color: var(--accent); }
+#updateBadge .badge { cursor: pointer; border: none; font: inherit; font-size: 12px; color: var(--muted); }
+#updateBadge .badge.up { color: var(--accent); } #updateBadge .badge.ok { color: var(--ok); }
+#updateDialog { max-width: 440px; }
+#updateDialog dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 12px; }
+#updateDialog dt { color: var(--muted); } #updateDialog dd { margin: 0; font-weight: 600; }
+#updateDialog pre { white-space: pre-wrap; margin: 8px 0; }
 main { max-width: 1360px; margin: 0 auto; padding: 20px 16px 120px; }
 section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px;
   margin-bottom: 16px; }
@@ -246,6 +251,7 @@ body.nohelp .form { grid-template-columns: max-content minmax(180px, 420px); }
     <button id="applyLater">나중에</button><button class="primary" id="applyNow">지금 반영</button>
   </p>
 </dialog>
+<dialog id="updateDialog"><div id="updateBody"></div></dialog>
 <dialog id="roleDialog">
   <h3 style="margin-top:0" id="roleTitle">역할</h3>
   <label class="field"><span id="roleOneLabel">한 줄 역할</span><input id="roleOne"></label>
@@ -325,13 +331,86 @@ function unsaved() { return dirty() && JSON.stringify(S.data) !== S.draftJson; }
 window.addEventListener("beforeunload", (e) => { if (unsaved()) { e.preventDefault(); e.returnValue = ""; } });
 window.addEventListener("hashchange", route);
 
+// ------------------------------------------------------------------ version / update
+// U.state: "update" (newer release than the installed copy) | "installed" (installed copy differs
+// from this running hctrl: a restart applies it) | null
+const vv = (x) => x ? "v" + String(x).replace(/^v/, "") : "?";
+let U = null;
+function renderUpdate(u) {
+  U = u;
+  const [cls, label] = !u ? ["", ""]
+    : u.state === "update" ? ["up", "⬆ " + vv(u.installed) + " → " + vv(u.latest) + " 업데이트 가능"]
+    : u.state === "installed" ? ["ok", "✔ " + vv(u.installed) + " 설치됨 · 적용 대기"]
+    : ["", vv(u.version)];
+  $("updateBadge").replaceChildren(label ? h("button", { class: "badge " + cls, title: "버전 정보", onclick: openUpdate }, label) : "");
+}
+function openUpdate() {
+  updateBody();
+  const dlg = $("updateDialog");
+  if (!dlg.open) dlg.showModal();
+}
+function updateBody(msg) {
+  const u = U, close = h("button", { onclick: () => $("updateDialog").close() }, "닫기");
+  const check = h("button", { onclick: checkNow }, "지금 확인");
+  const info = h("dl", {},
+    h("dt", {}, "실행 중"), h("dd", {}, vv(u.version)),
+    u.installed !== u.version ? [h("dt", {}, "설치됨"), h("dd", {}, vv(u.installed))] : null,
+    h("dt", {}, "최신 릴리스"), h("dd", {}, u.latest ? vv(u.latest) : "아직 확인 안 함"));
+  let title, body, actions;
+  if (u.state === "update" && u.pyz) {
+    title = "새 버전이 나왔습니다";
+    body = [h("p", { class: "muted small" }, "설정(config.yaml, 프로젝트 목록, 상태)은 그대로 유지됩니다.")];
+    actions = [close, h("button", { class: "primary", onclick: (e) => installNow(e.target) }, "지금 업데이트")];
+  } else if (u.state === "update") {
+    title = "새 버전이 나왔습니다";
+    body = [h("p", {}, "개발용(소스) 설치입니다. 소스 폴더에서 업데이트하세요 (-e 설치라 pull만 하면 반영됩니다):"),
+      h("p", { class: "row" }, code("git pull"),
+        h("button", { class: "link", onclick: () => copyText("git pull") }, "복사"))];
+    actions = [check, close];
+  } else if (u.state === "installed") {
+    title = vv(u.installed) + "이(가) 설치되었습니다";
+    body = [h("p", {}, S.mode === "session"
+      ? "이 설정 창을 닫으면 _hc 탭이 자동으로 새 버전으로 다시 시작합니다. 지금 적용하면 새 버전의 설정 창이 새로 열립니다."
+      : "hctrl을 다시 실행하면 새 버전이 적용됩니다.")];
+    actions = [close, S.mode === "session" ? h("button", { class: "primary", onclick: (e) => restartNow(e.target) }, "지금 적용") : null];
+  } else {
+    title = "최신 버전입니다";
+    body = [h("p", { class: "muted small" }, "새 릴리스는 하루에 한 번 자동으로 확인합니다.")];
+    actions = [check, close];
+  }
+  $("updateBody").replaceChildren(h("h3", { style: "margin-top:0" }, title), info, ...body,
+    msg ? h("pre", { class: "small" }, msg) : null,
+    h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" }, ...actions));
+}
+async function checkNow() {
+  try { renderUpdate((await api("POST", "/api/update/check", {})).status); updateBody(); }
+  catch (e) { updateBody("확인 실패: " + e.message); }
+}
+async function installNow(btn) {
+  btn.disabled = true; btn.textContent = "다운로드 중… (체크섬 확인)";
+  try { const r = await api("POST", "/api/update", {}); renderUpdate(r.status); updateBody(r.lines.join("\n")); }
+  catch (e) { updateBody("업데이트 실패: " + e.message); }
+}
+async function restartNow(btn) {
+  if (unsaved() && !confirm("저장하지 않은 변경이 있습니다. 버리고 다시 시작할까요?")) return;
+  btn.disabled = true;
+  try {
+    await api("POST", "/api/restart", {});
+    $("updateBody").replaceChildren(h("h3", { style: "margin-top:0" }, "새 버전으로 다시 시작합니다"),
+      h("p", {}, "잠시 뒤 새 버전의 설정 창이 새로 열립니다. 이 창은 닫아도 됩니다."));
+  } catch (e) { btn.disabled = false; updateBody("다시 시작 실패: " + e.message); }
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); toast("복사했습니다: " + t); } catch (e) { toast(t); }
+}
+// tell the server this page is open: the _hc watcher waits for it to close before restarting
+setInterval(() => { api("GET", "/api/ping").catch(() => {}); }, 30000);
+
 async function boot() {
   try {
     const st = await api("GET", "/api/state");
     S.mode = st.mode; S.cwd = st.cwd;
-    if (st.update) $("updateBadge").replaceChildren(h("span", { class: "badge",
-      title: "현재 v" + st.version + ". 터미널에서 hctrl update를 실행하세요. 설정은 그대로 남고, 실행 중인 세션은 다시 열면 새 버전이 적용됩니다." },
-      "⬆ 새 버전 " + st.update));
+    renderUpdate(st.update);
     if (!location.hash && st.mode === "session" && st.start) location.hash = "#/project/" + encodeURIComponent(st.start);
   } catch (e) { $("app").replaceChildren(h("p", { class: "notice" }, "연결 실패: " + e.message)); return; }
   route();

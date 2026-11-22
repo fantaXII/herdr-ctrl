@@ -665,6 +665,9 @@ def cmd_restart(args) -> int:
     return 0
 
 
+REOPEN_UI_ENV = "HCTRL_REOPEN_UI"  # set across a watcher restart that the settings UI asked for
+
+
 def cmd_watch(args) -> int:
     from .watch import watch_loop
     project = resolve_project(args.project)
@@ -674,16 +677,30 @@ def cmd_watch(args) -> int:
     if not tty():
         watch_loop(project, h, interval=args.interval)
         return 0
-    from .watch import Menu, TtyKeys
-    from . import update
+    from .watch import Menu, Reexec, TtyKeys
+    from . import __version__, update
+    from .selfcmd import self_cmd
     update.refresh_in_background()  # the _hc pane is the user's: it may check (watch_loop shows it)
+    again: Reexec | None = None
     with TtyKeys() as keys:  # _hc tab: key menu (settings UI, changes, status, pending)
         menu = Menu(project, cooked=keys.cooked)
         try:
+            if os.environ.pop(REOPEN_UI_ENV, None):  # restarted from the settings UI: bring it back
+                menu.settings()
             watch_loop(project, h, interval=args.interval, keys=keys, menu=menu)
+        except Reexec as e:
+            again = e
         finally:
             menu.close()
-    return 0
+    if again is None:
+        return 0
+    # the tty is restored and the UI server stopped: become the installed version in this same pane
+    print(f"[hctrl watch] v{__version__} → v{again.new} 로 다시 시작", flush=True)
+    if again.reopen_ui:
+        os.environ[REOPEN_UI_ENV] = "1"
+    cmd = self_cmd() + ["--project", str(project.root), "watch", "--interval", str(args.interval)]
+    os.execv(cmd[0], cmd)
+    return 0  # not reached
 
 
 # ----------------------------------------------------------------- main

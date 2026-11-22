@@ -36,6 +36,8 @@ from .state import LockBusy, State, digest
 COOKIE = "hctrl_ui"
 MAX_BODY = 1 << 20
 TOKEN_TTL_S = 120.0
+PING_S = 30.0  # an open page pings this often (ui_page.html)
+IDLE_S = 180.0  # no request for this long: the page is closed (background tabs ping ~once a minute)
 INTEGRATIONS_TTL_S = 15.0
 OPENCODE_TIMEOUT_S = 60
 MODELS_TTL_S = 24 * 3600   # the opencode model list cached on disk (refresh button in the page)
@@ -145,6 +147,8 @@ class UIServer:
         self._integrations: dict | None = None
         self._integrations_at = 0.0  # monotonic time of the last `herdr integration status`
         self._tokens: dict[str, float] = {}  # one-time link token -> expiry (monotonic)
+        self.last_seen = time.monotonic()  # last link or API call: an open page pings (see in_use)
+        self.restart_requested = False  # session mode: the page asked the _hc watcher to restart
         self.secret = secrets.token_urlsafe(32)
         self.page = PAGE.read_bytes()  # read once: `hctrl update` may replace the .pyz while we serve
         self.choice: Project | None = None
@@ -174,8 +178,13 @@ class UIServer:
         with self._lock:
             self._tokens = {t: exp for t, exp in self._tokens.items() if exp > now}
             self._tokens[token] = now + TOKEN_TTL_S
+        self.last_seen = now
         url = f"http://127.0.0.1:{self.port}/?t={token}"
         return url + (f"&p={quote(project, safe='')}" if project else "")
+
+    def in_use(self) -> bool:
+        """A page was open recently (it pings every PING_S while open, even in a background tab)."""
+        return time.monotonic() - self.last_seen < IDLE_S
 
     def redeem(self, token: str) -> bool:
         with self._lock:
@@ -281,6 +290,25 @@ class UIServer:
         return {"kinds": list(AGENT_KINDS), "claude": CLAUDE_MODELS, "opencode": self._oc,
                 "opencode_status": self._oc_status}
 
+    def update_action(self, rest: list[str]) -> dict:
+        """POST /api/update (install the latest release) and /api/update/check (ask GitHub now)."""
+        from . import update
+        if rest == ["check"]:
+            ok = update.check_now() is not None
+            if not ok:
+                raise ApiError(502, "GitHub에 확인하지 못했습니다 (네트워크를 확인하세요)")
+            return {"status": update.status()}
+        if rest:
+            raise ApiError(404, "없음")
+        lines: list[str] = []
+        try:
+            update.run_update(out=lines.append)
+        except update.UpdateError as e:
+            raise ApiError(400, str(e)) from e
+        except OSError as e:  # urllib errors are OSErrors
+            raise ApiError(502, f"다운로드 실패: {e}") from e
+        return {"lines": lines, "status": update.status()}
+
     # -------------------------------------------------------------- API
     def api(self, method: str, path: str, body: Any) -> Any:
         parts = [unquote(p) for p in path.strip("/").split("/")][1:]  # drop "api"
@@ -289,7 +317,16 @@ class UIServer:
             from . import __version__, update
             return {"mode": self.mode, "cwd": str(self.cwd), "cwd_project": here.name if here else None,
                     "start": self.start_project.name if self.start_project else None,
-                    "version": __version__, "update": update.available()}
+                    "version": __version__, "update": update.status()}
+        if parts == ["ping"] and method == "GET":
+            return {"ok": True}
+        if parts and parts[0] == "update" and method == "POST":
+            return self.update_action(parts[1:])
+        if parts == ["restart"] and method == "POST":
+            if self.mode != "session":
+                raise ApiError(400, "세션 밖에서는 hctrl을 다시 실행하면 새 버전이 적용됩니다")
+            self.restart_requested = True  # the _hc watcher picks this up within one tick
+            return {"ok": True}
         if parts == ["projects"]:
             if method == "GET":
                 return self.list_projects()
@@ -628,6 +665,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._write("PUT")
 
     def _dispatch(self, method: str, path: str, body: Any) -> None:
+        self.ui.last_seen = time.monotonic()
         if not path.startswith("/api/"):
             self._json(404, {"error": "없음"})
             return

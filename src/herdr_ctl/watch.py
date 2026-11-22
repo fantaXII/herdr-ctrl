@@ -392,6 +392,33 @@ def _update_notice(h, seen: str | None) -> str | None:
     return tag or seen
 
 
+class Reexec(Exception):
+    """The installed hctrl changed under this watcher: restart it as the new version (see cmd_watch)."""
+
+    def __init__(self, new: str, reopen_ui: bool = False):
+        super().__init__(new)
+        self.new = new
+        self.reopen_ui = reopen_ui
+
+
+def _upgrade(menu: Menu | None, told: str | None) -> str | None:
+    """Raise Reexec when the installed hctrl differs from this process and the settings UI is not in
+    use (an open page may hold unsaved edits). Returns the version already reported as deferred."""
+    from . import __version__, update
+    ui = menu.ui if menu else None
+    new = update.disk_version()
+    if ui is not None and ui.restart_requested:  # "지금 적용" in the settings UI
+        raise Reexec(new or __version__, reopen_ui=True)
+    if not new or new == __version__:
+        return told
+    if ui is not None and ui.in_use():
+        if told != new:
+            print(f"[hctrl watch] 새 버전 v{new} 설치됨 — 설정 UI를 쓰는 중이라 닫은 뒤 자동으로 전환합니다",
+                  flush=True)
+        return new
+    raise Reexec(new)
+
+
 def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
                keys: Callable[[float], str | None] | None = None, menu: Menu | None = None) -> None:
     sig = _signature(project)
@@ -401,8 +428,11 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
     if keys is not None:
         print(MENU, flush=True)
     update_seen, update_at = None, -UPDATE_POLL_S  # interactive _hc only: new-version notice (cache read, no network)
+    upgrade_told: str | None = None
     while iterations is None or n < iterations:
         n += 1
+        if keys is not None:
+            upgrade_told = _upgrade(menu, upgrade_told)  # one stat per tick; the zip is read on change only
         if keys is not None and time.monotonic() - update_at >= UPDATE_POLL_S:
             update_at = time.monotonic()
             update_seen = _update_notice(h, update_seen)

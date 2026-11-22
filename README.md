@@ -69,9 +69,9 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # zsh면 ~/.zshrc
 | 삭제 | `rm ~/.local/bin/hctrl ~/.local/bin/herdr_ctl` |
 
 **업데이트와 새 버전 알림**
-- 업데이트해도 설정은 그대로입니다. 바뀌는 것은 `~/.local/bin/hctrl` 파일 하나뿐이고, 프로젝트의 `.herdr-flow/`, 프로젝트 목록(`~/.config/herdr_ctl/`), 상태(`~/.local/state/herdr_ctl/`)는 건드리지 않습니다. 이미 떠 있는 세션의 `_hc` 탭은 예전 버전으로 돌고 있으니, 업데이트 후 세션을 다시 열면 새 버전이 적용됩니다.
-- hctrl은 하루 한 번 GitHub에 최신 릴리스를 백그라운드로 확인합니다(실패하면 조용히 넘어가고 1시간 뒤 재시도). 새 버전이 있으면 다음 위치에 알려 줍니다: `hctrl` / `hctrl ui`를 실행한 터미널, 설정 화면 상단 배지(`⬆ 새 버전 …`), 세션의 `_hc` 탭(herdr 알림 포함), `hctrl --version`. agent 창에서는 확인하지 않습니다.
-- `hctrl update`는 릴리스의 `hctrl.pyz.sha256` 체크섬과 받은 파일의 버전이 맞을 때만 교체합니다. pipx나 소스로 설치했다면 `pipx upgrade` / `git pull`을 쓰세요.
+- 업데이트해도 설정은 그대로입니다. 바뀌는 것은 `~/.local/bin/hctrl` 파일 하나뿐이고, 프로젝트의 `.herdr-flow/`, 프로젝트 목록(`~/.config/herdr_ctl/`), 상태(`~/.local/state/herdr_ctl/`)는 건드리지 않습니다. 이미 떠 있는 세션의 `_hc` 탭은 설치된 파일이 바뀐 것을 알아채고 새 버전으로 스스로 다시 시작합니다. 설정 화면을 열어 둔 동안에는 편집 내용을 지키려고 화면을 닫을 때까지 기다리며, 설정 화면의 `지금 적용`으로 바로 바꿀 수도 있습니다.
+- hctrl은 하루 한 번 GitHub에 최신 릴리스를 백그라운드로 확인합니다(실패하면 조용히 넘어가고 1시간 뒤 재시도). 새 버전이 있으면 다음 위치에 알려 줍니다: `hctrl` / `hctrl ui`를 실행한 터미널, 설정 화면 상단 배지(`⬆ v현재 → v최신 업데이트 가능`. 누르면 `지금 업데이트` / `지금 확인` 버튼이 있습니다), 세션의 `_hc` 탭(herdr 알림 포함), `hctrl --version`. agent 창에서는 확인하지 않습니다.
+- `hctrl update`는 릴리스의 `hctrl.pyz.sha256` 체크섬과 받은 파일의 버전이 맞을 때만 교체합니다. [C. 개발용 설치](#c-개발용-설치-소스-수정)라면 소스 폴더에서 `git pull`을 하면 됩니다(`-e` 설치라 바로 반영).
 - 확인을 끄려면 `HCTRL_NO_UPDATE_CHECK=1`을 설정합니다.
 
 > 예전에 `pipx install -e .`로 설치했다면 설치 스크립트가 덮어쓰지 않고 멈춥니다. `pipx uninstall herdr-ctl`을 먼저 실행하세요.
