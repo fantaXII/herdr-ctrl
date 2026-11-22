@@ -27,8 +27,8 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import roles as roles_mod
-from .config import (DEFAULT_AGENT_NAMES, DEFAULT_ROLES, DEFAULT_SHELL_NAME, DEFAULT_TAB_BASE, check_data, check_file,
-                     load_yaml)
+from .config import (DEFAULT_AGENT_NAMES, DEFAULT_ROLES, DEFAULT_SHELL_NAME, DEFAULT_TAB_BASE, agents_cache_path, check_data, check_file,
+                     load_yaml, parse_agent_list)
 from .herdr import AGENT_KINDS, Herdr, HerdrError
 from .project import Project, _expand, find_project, load_registry, register
 from .state import LockBusy, State, digest
@@ -40,6 +40,7 @@ PING_S = 30.0  # an open page pings this often (ui_page.html)
 IDLE_S = 180.0  # no request for this long: the page is closed (background tabs ping ~once a minute)
 INTEGRATIONS_TTL_S = 15.0
 OPENCODE_TIMEOUT_S = 60
+AGENTS_TIMEOUT_S = 90      # `opencode agent list` prints thousands of lines and takes 12-20 s
 MODELS_TTL_S = 24 * 3600   # the opencode model list cached on disk (refresh button in the page)
 MODELS_WAIT_S = 0.5        # a request waits this long for a list still loading (the page polls after)
 CLAUDE_MODELS = ["opus", "sonnet", "haiku"]
@@ -76,6 +77,15 @@ def opencode_models(run: Callable[..., Any] = subprocess.run) -> dict[str, list[
         if re.fullmatch(r"[\w.-]+/\S+", line):
             grouped.setdefault(line.split("/", 1)[0], []).append(line)
     return grouped
+
+
+def opencode_agents(run: Callable[..., Any] = subprocess.run) -> list[str]:
+    """`opencode agent list` → selectable primary agent names (empty when opencode is missing/fails)."""
+    try:
+        out = run(["opencode", "agent", "list"], capture_output=True, text=True, timeout=AGENTS_TIMEOUT_S).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return parse_agent_list(out or "")
 
 
 # ------------------------------------------------------------------ browser
@@ -133,7 +143,8 @@ class UIServer:
     def __init__(self, mode: str = "launcher", cwd: Path | None = None, start: Project | None = None,
                  port: int = 0, herdr: Callable[[str | None], Any] | None = None,
                  which: Callable[[str], str | None] | None = None,
-                 models: Callable[[], dict[str, list[str]]] | None = None, secret: str | None = None):
+                 models: Callable[[], dict[str, list[str]]] | None = None, secret: str | None = None,
+                 agents: Callable[[], list[str]] | None = None):
         self.mode = mode
         self.cwd = (cwd or Path.cwd()).resolve()
         self.start_project = start
@@ -144,6 +155,10 @@ class UIServer:
         self._oc: dict[str, list[str]] = {}
         self._oc_status = "idle"
         self._oc_done = threading.Event()
+        # an injected model loader (tests) without an agent loader must not spawn the real opencode
+        self._agents_fn = agents or (opencode_agents if models is None else (lambda: []))
+        self._oc_agents: list[str] = []
+        self._oc_agents_status = "idle"
         self._integrations: dict | None = None
         self._integrations_at = 0.0  # monotonic time of the last `herdr integration status`
         self._tokens: dict[str, float] = {}  # one-time link token -> expiry (monotonic)
@@ -166,6 +181,7 @@ class UIServer:
     # lifecycle
     def start(self) -> "UIServer":
         self.refresh_models()  # warm up: `opencode models` is slow
+        self.refresh_agents()
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self._thread.start()
         return self
@@ -230,7 +246,8 @@ class UIServer:
         return self._integrations or None
 
     def check(self, project: Project, data: Any) -> list[dict]:
-        _, issues = check_data(data, root=project.root, which=self.which, integrations=self.integrations())
+        _, issues = check_data(data, root=project.root, which=self.which, integrations=self.integrations(),
+                                primary_agents=self._oc_agents or None)
         return [{"level": i.level, "path": i.path, "message": i.message} for i in issues]
 
     def _check_fresh(self, project: Project, data: Any) -> list[dict]:
@@ -284,13 +301,59 @@ class UIServer:
                 self._oc_status = "ready" if self._oc else "failed"
             self._oc_done.set()
 
+    # ---- opencode primary agent list (same pattern as the model list, own cache file)
+    @staticmethod
+    def agents_cache_path() -> Path:
+        return agents_cache_path()
+
+    def refresh_agents(self, force: bool = False) -> None:
+        with self._lock:
+            if self._oc_agents_status == "loading":
+                return
+            if not force and self._oc_agents_status == "ready":
+                return
+            if not self._oc_agents:
+                try:
+                    d = json.loads(self.agents_cache_path().read_text())
+                    if isinstance(d.get("agents"), list) and d["agents"]:
+                        self._oc_agents = [str(a) for a in d["agents"]]
+                        if not force and time.time() - float(d.get("at") or 0) < MODELS_TTL_S:
+                            self._oc_agents_status = "ready"
+                            return
+                except (OSError, ValueError, AttributeError, TypeError):
+                    pass
+            self._oc_agents_status = "loading"
+        threading.Thread(target=self._load_agents, daemon=True).start()
+
+    def _load_agents(self) -> None:
+        try:
+            got = self._agents_fn()
+        except Exception:
+            got = []
+        with self._lock:
+            if got:
+                self._oc_agents, self._oc_agents_status = got, "ready"
+                try:
+                    p = self.agents_cache_path()
+                    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    tmp = p.with_suffix(".tmp")
+                    tmp.write_text(json.dumps({"at": time.time(), "agents": got}))
+                    os.replace(tmp, p)
+                except OSError:
+                    pass
+            else:
+                self._oc_agents_status = "ready" if self._oc_agents else "failed"
+
     def models(self, wait: float = MODELS_WAIT_S) -> dict:
         if self._oc_status == "idle":  # first use; a failure is retried only on request (↻ / 다시 시도)
             self.refresh_models()
         if self._oc_status == "loading" and wait:
             self._oc_done.wait(wait)
+        if self._oc_agents_status == "idle":
+            self.refresh_agents()
         return {"kinds": list(AGENT_KINDS), "claude": CLAUDE_MODELS, "opencode": self._oc,
-                "opencode_status": self._oc_status}
+                "opencode_status": self._oc_status, "opencode_agents": list(self._oc_agents),
+                "opencode_agents_status": self._oc_agents_status}
 
     def templates_api(self, method: str, rest: list[str], body: Any) -> Any:
         """Team templates (templates.py): list / get / save from a saved tab / rename / delete."""
@@ -370,6 +433,7 @@ class UIServer:
             return self.models()
         if parts == ["models", "refresh"] and method == "POST":
             self.refresh_models(force=True)
+            self.refresh_agents(force=True)
             return self.models()
         if parts == ["open"] and method == "POST":
             return self.open(body)

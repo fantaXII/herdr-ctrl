@@ -151,13 +151,13 @@ hctrl
 | └ 빠른 구성 | 탭 화면 맨 위 띠에서 agent 수 **[1] [2] [3] [4]**, orchestrator, 쉘 창을 켜고 끕니다. 늘리면 coder → tester → reviewer → helper 순으로 추가되고, 줄이면 뒤에서부터 지웁니다(고친 내용이 있을 때만 확인). 한 화면은 orchestrator 포함 4칸입니다. |
 | └ 기본 정보 | 탭 ID(명령용, 기본 `work1`, `work2`…)와 표시 이름(herdr 탭에 보이는 이름, 예: `로그인 작업`). |
 | └ 🟣 orchestrator | 탭을 지휘할 LLM입니다. "사용"을 체크하면 켜지고(기본 claude/opus), 끄면 `hctrl run` / `send`로만 지시합니다. 권한·역할 정책·무인 모드는 **고급 설정**에 접혀 있고, 기본값이 아니면 접힌 줄에 요약이 보입니다. |
-| └ 🔵 작업 agent | agent마다 카드 하나입니다. 기본 이름은 `coder`, `tester`, `reviewer`, `helper`이고(다른 탭과 겹치면 `coder2`…), 카드의 이름 칸에서 자유롭게 바꿀 수 있습니다(flow에도 자동 반영). 역할, 종류 → (opencode면 제공자 →) 모델, 권한을 고르고, 긴 지시는 **[상세]**에서 씁니다([상세]는 한 번 저장한 뒤 사용). |
+| └ 🔵 작업 agent | agent마다 카드 하나입니다. 기본 이름은 `coder`, `tester`, `reviewer`, `helper`이고(다른 탭과 겹치면 `coder2`…), 카드의 이름 칸에서 자유롭게 바꿀 수 있습니다(flow에도 자동 반영). 역할, 종류 → (opencode면 제공자 →) 모델, (opencode면) 주 agent, 권한을 고르고, 긴 지시는 **[상세]**에서 씁니다([상세]는 한 번 저장한 뒤 사용). |
 | └ 🟢 쉘 창 | 빌드나 테스트 명령을 돌릴 bash 창입니다(선택). flow의 쉘 단계가 여기서 실행됩니다. |
 | ③ flow | 여러 단계를 정해진 순서로 실행하는 작업 흐름입니다(선택, `hctrl run <이름>`). **예제로 시작하기** 카드에는 고른 탭의 agent 수에 맞춘 예제가 보입니다(예: agent 2개 → 구현→테스트, 구현→테스트→빌드). 각 agent는 한 번씩만 쓰이고, 쉘 창이 있으면 빌드 단계가 들어간 예제도 나옵니다. 추가된 flow는 단계 편집, 순서 변경(↑↓), 단계 삭제(✕), [flow 삭제]가 되고, 순서도의 단계를 누르면 편집 줄로 이동합니다. |
 
 - 고칠 때마다 검사가 돌고, 오른쪽 위에 `검사 ✔` 또는 `오류 N`이 보입니다. 오류가 있으면 [저장] 대신 **[임시 저장]**이 나타나고(아래 참고), 문제가 있는 단계에는 왼쪽 메뉴에 ✘/⚠ 표시가 붙습니다. 아래 **검사 결과**의 항목을 누르면 그 위치로 이동합니다.
 - 문제가 있는 입력칸 옆과 왼쪽 메뉴에 ⚠/✘가 붙고, 마우스를 올리면 내용이 보입니다. 탭 화면 맨 위에도 그 탭의 검사 결과가 나옵니다. 새 경고가 있는 채로 저장하면 경고 목록을 보여 주고 한 번 더 묻습니다.
-- 권한은 claude agent에서만 고를 수 있습니다. opencode 등은 각자의 설정 파일을 따르므로 선택칸이 꺼집니다.
+- 권한은 claude agent에서 모두 고를 수 있습니다. opencode는 `auto`(`--auto`)만 고를 수 있고, 그 밖의 종류는 각자의 설정 파일을 따르므로 선택칸이 꺼집니다.
 - 처음 설정할 때(config.yaml이 없을 때)는 화면 아래에 **[← 이전] [다음 탭 →] / [③ flow (선택) →] [만들고 세션 열기]**가 나옵니다. 이미 설정이 있으면 아래 막대 없이 오른쪽 위 **[저장]**과 **[저장하고 세션 열기]**를 씁니다(세션 안에서 연 화면이면 저장 후 반영 창).
 - 저장하지 않은 변경이 있으면 오른쪽 위에 `● 저장 안 됨`이 보입니다.
 - 설정이 아직 완성되지 않아 오류가 남아 있어도 **[임시 저장]**으로 지금 상태를 보관할 수 있습니다. 임시 저장본은 `config.yaml`이 아니라 프로젝트 밖 상태 폴더(`~/.local/state/herdr_ctl/<프로젝트>-<digest>/config.draft.json`)에 저장되므로, 실행 중인 세션이나 `hctrl up`에는 영향이 없습니다. 다음에 설정 화면을 열면 임시 저장본을 이어서 불러오고(`● 임시 저장됨`), 오류를 모두 고치면 버튼이 **[저장]**으로 바뀝니다. 저장하면 임시 저장본은 지워집니다. **[임시본 버리기]**로 `config.yaml` 내용으로 돌아갈 수 있습니다.
@@ -396,6 +396,8 @@ agent가 파일을 고치거나 명령을 실행할 때마다 승인을 요청�
 
 `bypass`는 작업 폴더 밖 파일 수정이나 위험한 명령도 묻지 않고 실행하므로, 격리된 환경(컨테이너, 전용 worktree 등)에서만 쓰세요. `args`에 우회 옵션(`--dangerously-skip-permissions`, `bypassPermissions` 등)을 직접 넣는 것은 여전히 `hctrl check`에서 오류입니다. `permission: bypass`로 명시하세요.
 
+opencode는 시작 옵션으로 `auto`(`--auto`: 명시적으로 거부되지 않은 모든 권한 요청을 자동 승인)만 지정할 수 있습니다. 나머지 값은 적용되지 않고 opencode 설정 파일을 따릅니다. `ask`는 설정 파일에 맡긴다는 뜻이라 경고하지 않고, `edit`/`readonly`/`bypass`는 `hctrl check`가 경고합니다. 승인 창이 뜨지 않으므로 무인 모드(`unattended`)가 켜진 탭에서 opencode `auto`는 오류입니다. `args`에 `--auto`나 `--agent`를 직접 넣으면 `permission`/`primary_agent`와 충돌하므로 `hctrl check`가 경고합니다.
+
 claude는 bypass 모드를 처음 켤 때 확인 창을 띄웁니다. 이 창이 떠 있으면 hctrl이 보내는 첫 지시가 막히므로, 처음 쓰는 PC에서는 터미널에서 `claude --permission-mode bypassPermissions`를 한 번 실행해 수락해 두세요. 수락하면 이후로는 묻지 않습니다. `args`에 `--permission-mode`, `--allowedTools`, `--settings`를 직접 넣으면 hctrl이 넣는 값과 충돌하므로 `hctrl check`가 경고합니다.
 
 ### 작업 폴더 분리 (`worktree`, 선택)
@@ -405,6 +407,7 @@ claude는 bypass 모드를 처음 켤 때 확인 창을 띄웁니다. 이 창이
 ### 모델 지정
 
 - `model`: agent의 모델을 지정합니다. claude는 `opus`, `sonnet`, `haiku` 또는 전체 모델 ID를 쓰고, opencode는 `제공자/모델` 형식입니다.
+- `primary_agent` (opencode 전용): opencode의 주 agent를 `--agent`로 지정합니다. 표시 이름(`Sisyphus - ultraworker`)과 키(`sisyphus`) 모두 대소문자 구분 없이 쓸 수 있습니다. OMO가 있으면 Sisyphus 등, 없으면 build/plan이 주 agent입니다. subagent나 없는 이름을 주면 opencode가 경고만 내고 기본 agent로 대체합니다. 설정 화면의 'agent' 목록은 `opencode agent list`(12~20초)를 백그라운드로 받아 하루 동안 저장합니다(↻로 새로 받음). `hctrl check`는 저장된 목록에 없는 이름을 경고합니다(목록이 없으면 검사 생략). claude 등 다른 종류에 쓰면 경고하고 적용하지 않습니다.
 - `args`: 그 밖의 agent 실행 옵션입니다. agent 프로그램에 그대로 전달됩니다.
 
 ### orchestrator와 작업 agent

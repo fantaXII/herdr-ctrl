@@ -62,6 +62,8 @@ def fingerprint(project: Project, m: Member) -> dict:
           "tab": m.tab, "cwd": m.cwd, "v": 2}
     if m.type == "agent" and m.kind == "claude" and m.unattended != "off":
         fp["unattended"] = m.unattended  # absent when off: older state stays compatible
+    if m.primary_agent:
+        fp["primary_agent"] = m.primary_agent  # absent when unset (same compatibility rule)
     if m.tab_cwd is not None:
         fp["tab_cwd"] = m.tab_cwd  # absent when unset (same compatibility rule)
     if m.worktree:

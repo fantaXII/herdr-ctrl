@@ -531,7 +531,7 @@ async function openProject(name) {
     const [cfg, models] = await Promise.all([api("GET", "/api/project/" + encodeURIComponent(name)),
                                             S.models ? Promise.resolve(S.models) : api("GET", "/api/models")]);
     S.models = models;
-    if (models.opencode_status === "loading") pollModels();
+    if (modelsLoading(models)) pollModels();
     S.project = name; S.version = cfg.version; S.running = cfg.running; S.roles = cfg.roles || {}; S.exists = cfg.exists; S.root = cfg.root;
     S.git = !!cfg.git; S.copies = {}; S.roleTexts = {};
     await loadTemplates();
@@ -1161,7 +1161,22 @@ function modelControl(spec, onChange) {
   }
   return textBox("모델 (선택)", false);
 }
+// opencode primary agent: select from the cached list; a value missing from it stays visible
+function agentControl(spec) {
+  const value = spec.primary_agent || "";
+  const list = S.models.opencode_agents || [];
+  const st = S.models.opencode_agents_status;
+  const tip = "OMO가 있으면 Sisyphus 등, 없으면 build/plan. subagent나 없는 이름은 opencode가 기본 agent로 대체합니다.";
+  const note = st === "loading" && !list.length ? h("span", { class: "muted small" }, "(불러오는 중…)") : null;
+  const sel = h("select", { "aria-label": "주 agent", title: tip, onchange: (e) => {
+      if (e.target.value) spec.primary_agent = e.target.value; else delete spec.primary_agent; changed(); } },
+    h("option", { value: "" }, "(기본: opencode 설정)"),
+    list.map((a) => h("option", { value: a, selected: a === value }, a)),
+    value && !list.includes(value) ? h("option", { value, selected: true }, value + (list.length ? " (목록에 없음)" : "")) : null);
+  return note ? h("div", { class: "row" }, sel, note) : sel;
+}
 // opencode model list: loaded by the server in the background; poll until it settles
+const modelsLoading = (m) => m.opencode_status === "loading" || m.opencode_agents_status === "loading";
 let modelPoll = null;
 function pollModels() {
   if (modelPoll) return;
@@ -1172,7 +1187,7 @@ function pollModels() {
       const was = JSON.stringify(S.models);
       S.models = m;
       if (S.data && JSON.stringify(m) !== was) rerenderKeepFocus();
-      if (m.opencode_status === "loading") pollModels();
+      if (modelsLoading(m)) pollModels();
     } catch (e) { pollModels(); }
   }, 2000);
 }
@@ -1180,7 +1195,7 @@ async function refreshModels() {
   try {
     S.models = await api("POST", "/api/models/refresh", {});
     rerenderKeepFocus();
-    if (S.models.opencode_status === "loading") pollModels();
+    if (modelsLoading(S.models)) pollModels();
   } catch (e) { toast("모델 목록 요청 실패: " + e.message); }
 }
 function setModel(spec, v) {
@@ -1190,7 +1205,9 @@ function setModel(spec, v) {
 function kindSelect(spec) {
   return h("select", { "aria-label": "종류", onchange: (e) => {
       spec.kind = e.target.value; delete spec.model; typing.delete(spec);
-      if (!permKind(spec)) delete spec.permission;  // claude-only permission modes do not apply
+      if (spec.kind !== "opencode") delete spec.primary_agent;  // opencode-only
+      const ok = permModes(spec);
+      if (spec.permission && !ok.includes(spec.permission)) delete spec.permission;  // modes of the old kind do not apply
       changed(); } },
     S.models.kinds.map((k) => h("option", { value: k, selected: k === (spec.kind || "claude") }, k)));
 }
@@ -1212,18 +1229,32 @@ const UNATTENDED_HELP = {
   questions: "agent의 질문에는 orchestrator가 대신 답하고, 권한 승인은 사용자가 합니다.",
   approve: "질문과 권한 승인 모두 orchestrator가 처리합니다. 위험한 요청(안전장치)은 사용자에게 넘깁니다.",
 };
-// only claude takes a permission mode at start; other kinds follow their own config file
-const permKind = (spec) => (spec.kind || "claude") === "claude";
+// permission modes a kind takes at start: claude all of them, opencode only auto (--auto);
+// other kinds follow their own config file
+const permModes = (spec) => { const k = spec.kind || "claude"; return k === "claude" ? PERMS : k === "opencode" ? ["auto"] : []; };
+const permKind = (spec) => permModes(spec).length > 0;
 function permHelp(spec, dflt) {
+  if ((spec.kind || "claude") === "opencode")
+    return "opencode는 auto(--auto: 명시적으로 거부되지 않은 모든 권한 요청을 자동 승인)만 지정할 수 있고, 나머지는 opencode 설정 파일의 권한을 따릅니다.";
   return permKind(spec) ? PERM_HELP[spec.permission || dflt]
     : spec.kind + "는 시작 옵션으로 권한을 지정할 수 없어, " + spec.kind + " 설정 파일의 권한을 따릅니다.";
 }
 function permSelect(spec, dflt, perms = PERMS) {
-  if (!permKind(spec)) {  // nothing to choose; a leftover value stays visible so it can be cleared
-    return h("select", { "aria-label": "권한", disabled: !spec.permission, title: permHelp(spec, dflt),
-        onchange: (e) => { if (!e.target.value) { delete spec.permission; changed(); } } },
-      h("option", { value: "" }, "(" + spec.kind + " 설정 파일)"),
-      spec.permission ? h("option", { value: spec.permission, selected: true }, spec.permission + " (적용 안 됨)") : null);
+  const modes = permModes(spec);
+  if (!modes.length || modes.length === 1 && spec.kind === "opencode") {
+    // nothing (or only auto) to choose; a leftover unsupported value stays visible so it can be cleared
+    const oc = spec.kind === "opencode";
+    const left = spec.permission && !modes.includes(spec.permission);
+    return h("select", { "aria-label": "권한", disabled: !oc && !spec.permission, title: permHelp(spec, dflt),
+        onchange: (e) => {
+          const v = e.target.value;
+          if (v === "auto" && !confirm("--auto는 명시적으로 거부되지 않은 모든 권한 요청을 자동 승인합니다. 작업 폴더 밖 파일 수정이나 위험한 명령도 묻지 않고 실행할 수 있습니다. 설정할까요?")) {
+            e.target.value = spec.permission || ""; return;
+          }
+          if (v) spec.permission = v; else delete spec.permission; changed(); } },
+      h("option", { value: "" }, "(" + (spec.kind || "claude") + " 설정 파일)"),
+      oc ? h("option", { value: "auto", selected: spec.permission === "auto" }, "auto") : null,
+      left ? h("option", { value: spec.permission, selected: true }, spec.permission + " (적용 안 됨)") : null);
   }
   return h("select", { "aria-label": "권한", onchange: (e) => {
       const v = e.target.value;
@@ -1525,12 +1556,14 @@ function renderOrch(tname, t) {
     frow("역할 상세 (prompt)", roleButton(oname),
       "orchestrator 자신의 일하는 방식을 씁니다. 작업자 분담표는 각 agent의 한 줄 역할로 자동으로 만들어집니다. 저장한 뒤 편집할 수 있습니다.")));
   // rarely changed settings stay folded; non-default values are summarized on the folded line
-  const changedBits = [o.permission && o.permission !== "readonly" ? "권한 " + o.permission : null,
+  const changedBits = [o.primary_agent ? "주 agent " + o.primary_agent : null, o.permission && o.permission !== "readonly" ? "권한 " + o.permission : null,
     role !== "confirm" ? "역할 정책 " + role : null, unatt !== "off" ? "무인 모드 " + unatt : null].filter(Boolean);
   const adv = h("details", { class: "adv", open: S.adv.has(tname) },
     h("summary", {}, "고급 설정 (권한 · 역할 정책 · 무인 모드)",
       h("span", { class: "advsum" }, changedBits.length ? "· " + changedBits.join(" · ") : "· 모두 기본값")),
     h("div", { class: "form" },
+      o.kind === "opencode" ? frow(["주 agent", markFor(opath + ".primary_agent")], agentControl(o),
+        "OMO가 있으면 Sisyphus 등, 없으면 build/plan. subagent나 없는 이름은 opencode가 기본 agent로 대체합니다.") : null,
       frow(["권한", markFor(opath + ".permission")], permSelect(o, "readonly"), permHelp(o, "readonly")),
       frow(["역할 변경 정책", markFor("tabs." + tname + ".role_update")],
         h("select", { "aria-label": "역할 변경 정책", onchange: (e) => { t.role_update = e.target.value; changed(); } },
@@ -1566,6 +1599,7 @@ function renderAgents(tname, t) {
         const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } }), "role"),
       row("종류", kindSelect(spec), "kind"),
       row("모델", modelControl(spec, (v) => setModel(spec, v)), "model"),
+      spec.kind === "opencode" ? row("주 agent", agentControl(spec), "primary_agent") : null,
       row("권한", permSelect(spec, "edit"), "permission"),
       roleButton(name));
   });
@@ -1575,7 +1609,7 @@ function renderAgents(tname, t) {
     desc("실제 일을 하는 agent입니다 (구현, 테스트 작성, 리뷰 등). agent마다 herdr 창이 하나씩 열립니다. 이름은 자유롭게 바꿀 수 있고(소문자로 시작, 프로젝트 안에서 중복 불가), flow 단계에도 자동으로 반영됩니다. 명령에서는 ",
       code("hctrl send <이름> \"…\""), "처럼 씁니다."),
     cards.length ? [h("div", { class: "agrid" }, cards),
-      h("p", { class: "legend" }, "권한 (claude만, 다른 종류는 각자의 설정 파일을 따름): ", PERMS.flatMap((p, i) => [i ? " · " : "", h("b", {}, p), p === "edit" ? " (기본) " : " ", PERM_HELP[p]]))]
+      h("p", { class: "legend" }, "권한 (claude 전체, opencode는 auto(--auto)만, 나머지는 각자의 설정 파일을 따름): ", PERMS.flatMap((p, i) => [i ? " · " : "", h("b", {}, p), p === "edit" ? " (기본) " : " ", PERM_HELP[p]]))]
       : h("p", { class: "muted small" }, "agent가 없습니다. 빠른 구성이나 [+ agent]로 추가하세요."));
 }
 

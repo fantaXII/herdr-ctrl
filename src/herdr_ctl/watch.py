@@ -48,7 +48,7 @@ def detect(ctx: Ctx) -> list[Change]:
             if old is None:
                 changes.append(Change(m.name, "add", f"새 {m.type} (탭 {t.name})"))
                 continue
-            diffs = [k for k in ("kind", "model", "args", "permission", "type", "tab", "cwd", "unattended",
+            diffs = [k for k in ("kind", "model", "primary_agent", "args", "permission", "type", "tab", "cwd", "unattended",
                                  "tab_cwd", "worktree")
                      if old.get(k) != new.get(k)
                      and not (k in ("tab_cwd", "worktree") and "v" not in old)]  # pre-upgrade: never recorded

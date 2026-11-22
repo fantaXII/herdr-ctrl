@@ -169,3 +169,97 @@ def test_cli_check_exit_codes(tmp_path, monkeypatch, capsys):
     p.config_path.write_text(textwrap.dedent(SAMPLE).replace(
         "    shells:\n      xbuild: {}", "      x3: { kind: claude }\n    shells:\n      xbuild: {}"))
     assert cli.main(["--project", str(p.root), "check"]) == 0  # warnings only
+
+
+# ---- opencode: primary_agent / --auto
+OC_AGENT = 'x2: { kind: opencode, model: anthropic/claude-sonnet-5-5, role: "테스트" }'
+
+
+def oc(extra, **kw):
+    text = SAMPLE.replace(OC_AGENT, f'x2: {{ kind: opencode, role: "테스트", {extra} }}')
+    return check_data(yaml.safe_load(text), which=always_found, **kw)
+
+
+def test_parse_agent_list_dedups_and_skips_hidden_and_json():
+    from herdr_ctl.config import parse_agent_list
+    out = textwrap.dedent("""\
+        Sisyphus - ultraworker (primary)
+        [
+          {"permission": "*", "pattern": "x (primary)", "action": "allow"}
+        ]
+        build (subagent)
+        compaction (primary)
+        Hephaestus - Deep Agent (primary)
+        mixed (all)
+        title (primary)
+        Sisyphus - ultraworker (primary)
+        [
+        ]
+        summary (primary)
+        """)
+    assert parse_agent_list(out) == ["Sisyphus - ultraworker", "Hephaestus - Deep Agent", "mixed"]
+    assert parse_agent_list("") == []
+
+
+def test_agent_args_primary_agent_and_auto():
+    cfg, issues = oc('primary_agent: "Sisyphus - ultraworker", permission: auto')
+    assert cfg is not None
+    assert agent_args(cfg.member("x2")) == ["--agent", "Sisyphus - ultraworker", "--auto"]
+    # claude: primary_agent warns and is not passed; claude args are unchanged
+    text = SAMPLE.replace('role: "구현" }', 'role: "구현", primary_agent: sisyphus }')
+    cfg, issues = check(text)
+    assert "tabs.X.agents.x1.primary_agent" in paths(issues, "warning")
+    assert "--agent" not in agent_args(cfg.member("x1"))
+    assert agent_args(cfg.member("x1")) == ["--model", "sonnet", "--permission-mode", "acceptEdits"]
+
+
+def test_opencode_other_permissions_warn_without_args():
+    for perm in ("edit", "readonly", "bypass"):
+        cfg, issues = oc(f"permission: {perm}")
+        assert "tabs.X.agents.x2.permission" in paths(issues, "warning"), perm
+        assert agent_args(cfg.member("x2")) == []
+    cfg, issues = oc("permission: ask")  # left to the opencode config file: no warning, no args
+    assert "tabs.X.agents.x2.permission" not in paths(issues, "warning")
+    assert agent_args(cfg.member("x2")) == []
+    cfg, issues = oc("permission: auto")
+    assert "tabs.X.agents.x2.permission" not in paths(issues, "warning")
+
+
+def test_opencode_auto_refused_in_unattended_tabs():
+    text = SAMPLE.replace(OC_AGENT, 'x2: { kind: opencode, role: "t", permission: auto }').replace(
+        "role_update: confirm", "role_update: confirm\n    unattended: questions")
+    cfg, issues = check_data(yaml.safe_load(text), which=always_found)
+    assert cfg is None and "tabs.X.agents.x2.permission" in paths(issues, "error")
+    orch = SAMPLE.replace('orchestrator: { kind: claude, model: opus,', 'orchestrator: { kind: opencode, permission: auto,').replace(
+        "role_update: confirm", "role_update: confirm\n    unattended: questions")
+    cfg, issues = check_data(yaml.safe_load(orch), which=always_found)
+    assert cfg is None and "tabs.X.orchestrator.permission" in paths(issues, "error")
+
+
+def test_primary_agent_checked_against_cached_list_only_when_present():
+    listed = ["Sisyphus - ultraworker", "Hephaestus - Deep Agent"]
+    for name in ("sisyphus", "SISYPHUS", "Sisyphus - ultraworker", "hephaestus"):
+        _, issues = oc(f"primary_agent: '{name}'", primary_agents=listed)
+        assert "tabs.X.agents.x2.primary_agent" not in paths(issues, "warning"), name
+    _, issues = oc("primary_agent: build", primary_agents=listed)
+    assert "tabs.X.agents.x2.primary_agent" in paths(issues, "warning")
+    assert not [i for i in issues if i.level == "error"]
+    _, issues = oc("primary_agent: build")  # no cache → no check
+    assert "tabs.X.agents.x2.primary_agent" not in paths(issues, "warning")
+
+
+def test_opencode_args_agent_auto_warn():
+    for a in ("--agent", "--auto"):
+        cfg, issues = oc(f'args: ["{a}"]')
+        assert cfg is not None and "tabs.X.agents.x2.args" in paths(issues, "warning"), a
+    # claude args handling is unchanged: --agent is not managed there
+    text = SAMPLE.replace('role: "구현" }', 'role: "구현", args: ["--agent", "x"] }')
+    _, issues = check(text)
+    assert "tabs.X.agents.x1.args" not in paths(issues, "warning")
+
+
+def test_primary_agent_warns_when_kind_unset():
+    text = SAMPLE.replace('x1: { kind: claude, model: sonnet, role: "구현" }', 'x1: { primary_agent: sisyphus, role: "구현" }')
+    cfg, issues = check(text, primary_agents=["Sisyphus - ultraworker"])
+    assert "tabs.X.agents.x1.primary_agent" in paths(issues, "warning")
+    assert "tabs.X.agents.x1.kind" in paths(issues, "error")  # kind itself is required

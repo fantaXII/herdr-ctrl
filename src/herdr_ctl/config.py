@@ -21,8 +21,8 @@ CONTROL_TAB = "_hc"
 TOP_KEYS = {"session", "tabs", "flows"}
 TAB_KEYS = {"title", "cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells",
             "unattended", "unattended_policy"}
-AGENT_KEYS = {"kind", "model", "role", "role_file", "permission", "args"}
-ORCH_KEYS = {"kind", "model", "goal", "permission", "args"}
+AGENT_KEYS = {"kind", "model", "primary_agent", "role", "role_file", "permission", "args"}
+ORCH_KEYS = {"kind", "model", "primary_agent", "goal", "permission", "args"}
 SHELL_KEYS = {"cwd"}
 WORKTREE_KEYS = {"branch", "base"}
 LIMIT_KEYS = {"max_steps_per_ask", "max_minutes_per_ask", "max_retries_per_agent"}
@@ -40,6 +40,8 @@ DANGEROUS_ARGS = ("--dangerously-skip-permissions", "bypassPermissions", "--yolo
 DEFAULT_LIMITS = {"max_steps_per_ask": 20, "max_minutes_per_ask": 120, "max_retries_per_agent": 3}
 DEFAULT_POLICY = {"answer_timeout": 300.0, "max_answers_per_ask": 30, "deny": []}
 # args that collide with what hctrl itself passes (permission flags, injected hook settings)
+# opencode: --agent / --auto come from primary_agent / permission
+OPENCODE_MANAGED_ARGS = ("--agent", "--auto")
 MANAGED_ARGS = ("--permission-mode", "--allowedTools", "--allowed-tools", "--disallowedTools",
                 "--disallowed-tools", "--settings")
 DEFAULT_ROLES = ["구현", "테스트 작성", "리뷰", "보조"]
@@ -86,6 +88,7 @@ class Member:
     tab: str  # configured tab name (e.g. "X")
     kind: str | None = None
     model: str | None = None
+    primary_agent: str | None = None  # opencode only (--agent)
     args: list[str] = field(default_factory=list)
     permission: str | None = None
     role: str | None = None
@@ -203,7 +206,8 @@ def _suggest(key: str, allowed: set[str]) -> str:
 
 class _Checker:
     def __init__(self, which: Callable[[str], str | None], integrations: dict[str, str] | None,
-                 root: Path | None):
+                 root: Path | None, primary_agents: list[str] | None = None):
+        self.primary_agents = primary_agents  # cached opencode primary agent names (None = unknown)
         self.issues: list[Issue] = []
         self.which = which
         self.integrations = integrations
@@ -264,8 +268,9 @@ class _Checker:
                                             "위험한 명령도 묻지 않고 실행합니다. 처음 쓰는 PC라면 claude가 시작할 때 "
                                             "확인 창을 띄우니, claude --permission-mode bypassPermissions를 "
                                             "한 번 직접 실행해 수락해 두세요")
-        elif kind == "opencode" and "permission" in data and perm != "ask":
-            self.warn(f"{path}.permission", "opencode는 시작 옵션으로 권한을 지정할 수 없습니다. opencode 설정 파일에서 지정하세요")
+        elif kind == "opencode" and "permission" in data and perm not in ("ask", "auto"):
+            self.warn(f"{path}.permission", f"opencode는 auto(--auto)만 지원하고 '{perm}'은 적용되지 않습니다(ask는 설정 파일에 맡김). "
+                                            "나머지는 opencode 설정 파일을 따릅니다")
         args = data.get("args") or []
         if not isinstance(args, list) or not all(isinstance(a, (str, int, float)) and not isinstance(a, bool)
                                                  for a in args):
@@ -274,6 +279,9 @@ class _Checker:
         for a in args:
             if any(d in str(a) for d in DANGEROUS_ARGS):
                 self.err(f"{path}.args", f"권한 전체 우회 옵션 '{a}'은 지원하지 않습니다 (permission 사용)")
+            elif kind == "opencode" and str(a).split("=", 1)[0] in OPENCODE_MANAGED_ARGS:
+                self.warn(f"{path}.args", f"'{a}'는 hctrl이 primary_agent / permission 값으로 직접 지정하는 옵션이라 "
+                                          "충돌합니다. primary_agent / permission 값을 쓰세요")
             elif kind == "claude" and str(a).split("=", 1)[0] in MANAGED_ARGS:
                 self.warn(f"{path}.args", f"'{a}'는 hctrl이 permission/무인 모드로 직접 지정하는 옵션이라 "
                                           "충돌합니다. permission 값을 쓰세요")
@@ -285,6 +293,18 @@ class _Checker:
             self.warn(f"{path}.model", f"opencode 모델은 '제공자/모델' 형식입니다 (현재 '{model}')")
         if model and kind not in ("claude", "opencode", None) and kind in AGENT_KINDS:
             self.warn(f"{path}.model", f"'{kind}'의 모델 옵션 매핑을 모릅니다. args로 직접 지정하세요")
+        primary = self.text(data, "primary_agent", path)
+        if primary is not None and not primary.strip():
+            primary = None
+        if primary and kind != "opencode":  # includes kind unset (the UI reads it as claude)
+            self.warn(f"{path}.primary_agent", "opencode 전용 설정이라 적용되지 않습니다")
+            primary = None
+        elif primary and self.primary_agents:
+            low = primary.strip().lower()
+            if not any(low == n.lower() or low == n.split(" - ", 1)[0].lower() for n in self.primary_agents):
+                self.warn(f"{path}.primary_agent", f"'{primary}'은 캐시된 opencode primary agent 목록에 없습니다. "
+                                                   "subagent이거나 없는 이름이면 opencode가 기본 agent로 대체합니다 "
+                                                   f"(목록: {', '.join(self.primary_agents)})")
         role_file = self.text(data, "role_file", path)
         if role_file and not self.inside_root(role_file):
             self.err(f"{path}.role_file", f"프로젝트 폴더 안의 경로여야 합니다: {role_file}")
@@ -292,13 +312,15 @@ class _Checker:
         elif role_file and self.root and not (self.root / role_file).exists():
             self.warn(f"{path}.role_file", f"파일이 없습니다: {role_file}")
         return Member(name=name, type=mtype, tab=tab, kind=kind, model=model,
+                      primary_agent=primary.strip() if primary else None,
                       args=[str(a) for a in args], permission=perm, role=self.text(data, "role", path),
                       role_file=role_file, goal=self.text(data, "goal", path))
 
 
 def check_data(data: Any, root: Path | None = None, which: Callable[[str], str | None] = shutil.which,
-               integrations: dict[str, str] | None = None) -> tuple[Config | None, list[Issue]]:
-    c = _Checker(which, integrations, root)
+               integrations: dict[str, str] | None = None,
+               primary_agents: list[str] | None = None) -> tuple[Config | None, list[Issue]]:
+    c = _Checker(which, integrations, root, primary_agents)
     if not isinstance(data, dict):
         c.err("config", "최상위는 객체여야 합니다")
         return None, c.issues
@@ -415,6 +437,14 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
                 # the orchestrator answers agents' questions/approvals: it must not be able to forge the store
                 c.err(f"{tpath}.orchestrator.permission",
                       "무인 모드 탭의 orchestrator에는 bypass를 쓸 수 없습니다 (답변 저장소와 상한을 고칠 수 있음)")
+            for m in agents:
+                if m.kind == "opencode" and m.permission == "auto":
+                    # --auto approves silently: no approval prompt ever reaches the hook/orchestrator
+                    c.err(f"{tpath}.agents.{m.name}.permission",
+                          "무인 모드 탭에서는 opencode auto(--auto)를 쓸 수 없습니다 (승인 창이 뜨지 않아 승인을 처리할 수 없음)")
+            if orch is not None and orch.kind == "opencode" and orch.permission == "auto":
+                c.err(f"{tpath}.orchestrator.permission",
+                      "무인 모드 탭의 orchestrator에는 opencode auto(--auto)를 쓸 수 없습니다 (승인 창이 뜨지 않음)")
             for m in agents:
                 if m.kind and m.kind != "claude":
                     c.warn(f"{tpath}.agents.{m.name}",
@@ -548,10 +578,45 @@ def load_yaml(path: Path) -> tuple[Any, list[Issue]]:
         return None, [Issue("error", str(path), f"YAML 문법 오류{where}: {getattr(e, 'problem', e)}")]
 
 
+HIDDEN_AGENTS = {"compaction", "summary", "title"}  # opencode-internal agents
+_AGENT_LINE = re.compile(r"^(\S.*?) \((primary|subagent|all)\)$")
+
+
+def parse_agent_list(text: str) -> list[str]:
+    """`opencode agent list` → primary/all agent names (deduped, in order, internal ones left out).
+
+    Only unindented `name (mode)` lines count; the permission JSON that follows each is ignored."""
+    seen: list[str] = []
+    for line in text.splitlines():
+        m = _AGENT_LINE.match(line.rstrip())
+        if m and m.group(2) in ("primary", "all") and m.group(1) not in HIDDEN_AGENTS and m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def agents_cache_path() -> Path:
+    from .project import state_home
+    return state_home() / "opencode-agents.json"
+
+
+def cached_primary_agents() -> list[str] | None:
+    """The cached opencode primary agent list, or None (no cache: the name check is skipped)."""
+    import json
+    try:
+        d = json.loads(agents_cache_path().read_text())
+        got = d.get("agents")
+        if isinstance(got, list) and got and all(isinstance(a, str) for a in got):
+            return got
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
 def check_file(path: Path, **kw) -> tuple[Config | None, list[Issue]]:
     data, issues = load_yaml(path)
     if issues:
         return None, issues
+    kw.setdefault("primary_agents", cached_primary_agents())
     return check_data(data, root=path.parent.parent, **kw)
 
 
@@ -565,6 +630,7 @@ def format_issues(issues: list[Issue]) -> str:
 
 # ---------------------------------------------------------------- agent args
 PERMISSION_ARGS = {
+    "opencode": {"auto": ["--auto"]},   # the rest follows opencode's own config file
     "claude": {
         # explicit: without a mode claude starts in the account default (which may be auto)
         "ask": ["--permission-mode", "default"],
@@ -588,6 +654,8 @@ def agent_args(m: Member, system_prompt_file: Path | None = None,
             args += ["-m", m.model]
     if system_prompt_file and m.kind == "claude":
         args += ["--append-system-prompt-file", str(system_prompt_file)]
+    if m.primary_agent and m.kind == "opencode":
+        args += ["--agent", m.primary_agent]
     args += list(m.args)
     if settings_file and m.kind == "claude":
         args += ["--settings", str(settings_file)]

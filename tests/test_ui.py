@@ -595,3 +595,38 @@ def test_failed_model_list_is_not_kept_and_can_be_retried(tmp_path):
 def test_models_refresh_endpoint(client):
     st, m = client.json("POST", "/api/models/refresh", {})
     assert st == 200 and m["opencode"] == {"zai": ["zai/glm-5.3"]} and m["opencode_status"] == "ready"
+
+
+def test_opencode_agents_load_cache_and_ship_in_models(tmp_path):
+    s = UIServer("launcher", cwd=tmp_path, herdr=lambda session=None: FakeSessions(), which=always_found,
+                 models=lambda: {}, agents=lambda: ["Sisyphus - ultraworker", "Atlas - Plan Executor"])
+    try:
+        s.refresh_agents()
+        import time
+        for _ in range(100):
+            if s._oc_agents_status != "loading":
+                break
+            time.sleep(0.05)
+        m = s.models(wait=0)
+        assert m["opencode_agents"] == ["Sisyphus - ultraworker", "Atlas - Plan Executor"]
+        assert m["opencode_agents_status"] == "ready"
+        assert s.agents_cache_path().exists()
+        # a second server reads the fresh cache without running the loader
+        s2 = UIServer("launcher", cwd=tmp_path, herdr=lambda session=None: FakeSessions(), which=always_found,
+                      models=lambda: {}, agents=lambda: (_ for _ in ()).throw(AssertionError("must use cache")))
+        s2.refresh_agents()
+        assert s2._oc_agents_status == "ready" and s2._oc_agents[0] == "Sisyphus - ultraworker"
+        s2.httpd.server_close()
+    finally:
+        s.httpd.server_close()
+
+
+def test_opencode_agents_failure_keeps_status_failed(tmp_path):
+    s = UIServer("launcher", cwd=tmp_path, herdr=lambda session=None: FakeSessions(), which=always_found,
+                 models=lambda: {}, agents=lambda: [])
+    try:
+        s._load_agents()
+        assert s.models(wait=0)["opencode_agents_status"] == "failed"
+        assert not s.agents_cache_path().exists()
+    finally:
+        s.httpd.server_close()
