@@ -8,6 +8,7 @@ from herdr_ctl import __version__, cli, selfcmd, update
 from herdr_ctl import watch as W
 from herdr_ctl.fake import FakeHerdr
 from herdr_ctl.project import Project
+from herdr_ctl import ui as ui_mod
 from herdr_ctl.ui import UIServer
 from conftest import always_found
 from test_ui import Client, FakeSessions
@@ -178,7 +179,9 @@ def test_state_reports_version_status(session_ui):
 def test_page_in_use_until_idle(session_ui, monkeypatch):
     c = Client(session_ui)
     c.login()
-    assert c.json("GET", "/api/ping") == (200, {"ok": True, "version": __version__}) and session_ui.in_use()
+    st, res = c.json("GET", "/api/ping")
+    assert (st, res["ok"], res["version"]) == (200, True, __version__) and res["update"]["version"] == __version__
+    assert session_ui.in_use()
     session_ui.last_seen -= 1000
     assert not session_ui.in_use()
 
@@ -280,3 +283,67 @@ def test_resume_on_a_taken_port_falls_back(tmp_path, capsys):
         assert "[s]로 새로 여세요" in capsys.readouterr().out
     finally:
         s.close()
+
+
+def test_ping_reports_version_installed_after_the_page_loaded(session_ui, monkeypatch):
+    from herdr_ctl import update
+    c = Client(session_ui)
+    c.login()
+    monkeypatch.setattr(update, "disk_version", lambda: "99.0.0")
+    st, res = c.json("GET", "/api/ping")
+    assert st == 200 and res["update"]["state"] in ("installed", "update") and res["update"]["installed"] == "99.0.0"
+
+
+@pytest.mark.parametrize("flag,expect_announce", [("announce", True), ("1", False)])
+def test_restart_reopen_announces_only_for_the_s_key(project, monkeypatch, flag, expect_announce):
+    """[s] ("announce"): open a fresh link even though the UI was resumed. "지금 적용" ("1"): the open
+    page reloads itself, so no second browser tab."""
+    class Keys:
+        cooked = None
+
+        def __call__(self, timeout):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+    announced = []
+    monkeypatch.setattr(cli, "tty", lambda: True)
+    monkeypatch.setattr(W, "TtyKeys", Keys)
+    monkeypatch.setattr(W, "watch_loop", lambda *a, **k: None)
+    monkeypatch.setattr(update, "refresh_in_background", lambda: None)
+    monkeypatch.setattr(UIServer, "refresh_models", lambda self: None)
+    monkeypatch.setattr(W.Menu, "resume_ui", lambda self, port, secret: setattr(self, "ui", object()) or True)
+    monkeypatch.setattr(W.Menu, "close", lambda self: None)
+    monkeypatch.setattr(ui_mod, "announce", lambda ui, name: announced.append(name))
+    monkeypatch.setenv(cli.REOPEN_UI_ENV, flag)
+    monkeypatch.setenv(cli.RESUME_UI_ENV, "4321:secret")
+    cli.main(["--project", str(project.root), "watch"])
+    assert (announced == [project.name]) is expect_announce and (not announced) is (not expect_announce)
+
+
+def test_reexec_env_value_tells_the_s_key_from_apply_now(project, monkeypatch):
+    class Keys:
+        cooked = None
+
+        def __call__(self, timeout):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+    for announce, want in ((True, "announce"), (False, "1")):
+        def loop(*a, **k):
+            raise W.Reexec(NEXT, reopen_ui=True, announce=announce)
+        monkeypatch.setattr(cli, "tty", lambda: True)
+        monkeypatch.setattr(W, "TtyKeys", Keys)
+        monkeypatch.setattr(W, "watch_loop", loop)
+        monkeypatch.setattr(update, "refresh_in_background", lambda: None)
+        monkeypatch.delenv(cli.REOPEN_UI_ENV, raising=False)
+        monkeypatch.setattr(os, "execv", lambda path, argv: None)
+        cli.main(["--project", str(project.root), "watch"])
+        assert os.environ.pop(cli.REOPEN_UI_ENV) == want

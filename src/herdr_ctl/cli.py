@@ -671,7 +671,9 @@ def cmd_restart(args) -> int:
     return 0
 
 
-REOPEN_UI_ENV = "HCTRL_REOPEN_UI"  # set across a watcher restart that the settings UI asked for
+# set across a watcher restart that the settings UI asked for ("1": the open page reloads itself) or that
+# the user's [s] press caused ("announce": also open a fresh link in the browser)
+REOPEN_UI_ENV = "HCTRL_REOPEN_UI"
 RESUME_UI_ENV = "HCTRL_RESUME_UI"  # "<port>:<cookie secret>" of the settings UI across a watcher restart
 
 
@@ -700,6 +702,9 @@ def cmd_watch(args) -> int:
             resumed = port.isdigit() and bool(secret) and menu.resume_ui(int(port), secret)
             if reopen and not resumed:  # restarted from the settings UI: bring it back
                 menu.settings()
+            elif reopen == "announce" and menu.ui is not None:  # [s] pressed: the user expects a browser window
+                from .ui import announce
+                announce(menu.ui, project.name)
             watch_loop(project, h, interval=args.interval, keys=keys, menu=menu)
         except Reexec as e:
             again = e
@@ -712,7 +717,7 @@ def cmd_watch(args) -> int:
     # the tty is restored and the UI server stopped: become the installed version in this same pane
     print(f"[hctrl watch] v{__version__} → v{again.new} 로 다시 시작", flush=True)
     if again.reopen_ui:
-        os.environ[REOPEN_UI_ENV] = "1"
+        os.environ[REOPEN_UI_ENV] = "announce" if again.announce else "1"
     if resume:  # the new process serves the same address, so an open settings page keeps working
         os.environ[RESUME_UI_ENV] = resume
     cmd = self_cmd() + ["--project", str(project.root), "watch", "--interval", str(args.interval)]

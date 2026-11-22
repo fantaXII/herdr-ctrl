@@ -436,7 +436,14 @@ class Menu:
         print(MENU, flush=True)
 
     def settings(self) -> None:
+        from . import __version__, update
         from .ui import UIServer, announce
+        new = update.disk_version()
+        if new and new != __version__:
+            # A newer hctrl is installed: pressing [s] must open that version's UI, not the old process's page.
+            # Pressing it is an explicit choice, so it wins over the "UI in use" deferral in _upgrade();
+            # cmd_watch re-execs and resumes the same port/cookie, so an already open page keeps working.
+            raise Reexec(new, reopen_ui=True, announce=True)
         if self.ui is None:  # one server per watch process; each press mints a fresh one-time link
             self.ui = UIServer("session", cwd=self.project.root, start=self.project).start()
         announce(self.ui, self.project.name)
@@ -492,10 +499,11 @@ def _update_notice(h, seen: str | None) -> str | None:
 class Reexec(Exception):
     """The installed hctrl changed under this watcher: restart it as the new version (see cmd_watch)."""
 
-    def __init__(self, new: str, reopen_ui: bool = False):
+    def __init__(self, new: str, reopen_ui: bool = False, announce: bool = False):
         super().__init__(new)
         self.new = new
         self.reopen_ui = reopen_ui
+        self.announce = announce  # the user pressed [s]: the new process must open a fresh link even if it resumed the UI
 
 
 def _upgrade(menu: Menu | None, told: str | None) -> str | None:

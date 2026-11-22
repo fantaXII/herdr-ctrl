@@ -413,8 +413,10 @@ class UIServer:
                     "start": self.start_project.name if self.start_project else None,
                     "version": __version__, "update": update.status()}
         if parts == ["ping"] and method == "GET":
-            from . import __version__
-            return {"ok": True, "version": __version__}  # the page reloads when the server got newer
+            from . import __version__, update
+            # the page reloads when the server got newer; "update" lets an open page show a version that
+            # was installed after it loaded ("installed" state: restart applies it)
+            return {"ok": True, "version": __version__, "update": update.status()}
         if parts and parts[0] == "update" and method == "POST":
             return self.update_action(parts[1:])
         if parts and parts[0] == "templates":

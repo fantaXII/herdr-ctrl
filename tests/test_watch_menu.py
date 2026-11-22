@@ -132,3 +132,49 @@ def test_open_browser_detaches_stdin(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: seen.update(kw))
     assert ui_mod.open_browser("http://x") is True
     assert seen["stdin"] is subprocess.DEVNULL
+
+
+class _BusyUI:
+    port, secret = 4321, "s3cret"
+
+    def in_use(self):
+        return True
+
+    def stop(self):
+        pass
+
+
+def test_settings_restarts_into_installed_newer_version_even_when_ui_in_use(project, monkeypatch):
+    # an old settings server (in use) must not be reused once a newer hctrl is installed on disk
+    from herdr_ctl import update
+    monkeypatch.setattr(update, "disk_version", lambda: "99.0.0")
+    monkeypatch.setattr(ui_mod, "open_browser", lambda url: pytest.fail("old UI link was opened"))
+    menu = W.Menu(project)
+    menu.ui = _BusyUI()
+    with pytest.raises(W.Reexec) as e:
+        menu.handle("s")
+    assert e.value.new == "99.0.0" and e.value.reopen_ui is True
+
+
+def test_settings_restarts_even_without_a_running_ui(project, monkeypatch):
+    from herdr_ctl import update
+    monkeypatch.setattr(update, "disk_version", lambda: "99.0.0")
+    menu = W.Menu(project)
+    with pytest.raises(W.Reexec) as e:
+        menu.handle("s")
+    assert e.value.reopen_ui is True and menu.ui is None
+
+
+def test_settings_reuses_ui_when_disk_version_matches(project, monkeypatch):
+    from herdr_ctl import __version__, update
+    monkeypatch.setattr(update, "disk_version", lambda: __version__)
+    opened = []
+    monkeypatch.setattr(ui_mod, "open_browser", lambda url: opened.append(url) or True)
+    menu = W.Menu(project)
+    try:
+        menu.handle("s")
+        server = menu.ui
+        menu.handle("s")
+        assert menu.ui is server and len(opened) == 2
+    finally:
+        menu.close()
