@@ -4,17 +4,22 @@ Saved from a project's saved config.yaml + role files, loaded into any project (
 to start a new one (`hctrl init --template`). A template is a copy: editing it later never changes
 tabs already made from it.
 
-File: config_home()/templates/<name>.yaml
-  version, name, saved_at, source: {project, tab}
+File: config_home()/templates/<name>.yaml (user templates)
+  version, name, description, saved_at, source: {project, tab}
   tab:    the tab's settings without project-bound keys (cwd, title, worktree, shell cwd, role_file)
   flows:  the tab's flows; `tab: "@tab"` marks a flow that was pinned to the tab
   roles:  {member: role file text}; the orchestrator is "@orch" (its name follows the tab id)
+
+Built-in templates ship inside the package (builtin_templates/*.yaml, read-only, readable from
+hctrl.pyz too). A user template with the same name shadows the built-in one; deleting it brings
+the built-in back.
 """
 from __future__ import annotations
 
 import copy
 import re
 import time
+from importlib import resources
 from pathlib import Path
 
 import yaml
@@ -34,6 +39,22 @@ class TemplateError(ValueError):
 
 def templates_dir() -> Path:
     return config_home() / "templates"
+
+
+def builtin_dir():
+    return resources.files("herdr_ctl") / "builtin_templates"
+
+
+def _builtin_file(name: str):
+    f = builtin_dir() / f"{name}.yaml"
+    return f if f.is_file() else None
+
+
+def builtin_names() -> list[str]:
+    try:
+        return sorted(f.name[:-5] for f in builtin_dir().iterdir() if f.name.endswith(".yaml"))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
 
 
 def path_for(name: str) -> Path:
@@ -109,12 +130,14 @@ def _role_texts(project: Project, data: dict, tab_id: str) -> dict[str, str]:
     return out
 
 
-def save(name: str, content: dict, source: dict | None = None, overwrite: bool = False) -> Path:
+def save(name: str, content: dict, source: dict | None = None, overwrite: bool = False,
+         description: str = "") -> Path:
+    """Save a user template. Overwriting covers a built-in of the same name too (it is shadowed)."""
     p = path_for(name)
-    if p.exists() and not overwrite:
+    if (p.exists() or _builtin_file(name)) and not overwrite:
         raise FileExistsError(name)
-    doc = {"version": VERSION, "name": name, "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-           "source": source or {}, **content}
+    doc = {"version": VERSION, "name": name, "description": str(description or "").strip()[:200],
+           "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "source": source or {}, **content}
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False, width=120))
@@ -122,13 +145,19 @@ def save(name: str, content: dict, source: dict | None = None, overwrite: bool =
     return p
 
 
-def load(name: str) -> dict:
+def load(name: str, builtin: bool | None = None) -> dict:
+    """User template first, then the built-in one (builtin=True/False forces one source)."""
     p = path_for(name)
-    if not p.exists():
+    src = None
+    if builtin is not True and p.exists():
+        src, is_builtin = p, False
+    elif builtin is not False and _builtin_file(name):
+        src, is_builtin = _builtin_file(name), True
+    if src is None:
         names = ", ".join(t["name"] for t in list_templates()) or "없음"
         raise TemplateError(f"템플릿 '{name}'이 없습니다. 저장된 템플릿: {names}")
     try:
-        doc = yaml.safe_load(p.read_text())
+        doc = yaml.safe_load(src.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
         raise TemplateError(f"템플릿 '{name}'을 읽을 수 없습니다: {e}") from e
     if not isinstance(doc, dict) or not isinstance(doc.get("tab"), dict):
@@ -138,41 +167,60 @@ def load(name: str) -> dict:
     if not isinstance(flows, dict) or not isinstance(roles, dict) \
             or not all(isinstance(k, str) and isinstance(v, str) for k, v in roles.items()):
         raise TemplateError(f"템플릿 '{name}' 형식이 잘못되었습니다 (flows/roles)")
-    return {"name": name, "saved_at": doc.get("saved_at"), "source": doc.get("source") or {},
+    return {"name": name, "description": str(doc.get("description") or ""), "saved_at": doc.get("saved_at"),
+            "source": doc.get("source") or {}, "builtin": is_builtin,
+            "overrides_builtin": not is_builtin and _builtin_file(name) is not None,
             "tab": doc["tab"], "flows": flows, "roles": roles}
 
 
 def summary(t: dict) -> dict:
     tab = t["tab"]
-    return {"name": t["name"], "saved_at": t.get("saved_at"), "source": t.get("source") or {},
+    return {"name": t["name"], "description": t.get("description") or "", "saved_at": t.get("saved_at"),
+            "source": t.get("source") or {}, "builtin": bool(t.get("builtin")),
+            "overrides_builtin": bool(t.get("overrides_builtin")),
             "orch": isinstance(tab.get("orchestrator"), dict),
             "agents": list(tab.get("agents") or {}), "shells": list(tab.get("shells") or {}),
             "flows": list(t.get("flows") or {}), "roles": list(t.get("roles") or {})}
 
 
 def list_templates() -> list[dict]:
+    """User templates (newest first), then the built-ins they do not shadow."""
     d = templates_dir()
-    out = []
-    for p in sorted(d.glob("*.yaml")) if d.exists() else []:
+    mine = []
+    for p in d.glob("*.yaml") if d.exists() else []:
         try:
-            out.append(summary(load(p.stem)))
+            mine.append(summary(load(p.stem, builtin=False)))
         except TemplateError:
             continue  # a broken or foreign file: not offered
-    return out
+    mine.sort(key=lambda t: str(t.get("saved_at") or ""), reverse=True)
+    taken = {t["name"] for t in mine}
+    base = []
+    for name in builtin_names():
+        if name in taken:
+            continue
+        try:
+            base.append(summary(load(name, builtin=True)))
+        except TemplateError:
+            continue
+    return mine + base
+
+
+BUILTIN_RO = "기본 템플릿은 바꾸거나 지울 수 없습니다 (탭으로 추가해 고친 뒤 템플릿으로 저장하세요)"
 
 
 def delete(name: str) -> None:
+    """Delete a user template; for one that shadows a built-in this restores the built-in."""
     p = path_for(name)
     if not p.exists():
-        raise TemplateError(f"템플릿 '{name}'이 없습니다")
+        raise TemplateError(BUILTIN_RO if _builtin_file(name) else f"템플릿 '{name}'이 없습니다")
     p.unlink()
 
 
 def rename(old: str, new: str) -> None:
     src, dst = path_for(old), path_for(new)
     if not src.exists():
-        raise TemplateError(f"템플릿 '{old}'이 없습니다")
-    if dst.exists():
+        raise TemplateError(BUILTIN_RO if _builtin_file(old) else f"템플릿 '{old}'이 없습니다")
+    if dst.exists() or _builtin_file(new):
         raise TemplateError(f"템플릿 '{new}'이 이미 있습니다")
     doc = yaml.safe_load(src.read_text())
     doc["name"] = new

@@ -17,7 +17,7 @@ herdr_ctl = "herdr_ctl.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-herdr_ctl = ["*.html"]
+herdr_ctl = ["*.html", "builtin_templates/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,112 @@
+version: 1
+name: design-review-team
+description: "요구 → 설계 문서 → 반복 리뷰(적대적 리뷰 포함) → 코드를 포함한 구현 spec"
+tab:
+  orchestrator:
+    kind: claude
+    model: opus
+    goal: 설계와 구현 spec 작성
+  agents:
+    designer:
+      kind: claude
+      model: opus
+      role: 설계 문서·spec 작성
+    reviewer:
+      kind: claude
+      model: sonnet
+      role: 일반 리뷰
+    critic:
+      kind: claude
+      model: opus
+      role: 적대적 리뷰
+flows:
+  design-draft:
+    tab: "@tab"
+    steps:
+      - agent: designer
+        prompt: ".herdr-flow/work/design/brief.md 를 읽고 설계 문서 초안을 brief에 적힌 경로(docs/design/<주제>.md)에 써줘. 문서 경로와 핵심 결정, 열린 질문을 {out} 에 써줘"
+  design-review:
+    tab: "@tab"
+    steps:
+      - agent: reviewer
+        prompt: ".herdr-flow/work/design/brief.md 와 그 안에 적힌 설계 문서를 리뷰해줘. 지적은 blocker/major/minor로 나눠서 {out} 에 써줘"
+      - agent: critic
+        prompt: ".herdr-flow/work/design/brief.md 와 설계 문서를 적대적으로 리뷰해줘 (일반 리뷰 결과 {prev} 와 겹치는 지적은 빼고). blocker/major/minor로 나눠서 {out} 에 써줘"
+      - agent: designer
+        prompt: "일반 리뷰 결과는 .herdr-flow/work/design/brief.md 의 '리뷰 기록'에, 적대적 리뷰 결과는 {prev} 에 있어. 지적마다 반영하거나 반박 근거를 남기고 설계 문서를 고쳐줘. 지적별 처리 결과와 남은 blocker를 {out} 에 써줘"
+  design-spec:
+    tab: "@tab"
+    steps:
+      - agent: designer
+        prompt: ".herdr-flow/work/design/brief.md 와 확정된 설계 문서로 구현 spec(docs/design/<주제>-spec.md)을 써줘. spec 경로와 요약을 {out} 에 써줘"
+      - agent: reviewer
+        prompt: "{prev} 의 구현 spec이 설계 문서와 일치하는지, 그대로 구현할 수 있는지 확인해줘. 빠진 것·모순을 blocker/major/minor로 {out} 에 써줘"
+roles:
+  "@orch": |
+    # 역할: 설계 과정 진행
+
+    요구를 받아 설계 문서를 만들고, 반복 리뷰로 다듬은 뒤, 코드를 포함한 구현 spec으로 마무리한다.
+    직접 설계 문서를 쓰지 않는다 (designer의 일). 과정을 진행하고 판정한다.
+
+    ## 진행 방법
+    1. **요구 정리**: 사용자 요구를 `.herdr-flow/work/design/brief.md`에 쓴다.
+       - 주제 이름(영문 kebab-case), 설계 문서 경로 `docs/design/<주제>.md`, spec 경로 `docs/design/<주제>-spec.md`
+       - 목표, 비목표, 제약, 완료 기준, 참고 자료
+       - 모호한 점은 **먼저 사용자에게 묻고** brief에 답을 기록한다.
+    2. **초안**: `hctrl run design-draft --detach` → `hctrl wait <run-id>`.
+    3. **리뷰 반복**: `design-review`를 실행하기 전에 직전 일반 리뷰 결과 경로를 brief의 '리뷰 기록'에 추가한다.
+       - 매 회차 후 남은 blocker를 판정한다. blocker가 없거나 3회를 채우면 멈춘다.
+       - critic의 지적이 근거 없이 반박되었으면 designer에게 다시 따진다.
+       - 3회 후에도 blocker가 남으면 쟁점을 정리해 사용자에게 결정을 받는다.
+    4. **사용자 확인**: 설계 요약(핵심 결정, 남은 위험, 리뷰 회차)을 보여 주고 승인을 받는다.
+    5. **spec**: `design-spec` 실행. reviewer의 blocker가 있으면 designer에게 수정 지시 후 다시 확인한다.
+    6. 최종 보고: 설계 문서·spec 경로, 주요 결정, 남은 위험.
+  designer: |
+    # 역할: 설계 문서·spec 작성
+
+    ## 설계 문서 (docs/design/<주제>.md)
+    - 배경 / 목표 / 비목표 / 제약
+    - 대안 비교 (최소 2개, 장단점) → 결정과 이유
+    - 구조: 구성 요소, 데이터 흐름, 인터페이스, 오류 처리
+    - 위험과 대응, 열린 질문
+    - 실제 코드베이스를 읽고 쓴다. 존재하지 않는 API·파일을 가정하지 않는다.
+
+    ## 리뷰 반영
+    - 지적마다 "반영함(어디를 어떻게)" 또는 "반영 안 함(근거)"을 남긴다. 말없이 넘기지 않는다.
+    - 문서 끝에 '변경 이력'으로 회차별 변경을 기록한다.
+
+    ## 구현 spec (docs/design/<주제>-spec.md)
+    - 파일 단위 변경 목록 (새 파일/수정 파일)
+    - 인터페이스: 함수·클래스 시그니처, 데이터 형식, 설정 키
+    - 핵심 로직은 실제 코드로 쓴다 (의사 코드 X). 그대로 붙여 넣어 시작할 수 있는 수준.
+    - 테스트 계획: 테스트 케이스 목록(정상/경계/실패), 검증 명령
+    - 구현 순서와 각 단계의 완료 기준
+  reviewer: |
+    # 역할: 일반 리뷰
+
+    ## 보는 것
+    - 요구 충족: brief의 목표·완료 기준을 모두 다루는가
+    - 완결성: 빠진 경우(오류, 빈 입력, 동시성, 마이그레이션)
+    - 일관성: 문서 안, 그리고 기존 코드·문서와 모순이 없는가
+    - 구현 가능성: 실제 코드베이스로 이대로 만들 수 있는가, 너무 큰 변경은 없는가
+
+    ## 쓰는 법
+    - 지적마다 등급(blocker/major/minor), 위치(문서 절), 문제, 제안을 쓴다.
+    - blocker는 "이대로 구현하면 틀리거나 막히는 것"만. 취향 문제는 minor.
+    - 잘 된 점은 한 줄이면 충분하다.
+  critic: |
+    # 역할: 적대적 리뷰
+
+    이 설계가 **틀렸다고 가정하고** 그것을 증명하려고 읽는다. 칭찬은 쓰지 않는다.
+
+    ## 찾는 것
+    - 반례: 설계가 깨지는 구체적인 입력·순서·상태
+    - 숨은 가정: 문서에 적히지 않았지만 성립해야 하는 전제, 그것이 깨질 때 무슨 일이 생기는가
+    - 실패 시나리오: 부분 실패, 재시도, 중단 후 재개, 동시 실행, 오래된 데이터
+    - 보안: 입력 검증, 권한, 비밀 노출, 경로 조작
+    - 규모·성능: 데이터가 100배일 때, 느린 외부 의존성
+    - 더 단순한 대안이 있는데 무시되지 않았는가
+
+    ## 쓰는 법
+    - 지적마다 등급(blocker/major/minor), 시나리오(재현 가능한 구체적인 경우), 영향, 근거(코드 위치 등)를 쓴다.
+    - 근거 없는 추측은 blocker로 올리지 않는다. 확인 못 한 의심은 '확인 필요'로 표시한다.

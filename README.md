@@ -255,7 +255,20 @@ hctrl --list     # 등록된 프로젝트와 세션 상태
 
 **탭 복사**: 탭 화면의 **[⧉ 탭 복사]**로 같은 구성의 팀을 하나 더 만듭니다(예: 기능별 팀). 새 탭 이름을 정하면 멤버 이름에 붙어 바뀌고(`coder` → `coder-login`, orchestrator는 `login-orch`), 이 탭의 flow(`tab:`이 이 탭이거나 모든 단계가 이 탭 멤버인 flow)도 새 이름으로 복사됩니다. 역할 상세(prompt)는 저장할 때 새 멤버의 파일로 복사되고(이미 있으면 그대로), 대화 기록과 상태는 복사하지 않습니다. 두 팀이 같은 폴더에서 같은 파일을 고치지 않도록 **별도 worktree**(새 브랜치)가 기본으로 켜져 있습니다(git 저장소일 때).
 
-**팀 템플릿**: 자주 쓰는 팀 구성은 탭 화면의 **[☆ 템플릿으로 저장]**으로 프로젝트 밖(`~/.config/herdr_ctl/templates/`)에 저장해 두고, 어느 프로젝트에서든 왼쪽 탭 목록의 **[+ 템플릿에서 추가]**로 불러옵니다. 저장되는 것은 탭 구성(모델·역할·권한·limits 등), 그 탭의 flow, 멤버별 역할 상세(prompt) 전문이고, 작업 폴더(`cwd`)·`worktree`·표시 이름은 빠집니다. 템플릿은 저장된 설정으로 만들어지므로 먼저 [저장]하세요. 불러올 때 멤버 이름은 겹치지 않으면 그대로, 겹치면 탭 이름이 붙습니다. 불러온 뒤에는 프로젝트의 파일이라 템플릿을 고쳐도 바뀌지 않습니다. 새 프로젝트는 첫 설정 화면의 **★ 템플릿으로 시작**이나 `hctrl init --template <이름>`으로 템플릿 탭(탭 ID = 템플릿 이름)으로 시작할 수 있습니다. 템플릿 목록에서 이름 바꾸기·삭제를 할 수 있습니다.
+**팀 템플릿**: 왼쪽 메뉴의 **4 템플릿**에서 팀 구성(멤버·모델·역할 상세 prompt·flow)을 골라 **[+ 이 프로젝트에 추가 →]**로 탭을 만듭니다. 템플릿이 몇 개든 메뉴는 한 줄이고, 템플릿 화면에서 검색과 [전체 | 기본 | 내 템플릿] 필터, 멤버별 역할 상세·flow 미리보기를 볼 수 있습니다.
+
+| 기본 템플릿 | 멤버 (모두 claude) | 하는 일 |
+|---|---|---|
+| `dev-team` | orchestrator(opus), coder(sonnet), tester(haiku), 쉘 build | 설계·분배 → 구현 → 테스트·git. flow `dev`: 구현 → 테스트 작성·실행 → 실패 수정 |
+| `design-review-team` | orchestrator(opus), designer(opus), reviewer(sonnet), critic(opus) | 요구 → 설계 문서 → 일반 리뷰 + **적대적 리뷰** 반복(최대 3회, 사용자 확인) → 코드를 포함한 구현 spec. flow `design-draft`, `design-review`, `design-spec` |
+| `debug-team` | orchestrator(opus), investigator(opus), fixer(sonnet), verifier(haiku), 쉘 test | 증상 → root cause 확인 → 실패하는 재현 테스트 → 최소 수정 → 재현 테스트 + 기존 전체 테스트 통과. flow `debug` |
+
+- 작업 내용은 orchestrator 창에 말로 주면 됩니다. orchestrator가 `.herdr-flow/work/<dev|design|debug>/` 아래 작업 파일(task.md / brief.md / issue.md)에 정리한 뒤 flow를 돌리고, 반복(리뷰 재실행, 수정 후 재검증)과 판정을 맡습니다.
+- 기본 템플릿은 hctrl에 들어 있어 고칠 수 없습니다. 탭으로 추가해 고친 뒤 **[☆ 현재 탭을 템플릿으로 저장]**(템플릿 화면 위쪽)하면 내 템플릿이 됩니다. 같은 이름으로 저장하면 기본 템플릿을 덮어쓰고, 그 내 템플릿을 지우면(**[기본값으로 되돌리기]**) 기본 템플릿이 돌아옵니다.
+- 내 템플릿은 프로젝트 밖(`~/.config/herdr_ctl/templates/`)에 저장됩니다. 담기는 것은 탭 구성(모델·역할·권한·limits 등), 그 탭의 flow, 멤버별 역할 상세(prompt) 전문이고, 작업 폴더(`cwd`)·`worktree`·표시 이름은 빠집니다. 저장된 설정으로 만들어지므로 먼저 [저장]하세요. 이름 바꾸기·삭제는 템플릿 화면에서 합니다.
+- 내 템플릿이 생기면 목록에서 내 템플릿이 위에 펼쳐지고 기본 템플릿은 접힙니다(펼침 상태는 브라우저가 기억합니다).
+- 추가할 때 멤버 이름은 겹치지 않으면 그대로, 겹치면 탭 이름이 붙습니다. 추가한 뒤에는 프로젝트의 파일이라 템플릿을 고쳐도 바뀌지 않습니다.
+- 새 프로젝트(config.yaml이 없을 때)에서 추가하면 **기본 탭(work1) 대신 사용**이 켜져 있어 템플릿으로 시작합니다. 명령으로는 `hctrl init --template <이름>`(예: `hctrl init --template debug-team`, 탭 ID = 템플릿 이름).
 
 **탭 이름 바꾸기**: 탭에는 **ID**(`X`, 명령에서 사용: `hctrl ask X ...`)와 **표시 이름**(`title`, herdr 탭에 보이는 이름)이 있습니다. 둘 다 세션이 실행 중이어도 저장 즉시 바뀌고, 창과 agent는 그대로입니다. ID를 바꾸면 orchestrator 이름(`x-orch` → `login-orch`), flow의 `tab`과 orchestrator 단계, 상태 파일, orchestrator 역할 파일이 함께 옮겨지고, orchestrator에게 새 이름을 알립니다. 탭의 agent가 실행 중인 작업(`hctrl send/run`)이나 답을 기다리는 질문이 있으면 끝난 뒤에 바꿀 수 있습니다. 명령으로는 `hctrl tab rename X login`입니다.
 
@@ -316,7 +329,7 @@ orchestrator? [claude/opus] / none
 검사 중... ✔ 오류 0, 경고 0
 ```
 
-저장해 둔 [팀 템플릿](#11-설정-화면-hctrl-ui)으로 바로 시작하려면 `hctrl init --template <이름>`을 씁니다(묻는 것 없이 템플릿 탭·flow·역할 상세로 config.yaml을 만듭니다). 탭을 추가할 때는 `hctrl init --tab work2`를 씁니다. 기본 이름은 탭이 `work1`, `work2`…, agent가 역할에 맞춘 `coder`, `tester`, `reviewer`, `helper`(이미 있으면 `coder2`…), 쉘이 `build`입니다.
+[팀 템플릿](#11-설정-화면-hctrl-ui)(기본 `dev-team`, `design-review-team`, `debug-team` 또는 내 템플릿)으로 바로 시작하려면 `hctrl init --template <이름>`을 씁니다(묻는 것 없이 템플릿 탭·flow·역할 상세로 config.yaml을 만듭니다). 탭을 추가할 때는 `hctrl init --tab work2`를 씁니다. 기본 이름은 탭이 `work1`, `work2`…, agent가 역할에 맞춘 `coder`, `tester`, `reviewer`, `helper`(이미 있으면 `coder2`…), 쉘이 `build`입니다.
 
 ### 검사: `hctrl check` (자동)
 

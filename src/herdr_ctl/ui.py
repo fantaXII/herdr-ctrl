@@ -302,7 +302,8 @@ class UIServer:
                 T.path_for(name)  # validate the name first
                 try:
                     path = T.save(name, T.build(project, tab), {"project": project.name, "tab": tab},
-                                  overwrite=bool(body.get("overwrite")))
+                                  overwrite=bool(body.get("overwrite")),
+                                  description=str(body.get("description") or ""))
                 except FileExistsError:
                     raise ApiError(409, f"템플릿 '{name}'이 이미 있습니다") from None
                 return {"name": name, "path": str(path), "templates": T.list_templates()}
@@ -523,7 +524,7 @@ class UIServer:
         renamed = moved + self.sync_live_titles(project)
         copied = self.copy_roles(project, old_cfg, copies) + self.write_role_texts(project, role_texts)
         return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed,
-                "copied": copied}
+                "copied": copied, "roles": self.role_summary(project)}
 
     def write_role_texts(self, project: Project, texts: dict[str, str]) -> list[str]:
         """Team template: create each new member's role file from the template text (never overwrite)."""

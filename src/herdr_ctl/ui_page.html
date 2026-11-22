@@ -33,8 +33,27 @@ header .spacer { flex: 1; }
 #updateBadge .badge { cursor: pointer; border: none; font: inherit; font-size: 12px; color: var(--muted); }
 #updateBadge .badge.up { color: var(--accent); } #updateBadge .badge.ok { color: var(--ok); }
 #updateDialog { max-width: 440px; }
-#copyDialog, #tplDialog { max-width: 520px; } #tplDialog .tplrow { border-top: 1px solid var(--line); padding: 6px 0; }
-.tplstart { margin-bottom: 12px; gap: 10px; } #copyDialog .map { margin: 4px 0 10px; } #copyDialog .map td { border: none; padding: 1px 6px; }
+#copyDialog, #tplDialog { max-width: 520px; }
+#copyDialog .map, #tplDialog .map { margin: 4px 0 10px; } #copyDialog .map td, #tplDialog .map td { border: none; padding: 1px 6px; }
+.tplwrap { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 760px) { .tplwrap { grid-template-columns: 1fr; } }
+.tpltools { margin-bottom: 10px; } .tpltools input { flex: 1; min-width: 160px; }
+.tplfilter button { padding: 3px 9px; font-size: 12px; } .tplfilter button.on { background: var(--chip); color: var(--accent); border-color: var(--accent); }
+.tpllist { border: 1px solid var(--line); border-radius: 8px; padding: 4px; max-height: 62vh; overflow: auto; }
+.tplgroup { display: flex; width: 100%; gap: 6px; border: none; background: none; font-weight: 700; font-size: 12px;
+  color: var(--muted); padding: 6px 6px 4px; text-align: left; }
+.tplgroup .grow { flex: 1; }
+.tplitem { display: flex; align-items: center; gap: 6px; width: 100%; border: none; background: none; text-align: left; padding: 5px 8px; border-radius: 6px; }
+.tplitem:hover { background: var(--chip); } .tplitem.active { background: var(--agent-bg); font-weight: 600; }
+.tplitem .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag { font-size: 11px; padding: 0 6px; border-radius: 5px; background: var(--chip); color: var(--muted); font-weight: 400; }
+.tag.base { color: var(--accent); }
+.tplmembers { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
+.tplmembers td { padding: 5px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+.tplmembers details summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.tplmembers pre, .tplflow pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px; margin: 6px 0 0; font-size: 12px; max-height: 320px; overflow: auto; }
+.tplflow { margin: 4px 0; } .tplflow summary { cursor: pointer; }
 #updateDialog dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 12px; }
 #updateDialog dt { color: var(--muted); } #updateDialog dd { margin: 0; font-weight: 600; }
 #updateDialog pre { white-space: pre-wrap; margin: 8px 0; }
@@ -497,7 +516,7 @@ async function openProject(name) {
     S.models = models;
     if (models.opencode_status === "loading") pollModels();
     S.project = name; S.version = cfg.version; S.running = cfg.running; S.roles = cfg.roles || {}; S.exists = cfg.exists; S.root = cfg.root;
-    S.git = !!cfg.git; S.copies = {}; S.roleTexts = {}; S.tplStarted = false;
+    S.git = !!cfg.git; S.copies = {}; S.roleTexts = {};
     await loadTemplates();
     if (cfg.parse_error || !cfg.data || typeof cfg.data !== "object") {
       $("app").replaceChildren(h("section", {}, h("h2", {}, name),
@@ -640,7 +659,7 @@ async function save() {
     let msg = "저장했습니다.";
     if (res.renamed && res.renamed.length) msg += " " + res.renamed.join(", ") + ".";
     if (res.copied && res.copied.length) msg += " 역할 상세 생성: " + res.copied.join(", ") + ".";
-    S.copies = {}; S.roleTexts = {};
+    S.copies = {}; S.roleTexts = {}; if (res.roles) S.roles = res.roles;  // role files made by this save
     toast(msg);
     render();
     if (S.running) refreshChanges(true);
@@ -726,9 +745,9 @@ function tabSource(tid) {
 function tplSource(t) {
   return { kind: "tpl", id: t.name, tab: t.tab, flows: t.flows || {}, orchKey: "@orch", roles: t.roles || {} };
 }
-function copyPlan(src, id) {
+function copyPlan(src, id, base) {
   const t = src.tab, low = id.toLowerCase();
-  const used = new Set(allMembers(S.data).map((m) => m.name)), names = {};
+  const used = new Set(allMembers(base || S.data).map((m) => m.name)), names = {};
   const fresh = (n) => {
     if (!used.has(n) && NAME_RE.test(n)) { used.add(n); return n; }
     let base = (n + "-" + low).slice(0, 32).replace(/[-_]+$/, ""), out = base;
@@ -739,10 +758,11 @@ function copyPlan(src, id) {
   for (const n of [...Object.keys(t.agents || {}), ...Object.keys(t.shells || {})]) names[n] = fresh(n);
   return { names, flows: Object.keys(src.flows) };
 }
-function copyIdError(id) {
+function copyIdError(id, base) {
+  const d = base || S.data;
   if (!TAB_RE.test(id)) return "탭 이름: 영문으로 시작, 영문/숫자/_- 25자 이하";
-  if (Object.keys(S.data.tabs).some((x) => x.toLowerCase() === id.toLowerCase())) return "이미 있는 탭 이름입니다";
-  if (allMembers(S.data).some((m) => m.name === id.toLowerCase() + "-orch")) return "'" + id.toLowerCase() + "-orch' 이름을 이미 쓰고 있습니다";
+  if (Object.keys(d.tabs).some((x) => x.toLowerCase() === id.toLowerCase())) return "이미 있는 탭 이름입니다";
+  if (allMembers(d).some((m) => m.name === id.toLowerCase() + "-orch")) return "'" + id.toLowerCase() + "-orch' 이름을 이미 쓰고 있습니다";
   return "";
 }
 function freeTabId(base) {
@@ -754,14 +774,18 @@ function freeTabId(base) {
   return base.slice(0, 24 - String(k).length) + k;
 }
 function openCopyTab(tid) { openAddTeam(tabSource(tid), freeTabId(tid + "2")); }
+// a new project (no config.yaml yet) can take the template INSTEAD of the starter tab
+const canReplace = () => S.wizard && !S.exists;
 function openAddTeam(src, id) {
-  const o = { src, id, roles: true, flows: true, wt: !!S.git, branch: "feat/" + id.toLowerCase() };
+  const replace = src.kind === "tpl" && canReplace() && !dirty();
+  if (replace) id = src.id.slice(0, 25).replace(/[-_]+$/, "") || id;
+  const o = { src, id, roles: true, flows: true, wt: !!S.git, branch: "feat/" + id.toLowerCase(), replace };
   copyBody(o);
   $("copyDialog").showModal();
 }
 function copyBody(o) {
-  const tpl = o.src.kind === "tpl";
-  const err = copyIdError(o.id), plan = err ? null : copyPlan(o.src, o.id);
+  const tpl = o.src.kind === "tpl", base = o.replace ? { tabs: {}, flows: {} } : S.data;
+  const err = copyIdError(o.id, base), plan = err ? null : copyPlan(o.src, o.id, base);
   const branchErr = o.wt && !/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(o.branch) ? "브랜치 이름을 확인하세요" : "";
   const rerender = () => { const f = document.activeElement && document.activeElement.id; copyBody(o); if (f && $(f)) { $(f).focus(); const v = $(f).value; if (typeof v === "string" && $(f).setSelectionRange) $(f).setSelectionRange(v.length, v.length); } };
   const idIn = h("input", { id: "copyId", value: o.id, oninput: (e) => {
@@ -772,6 +796,7 @@ function copyBody(o) {
   const note = (a, b) => !tpl || a === o.src.orchKey ? null : h("td", { class: "muted" }, a === b ? "(그대로)" : "(겹침)");
   $("copyBody").replaceChildren(h("div", {},
     h("h3", { style: "margin-top:0" }, (tpl ? "템플릿에서 추가: " : "탭 복사: ") + o.src.id),
+    tpl && canReplace() ? check("replace", "기본 탭(" + Object.keys(S.data.tabs).join(", ") + ") 대신 사용", { hint: "새 프로젝트를 이 템플릿으로 시작합니다" }) : null,
     h("label", { class: "field" }, "새 탭 이름", idIn),
     err ? h("p", { class: "small", style: "color:var(--err);margin:4px 0" }, err) : null,
     plan ? [h("p", { class: "muted small", style: "margin:10px 0 0" }, "멤버 이름"),
@@ -786,9 +811,12 @@ function copyBody(o) {
     branchErr ? h("p", { class: "small", style: "color:var(--err);margin:4px 0 0 24px" }, branchErr) : null,
     h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" },
       h("button", { onclick: () => $("copyDialog").close() }, "취소"),
-      h("button", { class: "primary", disabled: !!(err || branchErr), onclick: () => { copyTab(o, plan); $("copyDialog").close(); } }, tpl ? "추가" : "복사"))));
+      h("button", { class: "primary", disabled: !!(err || branchErr), onclick: () => {
+        if (o.replace && dirty() && !confirm("지금 고친 내용 대신 템플릿 '" + o.src.id + "'으로 시작할까요?")) return;
+        copyTab(o, plan); $("copyDialog").close(); } }, tpl ? "추가" : "복사"))));
 }
 function copyTab(o, plan, quiet) {
+  if (o.replace) { S.data.tabs = {}; S.data.flows = {}; S.copies = {}; S.roleTexts = {}; S.tabOrigin = {}; }
   const d = S.data, src = o.src, t = clone(src.tab), map = plan.names;
   const rekey = (obj) => Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [map[k] || k, v]));
   t.agents = rekey(t.agents); t.shells = rekey(t.shells);
@@ -816,7 +844,8 @@ function copyTab(o, plan, quiet) {
   }
   S.tab = o.id; S.view = "tab"; changed();
   if (!quiet) toast(src.kind === "tpl"
-    ? "템플릿 '" + src.id + "'을 '" + o.id + "' 탭으로 추가했습니다. prompt에 이전 프로젝트 얘기가 있으면 고치세요. 저장하면 반영됩니다."
+    ? (o.replace ? "템플릿 '" + src.id + "'으로 시작합니다. 확인한 뒤 [만들기]를 누르세요."
+      : "템플릿 '" + src.id + "'을 '" + o.id + "' 탭으로 추가했습니다. prompt에 이전 프로젝트 얘기가 있으면 고치세요. 저장하면 반영됩니다.")
     : "'" + src.id + "' 탭을 '" + o.id + "'(으)로 복사했습니다. 저장하면 반영됩니다.");
   return orchName;
 }
@@ -827,18 +856,17 @@ const TPL_RE = /^[a-z][a-z0-9_-]{0,39}$/;
 async function loadTemplates() {
   try { S.templates = (await api("GET", "/api/templates")).templates; } catch (e) { S.templates = []; }
 }
-function tplMembers(t) {
-  return [t.orch ? "◆ orch" : null, ...t.agents, ...t.shells.map((x) => "■ " + x)].filter(Boolean).join(" · ");
-}
 function openSaveTpl(tname) {
-  const o = { tab: tname, name: tplName(tname) };
+  const tabs = Object.keys((S.saved && S.saved.tabs) || {});
+  if (!tabs.includes(tname)) tname = tabs[0] || tname;
+  const o = { tab: tname, name: tplName(tname || "team"), description: "" };
   saveTplBody(o);
   $("tplDialog").showModal();
 }
 function saveTplBody(o, msg) {
   const close = h("button", { onclick: () => $("tplDialog").close() }, "닫기");
   const saved = S.saved && S.saved.tabs && S.saved.tabs[o.tab];
-  if (unsaved() || !saved) {
+  if (unsaved() || !saved) {  // templates are built from the SAVED config.yaml
     $("tplBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, "템플릿으로 저장: " + o.tab),
       h("p", {}, "⚠ 저장하지 않은 변경이 있습니다. 템플릿은 저장된 설정으로 만들어지니 먼저 [저장]하세요."),
       h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" }, close)));
@@ -852,9 +880,17 @@ function saveTplBody(o, msg) {
   const nameErr = TPL_RE.test(o.name) ? "" : "템플릿 이름: 영문 소문자로 시작, 소문자/숫자/_- 40자 이하";
   const nameIn = h("input", { id: "tplName", value: o.name, oninput: (e) => {
     o.name = e.target.value.trim(); saveTplBody(o); $("tplName").focus(); $("tplName").setSelectionRange(o.name.length, o.name.length); } });
+  const savedTabs = Object.keys(S.saved.tabs);
+  const tabSel = savedTabs.length > 1 ? h("label", { class: "field" }, "저장할 탭",
+    h("select", { "aria-label": "저장할 탭", onchange: (e) => { const auto = o.name === tplName(o.tab); o.tab = e.target.value; if (auto) o.name = tplName(o.tab); saveTplBody(o); } },
+      savedTabs.map((x) => h("option", { value: x, selected: x === o.tab }, x)))) : null;
+  const descIn = h("input", { "aria-label": "설명", value: o.description, placeholder: "예: 결제 기능용 구현+테스트 팀", maxlength: 200,
+    oninput: (e) => { o.description = e.target.value; } });
   $("tplBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, "템플릿으로 저장: " + o.tab),
+    tabSel,
     h("label", { class: "field" }, "템플릿 이름", nameIn),
     nameErr ? h("p", { class: "small", style: "color:var(--err);margin:4px 0" }, nameErr) : null,
+    h("label", { class: "field", style: "margin-top:8px" }, "설명 (선택)", descIn),
     h("p", { class: "muted small", style: "margin:10px 0 0" }, "담기는 것"),
     h("table", { class: "map small" }, rows),
     h("p", { class: "small", style: "margin:4px 0" }, "flow: " + (Object.keys(src.flows).join(", ") || "없음")),
@@ -865,64 +901,122 @@ function saveTplBody(o, msg) {
 }
 async function saveTpl(o, overwrite) {
   try {
-    const r = await api("POST", "/api/templates", { project: S.project, tab: o.tab, name: o.name, overwrite });
-    S.templates = r.templates; $("tplDialog").close();
-    toast("템플릿 '" + o.name + "'으로 저장했습니다. 다른 프로젝트의 [+ 템플릿에서 추가]에서 쓸 수 있습니다.");
+    const r = await api("POST", "/api/templates", { project: S.project, tab: o.tab, name: o.name, description: o.description, overwrite });
+    S.templates = r.templates; delete S.tplCache[o.name]; S.tplPick = o.name; $("tplDialog").close();
+    toast("템플릿 '" + o.name + "'으로 저장했습니다. 다른 프로젝트에서도 왼쪽 [4 템플릿]에서 쓸 수 있습니다.");
     render();
   } catch (e) {
     if (e.status === 409 && !overwrite) {
       const t = (S.templates || []).find((x) => x.name === o.name);
-      if (confirm("'" + o.name + "'이 이미 있습니다" + (t && t.saved_at ? " (" + t.saved_at.replace("T", " ") + " 저장)" : "") + ". 덮어쓸까요?")) saveTpl(o, true);
+      const what = t && t.builtin ? "같은 이름의 기본 템플릿이 있습니다. 내 템플릿으로 덮어쓸까요? (내 템플릿을 지우면 기본 템플릿이 돌아옵니다)"
+        : "'" + o.name + "'이 이미 있습니다" + (t && t.saved_at ? " (" + t.saved_at.replace("T", " ") + " 저장)" : "") + ". 덮어쓸까요?";
+      if (confirm(what)) saveTpl(o, true);
     } else saveTplBody(o, e.message);
   }
 }
-async function openTplList() {
-  await loadTemplates();
-  const o = { pick: S.templates.length ? S.templates[0].name : null };
-  tplListBody(o);
-  $("tplDialog").showModal();
+// template view (nav "4 템플릿"): list (my templates, then the built-ins) + the picked one's details
+S.tplCache = {}; S.tplQuery = ""; S.tplFilter = "all"; S.tplPick = null;
+function tplGroupOpen(key, dflt) {
+  try { const v = localStorage.getItem("hctrl.tpl." + key); return v === null ? dflt : v === "open"; } catch (e) { return dflt; }
 }
-function tplListBody(o, msg) {
-  const list = S.templates || [];
-  const act = async (fn) => { try { S.templates = (await fn()).templates; if (!list.some((t) => t.name === o.pick)) o.pick = S.templates.length ? S.templates[0].name : null; tplListBody(o); } catch (e) { tplListBody(o, e.message); } };
-  const rows = list.map((t) => h("div", { class: "tplrow" },
-    h("label", { class: "row" }, h("input", { type: "radio", name: "tplpick", checked: o.pick === t.name, onchange: () => { o.pick = t.name; } }),
-      h("b", {}, t.name), h("span", { class: "muted small grow" }, tplMembers(t)), h("span", { class: "muted small" }, (t.saved_at || "").slice(5, 10).replace("-", "/"))),
-    h("span", { class: "row small", style: "justify-content:flex-end" },
-      h("button", { class: "link", onclick: () => { const n = prompt("새 템플릿 이름", t.name); if (n && n !== t.name) act(() => api("POST", "/api/templates/" + encodeURIComponent(t.name) + "/rename", { name: n.trim() })); } }, "이름 바꾸기"),
-      h("button", { class: "link danger", onclick: () => { if (confirm("템플릿 '" + t.name + "'을 삭제할까요? (이미 만든 탭은 그대로입니다)")) act(() => api("POST", "/api/templates/" + encodeURIComponent(t.name) + "/delete", {})); } }, "삭제"))));
-  $("tplBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, "템플릿"),
-    rows.length ? rows : h("p", { class: "muted" }, "저장된 템플릿이 없습니다. 탭 화면의 [☆ 템플릿으로 저장]으로 만드세요."),
-    msg ? h("p", { class: "small", style: "color:var(--err)" }, msg) : null,
-    h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" },
-      h("button", { onclick: () => $("tplDialog").close() }, "취소"),
-      h("button", { class: "primary", disabled: !o.pick, onclick: () => pickTpl(o) }, "다음 →"))));
+function setTplGroupOpen(key, on) {
+  try { localStorage.setItem("hctrl.tpl." + key, on ? "open" : "closed"); } catch (e) { /* storage may be blocked */ }
 }
-async function pickTpl(o) {
-  try {
-    const t = await api("GET", "/api/templates/" + encodeURIComponent(o.pick));
-    $("tplDialog").close();
-    openAddTeam(tplSource(t), freeTabId(t.name));
-  } catch (e) { tplListBody(o, e.message); }
+async function refreshTemplates() {
+  await loadTemplates(); S.tplCache = {};
+  if (S.view === "templates") render();
 }
-// new project (no config.yaml yet): start from a template instead of the default work1 tab
-function tplStartBanner() {
-  if (!S.wizard || S.exists || S.tplStarted || !(S.templates || []).length) return null;
-  const sel = h("select", { "aria-label": "템플릿" }, S.templates.map((t) => h("option", { value: t.name }, t.name)));
-  return h("div", { class: "notice tplstart row" }, h("b", {}, "★ 템플릿으로 시작"), sel,
-    h("button", { onclick: () => startFromTpl(sel.value) }, "적용"),
-    h("span", { class: "muted small" }, "기본 탭(" + Object.keys(S.data.tabs).join(", ") + ") 대신 템플릿의 탭·flow·prompt로 시작합니다"));
+function tplDots(t) {
+  return h("span", { class: "dots", "aria-hidden": "true" }, t.orch ? h("span", { class: "dot orch" }) : null,
+    t.agents.map(() => h("span", { class: "dot agent" })), t.shells.map(() => h("span", { class: "dot shell" })));
 }
-async function startFromTpl(name) {
-  if (dirty() && !confirm("지금 고친 내용 대신 템플릿 '" + name + "'으로 시작할까요?")) return;
-  try {
-    const t = await api("GET", "/api/templates/" + encodeURIComponent(name));
-    S.data.tabs = {}; S.data.flows = {}; S.copies = {}; S.roleTexts = {}; S.tabOrigin = {};
-    const src = tplSource(t), id = freeTabId(t.name);
-    S.tplStarted = true;  // the banner goes away; [+ 템플릿에서 추가] still adds more
-    copyTab({ src, id, roles: true, flows: true, wt: false }, copyPlan(src, id), true);
-    toast("템플릿 '" + name + "'으로 시작합니다. 확인한 뒤 [만들기]를 누르세요.");
-  } catch (e) { toast(e.message); }
+function renderTemplates() {
+  const all = S.templates || [], q = S.tplQuery.trim().toLowerCase();
+  const match = (t) => !q || [t.name, t.description || "", ...t.agents, ...t.shells].some((x) => x.toLowerCase().includes(q));
+  const mine = all.filter((t) => !t.builtin && match(t)), base = all.filter((t) => t.builtin && match(t));
+  if (!all.some((t) => t.name === S.tplPick)) S.tplPick = (all.find((t) => !t.builtin) || all[0] || {}).name || null;
+  const item = (t) => h("button", { class: "tplitem" + (t.name === S.tplPick ? " active" : ""), title: t.description || t.name,
+    onclick: () => { S.tplPick = t.name; render(); } },
+    h("span", { class: "grow" }, t.name), t.builtin ? null : h("span", { class: "muted small" }, (t.saved_at || "").slice(5, 10).replace("-", "/")), tplDots(t));
+  const group = (key, label, list, dflt) => {
+    if (!list.length) return null;
+    const open = q ? true : tplGroupOpen(key, dflt);  // searching shows every match
+    return [h("button", { class: "tplgroup", "aria-expanded": String(open), onclick: () => { setTplGroupOpen(key, !open); render(); } },
+      h("span", { class: "grow" }, label + " (" + list.length + ")"), q ? null : (open ? "▾" : "▸")), ...(open ? list.map(item) : [])];
+  };
+  const showMine = S.tplFilter !== "base", showBase = S.tplFilter !== "mine";
+  const hasMine = all.some((t) => !t.builtin);
+  const filt = (key, label) => h("button", { class: S.tplFilter === key ? "on" : "", onclick: () => { S.tplFilter = key; render(); } }, label);
+  const search = h("input", { "aria-label": "템플릿 검색", placeholder: "이름·멤버·설명 검색", value: S.tplQuery,
+    oninput: (e) => {  // live filter: redraw, then put the caret back
+      S.tplQuery = e.target.value; const at = e.target.selectionStart; render();
+      const el = document.querySelector('[aria-label="템플릿 검색"]'); if (el) { el.focus(); el.setSelectionRange(at, at); } } });
+  const list = [...((showMine && group("mine", "내 템플릿", mine, true)) || []),
+    ...((showBase && group("base", "기본 템플릿", base, !hasMine)) || [])];  // the built-ins fold away once you have your own
+  const empty = !((showMine && mine.length) || (showBase && base.length));
+  return h("section", {},
+    viewTitle(4, "템플릿", h("span", { class: "grow" }),
+      h("button", { title: "저장된 탭 하나를 다른 프로젝트에서도 쓸 수 있게 저장합니다", onclick: () => openSaveTpl(S.tab) }, "☆ 현재 탭을 템플릿으로 저장")),
+    desc("자주 쓰는 팀 구성(멤버·모델·역할 상세 prompt·flow)을 모든 프로젝트에서 같이 씁니다. 고른 템플릿을 [이 프로젝트에 추가]하면 탭으로 들어옵니다. ",
+      "기본 템플릿은 hctrl에 들어 있고, 내 템플릿은 ", code("~/.config/herdr_ctl/templates/"), "에 저장됩니다."),
+    h("div", { class: "row tpltools" }, search, h("span", { class: "row tplfilter", style: "gap:4px" }, filt("all", "전체"), filt("base", "기본"), filt("mine", "내 템플릿"))),
+    h("div", { class: "tplwrap" },
+      h("div", { class: "tpllist" }, empty ? h("p", { class: "muted small", style: "padding:6px" }, q ? "검색 결과가 없습니다" : "템플릿이 없습니다") : list),
+      renderTplDetail()));
+}
+function renderTplDetail() {
+  const name = S.tplPick;
+  if (!name) return h("div", { class: "card" }, h("p", { class: "muted" }, "템플릿을 고르세요."));
+  const t = S.tplCache[name];
+  if (!t) {
+    if (S.tplLoading === name) return h("div", { class: "card" }, h("p", { class: "muted" }, "불러오는 중…"));
+    S.tplLoading = name;
+    api("GET", "/api/templates/" + encodeURIComponent(name))
+      .finally(() => { if (S.tplLoading === name) S.tplLoading = null; })
+      .then((full) => { S.tplCache[name] = full; if (S.view === "templates" && S.tplPick === name) render(); })
+      .catch((e) => { S.tplCache[name] = { error: e.message }; if (S.view === "templates") render(); });
+    return h("div", { class: "card" }, h("p", { class: "muted" }, "불러오는 중…"));
+  }
+  if (t.error) return h("div", { class: "card" }, h("p", { class: "notice" }, t.error));
+  const tab = t.tab || {}, roles = t.roles || {};
+  const model = (m) => (m && m.kind || "claude") + (m && m.model ? " " + m.model : "");
+  const roleCell = (key) => roles[key] ? h("details", {}, h("summary", {}, "역할 상세"), h("pre", {}, roles[key])) : h("span", { class: "muted small" }, "역할 상세 없음");
+  const rows = [
+    hasOrch(tab) ? h("tr", {}, h("td", {}, h("span", { class: "dot orch" }), " orchestrator"), h("td", {}, model(tab.orchestrator)),
+      h("td", {}, tab.orchestrator.goal || ""), h("td", {}, roleCell("@orch"))) : null,
+    ...Object.entries(tab.agents || {}).map(([n, m]) => h("tr", {}, h("td", {}, h("span", { class: "dot agent" }), " " + n), h("td", {}, model(m)),
+      h("td", {}, (m && m.role) || ""), h("td", {}, roleCell(n)))),
+    ...Object.keys(tab.shells || {}).map((n) => h("tr", {}, h("td", {}, h("span", { class: "dot shell" }), " " + n), h("td", { class: "muted" }, "쉘"), h("td", {}), h("td", {})))];
+  const flows = Object.entries(t.flows || {}).map(([fn, f]) => h("details", { class: "tplflow" },
+    h("summary", {}, h("span", { class: "dot flow" }), " " + fn + " ", h("span", { class: "muted small" }, ((f && f.steps) || []).length + "단계")),
+    h("pre", {}, ((f && f.steps) || []).map((st, i) => (i + 1) + ". " + (st.agent || st.shell) + ": " + (st.prompt || st.run || "")).join("\n"))));
+  const rename = () => {
+    const n = prompt("새 템플릿 이름", t.name);
+    if (n && n.trim() !== t.name) tplAct(() => api("POST", "/api/templates/" + encodeURIComponent(t.name) + "/rename", { name: n.trim() }), n.trim());
+  };
+  const del = () => {
+    const msg = t.overrides_builtin ? "내 템플릿 '" + t.name + "'을 지우고 기본 템플릿으로 되돌릴까요?" : "템플릿 '" + t.name + "'을 삭제할까요? (이미 만든 탭은 그대로입니다)";
+    if (confirm(msg)) tplAct(() => api("POST", "/api/templates/" + encodeURIComponent(t.name) + "/delete", {}), t.overrides_builtin ? t.name : null);
+  };
+  const src = t.source || {};
+  return h("div", { class: "card" },
+    h("h3", {}, t.name, h("span", { class: "tag" + (t.builtin ? " base" : "") }, t.builtin ? "기본" : t.overrides_builtin ? "내 템플릿 · 기본을 덮어씀" : "내 템플릿"),
+      h("span", { class: "grow" }),
+      h("button", { class: "primary", onclick: () => openAddTeam(tplSource(t), freeTabId(t.name)) }, "+ 이 프로젝트에 추가 →")),
+    t.description ? h("p", { style: "margin:0 0 6px" }, t.description) : null,
+    !t.builtin ? h("p", { class: "muted small", style: "margin:0" }, [src.project ? "원본: " + src.project + " / " + src.tab : null,
+      t.saved_at ? "저장: " + t.saved_at.replace("T", " ") : null].filter(Boolean).join(" · ")) : null,
+    h("table", { class: "tplmembers small" }, rows),
+    flows.length ? h("div", {}, h("p", { class: "muted small", style: "margin:6px 0 2px" }, "flow"), flows) : h("p", { class: "muted small" }, "flow 없음"),
+    t.builtin
+      ? h("p", { class: "muted small", style: "margin-bottom:0" }, "기본 템플릿은 고칠 수 없습니다. 추가한 뒤 고치고 [☆ 현재 탭을 템플릿으로 저장]하면 내 템플릿이 됩니다.")
+      : h("p", { class: "row small", style: "justify-content:flex-end;margin-bottom:0" },
+        h("button", { onclick: rename }, "이름 바꾸기"),
+        h("button", { class: "danger", onclick: del }, t.overrides_builtin ? "기본값으로 되돌리기" : "삭제")));
+}
+async function tplAct(fn, pick) {
+  try { S.templates = (await fn()).templates; S.tplCache = {}; S.tplPick = pick; render(); }
+  catch (e) { toast(e.message); }
 }
 
 // ------------------------------------------------------------- members
@@ -1113,8 +1207,9 @@ function render() {
   const names = Object.keys(S.data.tabs);
   if (!names.includes(S.tab)) S.tab = names[0] || null;
   if (S.view === "tab" && !S.tab) S.view = "project";
-  const view = S.view === "flows" ? renderFlows() : S.view === "tab" ? renderTabView(S.tab, S.data.tabs[S.tab]) : renderProject();
-  $("app").replaceChildren(h("div", { class: "layout" }, renderNav(), h("div", { class: "content" }, tplStartBanner(), view)));
+  const view = S.view === "flows" ? renderFlows() : S.view === "templates" ? renderTemplates()
+    : S.view === "tab" ? renderTabView(S.tab, S.data.tabs[S.tab]) : renderProject();
+  $("app").replaceChildren(h("div", { class: "layout" }, renderNav(), h("div", { class: "content" }, view)));
 }
 // redraw for new check marks without losing the field the user moved to
 function rerenderKeepFocus() {
@@ -1129,7 +1224,10 @@ function rerenderKeepFocus() {
   render();
   if (idx >= 0) { const again = document.querySelectorAll('[aria-label="' + label + '"]')[idx]; if (again) again.focus(); }
 }
-const go = (view, tab) => { S.view = view; if (tab !== undefined) S.tab = tab; render(); window.scrollTo && window.scrollTo(0, 0); };
+const go = (view, tab) => {
+  S.view = view; if (tab !== undefined) S.tab = tab; render(); window.scrollTo && window.scrollTo(0, 0);
+  if (view === "templates") refreshTemplates();  // templates saved from another project's page
+};
 function memberDots(t) {
   if (!t || typeof t !== "object") return h("span", { class: "dots" });
   return h("span", { class: "dots", "aria-hidden": "true" },
@@ -1157,10 +1255,10 @@ function renderNav() {
     h("div", { class: "nav-group" }, head(1, "프로젝트", "project", markFor("session")),
       h("div", { class: "nav-item", style: "cursor:default" }, h("span", { class: "grow muted" }, "세션 " + (d.session || "-")))),
     h("div", { class: "nav-group" }, head(2, "탭 구성", "tab"), tabs,
-      h("button", { class: "nav-item add", onclick: () => { addTab(); S.view = "tab"; render(); } }, "+ 탭 추가"),
-      h("button", { class: "nav-item add", onclick: openTplList }, "+ 템플릿에서 추가")),
+      h("button", { class: "nav-item add", onclick: () => { addTab(); S.view = "tab"; render(); } }, "+ 탭 추가")),
     h("div", { class: "nav-group" }, head(3, "flow", "flows"), flows,
       h("button", { class: "nav-item add", onclick: () => go("flows") }, flows.length ? "+ flow 추가" : "+ 예제로 시작")),
+    h("div", { class: "nav-group" }, head(4, "템플릿", "templates", h("span", { class: "muted small", style: "font-weight:400" }, "(" + (S.templates || []).length + ")"))),
     h("div", { class: "nav-legend" },
       h("span", {}, h("span", { class: "dot orch" }), " orchestrator (지휘)"), h("span", {}, h("span", { class: "dot agent" }), " 작업 agent"),
       h("span", {}, h("span", { class: "dot shell" }), " 쉘 창"), h("span", {}, h("span", { class: "dot flow" }), " flow"),
@@ -1335,7 +1433,6 @@ function renderTabView(tname, t) {
     S.tab = nv; changed();
   } });
   const title = viewTitle(2, "탭 · " + (t.title ? t.title + " (" + tname + ")" : tname), h("span", { class: "grow" }),
-    h("button", { title: "이 탭의 구성과 역할 상세(prompt)를 다른 프로젝트에서도 쓸 수 있게 저장합니다", onclick: () => openSaveTpl(tname) }, "☆ 템플릿으로 저장"),
     h("button", { title: "같은 구성의 탭을 하나 더 만듭니다 (멤버 이름은 새 탭 이름이 붙어 바뀝니다)", onclick: () => openCopyTab(tname) }, "⧉ 탭 복사"),
     h("button", { class: "danger", onclick: () => {
       if (!confirm("탭 '" + tname + "'을 삭제할까요?")) return;

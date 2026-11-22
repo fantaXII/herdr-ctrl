@@ -59,6 +59,10 @@ def proj(tmp_path):
     return p
 
 
+def mine():
+    return [t for t in T.list_templates() if not t["builtin"]]
+
+
 # ------------------------------------------------------------ module
 def test_build_strips_project_keys_and_keeps_roles(proj):
     t = T.build(proj, "X")
@@ -83,51 +87,51 @@ def test_unknown_tab_and_bad_names(proj):
 
 
 def test_save_list_load_rename_delete(proj):
-    T.save("dev-team", T.build(proj, "X"), {"project": "projA", "tab": "X"})
+    T.save("x-team", T.build(proj, "X"), {"project": "projA", "tab": "X"})
     with pytest.raises(FileExistsError):
-        T.save("dev-team", T.build(proj, "X"))
-    T.save("dev-team", T.build(proj, "X"), overwrite=True)
+        T.save("x-team", T.build(proj, "X"))
+    T.save("x-team", T.build(proj, "X"), overwrite=True)
     (T.templates_dir() / "broken.yaml").write_text("tab: [1]\n")  # not offered
-    [s] = T.list_templates()
-    assert s["name"] == "dev-team" and s["orch"] and s["agents"] == ["x1", "x2"] and s["shells"] == ["xbuild"]
-    T.rename("dev-team", "login-team")
+    [s] = mine()
+    assert s["name"] == "x-team" and s["orch"] and s["agents"] == ["x1", "x2"] and s["shells"] == ["xbuild"]
+    T.rename("x-team", "login-team")
     assert T.load("login-team")["tab"]["agents"]["x1"]["model"] == "sonnet"
     with pytest.raises(T.TemplateError, match="저장된 템플릿: login-team"):
-        T.load("dev-team")
+        T.load("x-team")
     T.delete("login-team")
-    assert T.list_templates() == []
+    assert mine() == []
 
 
 def test_instantiate_for_new_project(proj):
-    T.save("dev-team", T.build(proj, "X"))
-    tab, flows, texts = T.instantiate(T.load("dev-team"), "dev-team")
-    assert list(tab["agents"]) == ["x1", "x2"] and flows["pinned"]["tab"] == "dev-team"
-    assert "tab" not in flows["untabbed"] and set(texts) == {"dev-team-orch", "x1"}
+    T.save("x-team", T.build(proj, "X"))
+    tab, flows, texts = T.instantiate(T.load("x-team"), "x-team")
+    assert list(tab["agents"]) == ["x1", "x2"] and flows["pinned"]["tab"] == "x-team"
+    assert "tab" not in flows["untabbed"] and set(texts) == {"x-team-orch", "x1"}
 
 
 # ------------------------------------------------------------ hctrl init --template
 def test_init_template_creates_valid_config_with_roles(proj, tmp_path, capsys):
-    T.save("dev-team", T.build(proj, "X"))
+    T.save("x-team", T.build(proj, "X"))
     root = tmp_path / "shop"
     root.mkdir()
     p = Project("shop", root)
-    assert run_init_template(p, "dev-team", ask=lambda q: "", which=always_found)
+    assert run_init_template(p, "x-team", ask=lambda q: "", which=always_found)
     cfg, issues = check_file(p.config_path, which=always_found)
     assert cfg is not None and not [i for i in issues if i.level == "error"]
-    assert [t.name for t in cfg.tabs] == ["dev-team"] and cfg.session == "shop"
-    assert R.effective_role(p, cfg.member("dev-team-orch"))[0] == "로그인 총괄"
+    assert [t.name for t in cfg.tabs] == ["x-team"] and cfg.session == "shop"
+    assert R.effective_role(p, cfg.member("x-team-orch"))[0] == "로그인 총괄"
     assert R.effective_role(p, cfg.member("x1")) == ("로그인 구현", "## 범위\n- 로그인만")
-    assert R.history(p, "x1")[-1]["reason"] == "템플릿 dev-team"
+    assert R.history(p, "x1")[-1]["reason"] == "템플릿 x-team"
     out = capsys.readouterr().out
-    assert "템플릿 dev-team: dev-team-orch, x1, x2, xbuild" in out and "역할 상세 2개" in out
+    assert "템플릿 x-team: x-team-orch, x1, x2, xbuild" in out and "역할 상세 2개" in out
 
 
 def test_init_template_missing_and_existing_config(proj, tmp_path, capsys):
     assert not run_init_template(proj, "nope", ask=lambda q: "")
-    assert "저장된 템플릿: 없음" in capsys.readouterr().out
-    T.save("dev-team", T.build(proj, "X"))
+    assert "저장된 템플릿: debug-team, design-review-team, dev-team" in capsys.readouterr().out  # the built-ins are always there
+    T.save("x-team", T.build(proj, "X"))
     before = proj.config_path.read_text()
-    assert not run_init_template(proj, "dev-team", ask=lambda q: "n")  # keep the existing config
+    assert not run_init_template(proj, "x-team", ask=lambda q: "n")  # keep the existing config
     assert proj.config_path.read_text() == before
 
 
@@ -145,16 +149,16 @@ def login(client, proj):
 
 def test_api_save_conflict_overwrite_and_manage(client, proj):
     login(client, proj)
-    body = {"project": "projA", "tab": "X", "name": "dev-team"}
+    body = {"project": "projA", "tab": "X", "name": "x-team"}
     st, res = client.json("POST", "/api/templates", body)
-    assert st == 200 and [t["name"] for t in res["templates"]] == ["dev-team"]
+    assert st == 200 and [t["name"] for t in res["templates"] if not t["builtin"]] == ["x-team"]
     assert client.json("POST", "/api/templates", body)[0] == 409
     assert client.json("POST", "/api/templates", {**body, "overwrite": True})[0] == 200
     assert client.json("POST", "/api/templates", {**body, "name": "../evil"})[0] == 400
-    st, t = client.json("GET", "/api/templates/dev-team")
+    st, t = client.json("GET", "/api/templates/x-team")
     assert st == 200 and t["roles"]["@orch"].startswith("# 역할:")
-    assert client.json("POST", "/api/templates/dev-team/rename", {"name": "team2"})[1]["templates"][0]["name"] == "team2"
-    assert client.json("POST", "/api/templates/team2/delete", {})[1]["templates"] == []
+    assert client.json("POST", "/api/templates/x-team/rename", {"name": "team2"})[1]["templates"][0]["name"] == "team2"
+    assert not [t for t in client.json("POST", "/api/templates/team2/delete", {})[1]["templates"] if not t["builtin"]]
     assert client.json("GET", "/api/templates/team2")[0] == 400
 
 
@@ -173,3 +177,59 @@ def test_save_with_role_texts_creates_role_files(client, proj):
     assert (proj.root / "docs" / "x1.md").read_text().startswith("# 역할: 로그인 구현")
     assert client.json("PUT", "/api/project/projA/config",
                        {"data": data, "version": res["version"], "role_texts": ["x"]})[0] == 400
+
+
+# ------------------------------------------------------------ built-in templates
+BUILTINS = ["debug-team", "design-review-team", "dev-team"]
+
+
+def test_builtins_are_listed_after_user_templates(proj):
+    assert T.builtin_names() == BUILTINS
+    assert [t["name"] for t in T.list_templates()] == BUILTINS and all(t["builtin"] for t in T.list_templates())
+    T.save("x-team", T.build(proj, "X"))
+    names = [t["name"] for t in T.list_templates()]
+    assert names[0] == "x-team" and names[1:] == BUILTINS
+    assert all(t["description"] for t in T.list_templates() if t["builtin"])
+
+
+@pytest.mark.parametrize("name", BUILTINS)
+def test_builtin_starts_a_valid_project(name, tmp_path):
+    root = tmp_path / "shop"
+    root.mkdir()
+    p = Project("shop", root)
+    assert run_init_template(p, name, ask=lambda q: "", which=always_found)
+    cfg, issues = check_file(p.config_path, which=always_found)
+    assert cfg is not None and issues == []
+    t = T.load(name)
+    assert len(t["tab"]["agents"]) + 1 <= 4  # one herdr tab: orchestrator + agents fit the 2x2 grid
+    assert set(t["roles"]) == {"@orch", *t["tab"]["agents"]}  # every member has a role detail
+    for m in t["tab"]["agents"]:
+        assert R.effective_role(p, cfg.member(m))[1]
+
+
+def test_builtin_is_read_only_but_can_be_shadowed_and_restored(proj):
+    with pytest.raises(T.TemplateError, match="기본 템플릿"):
+        T.delete("dev-team")
+    with pytest.raises(T.TemplateError, match="기본 템플릿"):
+        T.rename("dev-team", "mine")
+    T.save("x-team", T.build(proj, "X"))
+    with pytest.raises(T.TemplateError, match="이미 있습니다"):
+        T.rename("x-team", "dev-team")
+    with pytest.raises(FileExistsError):
+        T.save("dev-team", T.build(proj, "X"))
+    T.save("dev-team", T.build(proj, "X"), overwrite=True, description="내 dev")
+    t = T.load("dev-team")
+    assert not t["builtin"] and t["overrides_builtin"] and t["description"] == "내 dev"
+    assert [x["name"] for x in T.list_templates()].count("dev-team") == 1
+    T.delete("dev-team")  # back to the built-in
+    assert T.load("dev-team")["builtin"]
+
+
+def test_api_builtin_protection(client, proj):
+    login(client, proj)
+    assert client.json("POST", "/api/templates/dev-team/delete", {})[0] == 400
+    st, t = client.json("GET", "/api/templates/debug-team")
+    assert st == 200 and t["builtin"] and "investigator" in t["tab"]["agents"]
+    st, res = client.json("POST", "/api/templates", {"project": "projA", "tab": "X", "name": "x-team",
+                                                     "description": "로그인 팀"})
+    assert st == 200 and res["templates"][0]["description"] == "로그인 팀"
