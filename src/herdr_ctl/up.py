@@ -155,11 +155,22 @@ def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport)
     if not wid:
         raise HerdrError("worktree_failed", f"unexpected worktree response: {res}")
     cwd = root_pane.get("cwd") or ws.get("cwd")
-    st["worktrees"][tab.name] = {"workspace_id": wid, "cwd": cwd, "branch": tab.worktree["branch"]}
+    rec = {"workspace_id": wid, "cwd": cwd, "branch": tab.worktree["branch"]}
+    base = (wt or {}).get("base") if how == "다시 열기" else base
+    if base:
+        rec["base"] = base  # what "merged?" is checked against when the tab is cleaned up
+    st["worktrees"][tab.name] = rec
     if res.get("tab"):
         h.tab_rename(res["tab"]["tab_id"], tab.display)
         st["tabs"][tab.name] = {"tab_id": res["tab"]["tab_id"], "workspace_id": wid}
     report.created_tabs.append(f"{tab.name} (worktree {tab.worktree['branch']} {how})")
+    if how == "생성":
+        try:  # this workspace has no _hc tab of its own
+            h.notify(f"hctrl: 탭 {tab.name} (worktree)",
+                     f"{tab.worktree['branch']} 브랜치의 별도 workspace입니다. 재시작·종료는 메인 workspace의 "
+                     f"_hc 탭(대상 탭을 {tab.name}로)이나 hctrl ui에서 합니다")
+        except HerdrError:
+            pass
     return wid
 
 
@@ -249,8 +260,70 @@ def brief_for(ctx: Ctx, m: Member, handoff: Path | None = None) -> Path:
     return render_agent_brief(ctx.project, ctx.cfg, m, handoff)
 
 
-def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None) -> str | None:
-    """Start agent `m` in `pane_id`. Returns None on success or an attention reason."""
+# ------------------------------------------------------------ conversations
+RESUME_ARGS = {"claude": "--resume", "opencode": "--session"}
+SESSION_ID_RE = re.compile(r"[0-9A-Za-z_-]{4,128}")
+
+
+# Conversation ids live in the private state home, not in .herdr-flow/state.json: an auto-edit agent
+# could otherwise point an orchestrator at a conversation of its choice (`--resume <id>`).
+def _sessions_path(project: Project) -> Path:
+    return project.secure_dir / "sessions.json"
+
+
+def load_sessions(project: Project) -> dict:
+    from .state import read_json
+    raw = read_json(_sessions_path(project)) or {}
+    return {k: v for k, v in raw.items() if isinstance(v, dict) and SESSION_ID_RE.fullmatch(str(v.get("id") or ""))}
+
+
+def update_sessions(project: Project, change) -> dict:
+    """change(dict) edits the {member: {agent, id, at}} record under its lock; returns the result."""
+    from .state import file_lock, write_json
+    path = _sessions_path(project)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with file_lock(path.with_suffix(".lock")):
+        rec = load_sessions(project)
+        change(rec)
+        write_json(path, rec)
+    return rec
+
+
+def live_session(ctx: Ctx, name: str) -> dict | None:
+    """The conversation a running agent is in ({agent, id}), as herdr reports it."""
+    try:
+        a = ctx.h.agent_get(name)
+    except (HerdrError, KeyError):
+        return None
+    sess = a.get("agent_session") if isinstance(a, dict) else None
+    if not isinstance(sess, dict) or not SESSION_ID_RE.fullmatch(str(sess.get("value") or "")):
+        return None
+    return {"agent": sess.get("agent"), "id": str(sess["value"]), "at": time.time()}
+
+
+def remember_sessions(ctx: Ctx, tab: TabCfg) -> None:
+    """Before a tab's agents stop: note each one's conversation, so reopening can continue it."""
+    found = {m.name: s for m in tab.members if m.is_agent and (s := live_session(ctx, m.name)) is not None}
+    if found:
+        update_sessions(ctx.project, lambda rec: rec.update(found))
+
+
+def resume_id(ctx: Ctx, m: Member, sess: dict | None) -> str | None:
+    """The conversation id to continue for `m`, when its CLI can and the record is its own kind."""
+    if not sess or m.kind not in RESUME_ARGS or sess.get("agent") not in (None, m.kind) \
+            or not SESSION_ID_RE.fullmatch(str(sess.get("id") or "")):
+        return None
+    if m.kind == "claude":
+        from .orchestrator import claude_transcript
+        if claude_transcript(sess["id"]) is None:
+            return None  # the transcript is gone: a fresh start is all that is left
+    return sess["id"]
+
+
+def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None,
+                resume: str | None = None) -> str | None:
+    """Start agent `m` in `pane_id` (continuing conversation `resume` when given).
+    Returns None on success or an attention reason."""
     h = ctx.h
     brief = brief_for(ctx, m, handoff)
     from .unattended import hook_settings
@@ -258,6 +331,8 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None) 
     settings = hook_settings(ctx, tab, m) if tab else None
     args = agent_args(m, brief if m.kind == "claude" else None, settings,
                       handoff_file=ctx.project.handoff_dir / f"{m.name}.md")
+    if resume and m.kind in RESUME_ARGS:
+        args = [RESUME_ARGS[m.kind], resume] + args
     try:
         h.agent_start(m.name, m.kind, pane_id, args)
     except HerdrError as e:
@@ -268,7 +343,7 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None) 
         ctx.state["attention"][m.name] = reason
         ctx.state["applied"][m.name] = fingerprint(ctx.project, m)
         return reason
-    if m.kind != "claude":
+    if m.kind != "claude" and not resume:  # a continued conversation already has its brief
         try:
             h.agent_prompt(m.name, f"{brief} 파일을 읽고 그 역할과 규칙을 따르세요. "
                                    "확인했으면 '준비됨'이라고만 답하세요.", wait=False)
@@ -281,9 +356,10 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None) 
     return None
 
 
-def ensure_agents(ctx: Ctx, group: TabGroup, report: UpReport) -> None:
+def ensure_agents(ctx: Ctx, group: TabGroup, report: UpReport, resume: bool = False) -> None:
     h, st = ctx.h, ctx.state
     live = {a["name"]: a for a in h.agent_list() if a.get("name")}
+    sessions = load_sessions(ctx.project) if resume else {}
     for m in group.members:
         rec = st.member(m.name)
         if not m.is_agent:
@@ -299,27 +375,31 @@ def ensure_agents(ctx: Ctx, group: TabGroup, report: UpReport) -> None:
         if not h.pane_shell_idle(rec["pane_id"]):
             report.attention[m.name] = "창에서 다른 프로그램이 실행 중이라 agent를 시작할 수 없습니다"
             continue
-        why = start_agent(ctx, m, rec["pane_id"])
+        rid = resume_id(ctx, m, sessions.get(m.name)) if resume else None
+        why = start_agent(ctx, m, rec["pane_id"], resume=rid)
         if why is None:
-            report.started.append(m.name)
+            report.started.append(m.name + (" (이전 대화 이어서)" if rid else ""))
         else:
             report.attention[m.name] = why
 
 
-def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True) -> UpReport:
+def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True, resume: bool = False) -> UpReport:
+    """Lay out and start the tab(s). `resume`: continue each agent's recorded conversation."""
     report = UpReport()
+    tabs = [ctx.cfg.tab(tab)] if tab else ctx.cfg.open_tabs
+    if tab and tabs[0] is None:
+        raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
+    if tab and tabs[0].closed:
+        raise RuntimeError(f"탭 '{tabs[0].name}'은 보관(완료)된 탭입니다. 다시 열려면: hctrl tab reopen {tabs[0].name}")
     ctx.project.ensure_dirs()
     wid = ensure_workspace(ctx)
     ensure_control(ctx, wid, start_watch)
-    tabs = [ctx.cfg.tab(tab)] if tab else ctx.cfg.tabs
-    if tab and tabs[0] is None:
-        raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
     for t in tabs:
         twid = ensure_tab_workspace(ctx, t, wid, report)
         for group in group_tab(t):
             ensure_group(ctx, group, twid, report)
             ctx.state.save()
-            ensure_agents(ctx, group, report)
+            ensure_agents(ctx, group, report, resume)
             ctx.state.save()
     ctx.state["applied_flows"] = flows_fingerprint(ctx.cfg)
     ctx.state["session"] = ctx.cfg.session
@@ -334,7 +414,7 @@ def sync_titles(ctx: Ctx) -> list[str]:
     done = []
     wids = {rec.get("workspace_id") for rec in ctx.state["tabs"].values()} - {None}
     live = {t["tab_id"]: t for wid in wids for t in ctx.h.tab_list(wid)}
-    for t in ctx.cfg.tabs:
+    for t in ctx.cfg.open_tabs:
         for group in group_tab(t):
             tab_id = (ctx.state["tabs"].get(group.label) or {}).get("tab_id")
             if tab_id in live and live[tab_id].get("label") != group.title:
@@ -355,6 +435,7 @@ def down(ctx: Ctx, tab: str | None = None, remove_worktree: bool = False) -> lis
     if tab and tabs[0] is None:
         raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
     for t in tabs:
+        remember_sessions(ctx, t)
         wt = st["worktrees"].get(t.name)
         labels = [g.label for g in group_tab(t)]
         # overflow tabs (X-2, ...) from a larger earlier config
@@ -402,12 +483,18 @@ def zoom(ctx: Ctx, name: str) -> None:
     ctx.h.pane_zoom(rec["pane_id"])
 
 
-def status(ctx: Ctx) -> list[str]:
+def status(ctx: Ctx, tab: str | None = None) -> list[str]:
     from .runner import list_runs
     h, st = ctx.h, ctx.state
     live = {a["name"]: a for a in h.agent_list() if a.get("name")}
     lines = [f"세션 {ctx.cfg.session}  (프로젝트 {ctx.project.root})"]
-    for t in ctx.cfg.tabs:
+    tabs = [ctx.cfg.tab(tab)] if tab else ctx.cfg.tabs
+    if tab and tabs[0] is None:
+        raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
+    for t in tabs:
+        if t.closed:
+            lines.append(f"[{t.name}] 보관됨 (hctrl tab reopen {t.name})")
+            continue
         for group in group_tab(t):
             lines.append(f"[{group.label}]")
             for m in group.members:

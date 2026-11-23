@@ -19,7 +19,7 @@ MAX_PANES_PER_TAB = 4
 CONTROL_TAB = "_hc"
 
 TOP_KEYS = {"session", "tabs", "flows"}
-TAB_KEYS = {"title", "cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells",
+TAB_KEYS = {"title", "cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells", "closed",
             "unattended", "unattended_policy"}
 AGENT_KEYS = {"kind", "model", "primary_agent", "role", "role_file", "permission", "args"}
 ORCH_KEYS = {"kind", "model", "primary_agent", "goal", "permission", "args"}
@@ -117,6 +117,7 @@ class TabCfg:
     unattended: str = "off"
     policy: dict = field(default_factory=lambda: dict(DEFAULT_POLICY, deny=[]))
     title: str | None = None  # herdr tab label shown on screen; `name` stays the id used by commands
+    closed: bool = False  # finished and archived: kept in config, never laid out or watched
 
     @property
     def display(self) -> str:
@@ -156,6 +157,11 @@ class Config:
     tabs: list[TabCfg]
     flows: dict[str, Flow]
     raw: dict
+
+    @property
+    def open_tabs(self) -> list[TabCfg]:
+        """Tabs that run (archived `closed: true` tabs are left out of up / watch / status)."""
+        return [t for t in self.tabs if not t.closed]
 
     def member(self, name: str) -> Member | None:
         for t in self.tabs:
@@ -484,7 +490,9 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
         tab = TabCfg(name=tname, cwd=tcwd, orchestrator=orch, agents=agents,
                      shells=shells, role_update=ru if ru in ROLE_UPDATE else "confirm",
                      worktree=wt, limits=limits, unattended=unattended, policy=policy,
-                     title=title.strip() if title else None)
+                     title=title.strip() if title else None, closed=tdata.get("closed") is True)
+        if "closed" in tdata and not isinstance(tdata["closed"], bool):
+            c.err(f"{tpath}.closed", "true 또는 false")
         if not tab.members:
             c.err(tpath, "agent나 shell이 최소 1개 필요합니다")
         # orchestrator + agents share tab X; shells get their own tab X-build (see layout.group_tab)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -36,11 +37,16 @@ class Change:
 LAYOUT_KEYS = ("type", "tab", "cwd", "tab_cwd", "worktree")
 
 
-def detect(ctx: Ctx) -> list[Change]:
+def detect(ctx: Ctx, tab: str | None = None) -> list[Change]:
+    """Config changes not applied to the running session yet (archived tabs are not watched).
+    `tab`: only that tab's members."""
     applied = ctx.state["applied"]
     changes: list[Change] = []
     names = set()
-    for t in ctx.cfg.tabs:
+    for t in ctx.cfg.open_tabs:
+        if tab is not None and t.name.lower() != tab.lower():
+            names.update(m.name for m in t.members)
+            continue
         for m in t.members:
             names.add(m.name)
             old = applied.get(m.name)
@@ -63,9 +69,10 @@ def detect(ctx: Ctx) -> list[Change]:
             elif m.is_agent and old.get("role") != new.get("role"):
                 changes.append(Change(m.name, "role", "역할 변경"))
     for name in applied:
-        if name not in names:
+        was = (ctx.state.member(name) or {}).get("tab")
+        if name not in names and (tab is None or (was or "").lower() == tab.lower()):
             changes.append(Change(name, "remove", "설정에서 삭제됨"))
-    if ctx.state.get("applied_flows") and ctx.state["applied_flows"] != flows_fingerprint(ctx.cfg):
+    if tab is None and ctx.state.get("applied_flows") and ctx.state["applied_flows"] != flows_fingerprint(ctx.cfg):
         changes.append(Change("flows", "flow", "flow 변경 (다음 hctrl run부터 적용)"))
     return changes
 
@@ -161,7 +168,10 @@ def _wait_shell(ctx: Ctx, pane: str, timeout_s: float = 20.0) -> bool:
 
 
 def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True,
-            timeout_s: float = 1800) -> str:
+            timeout_s: float = 1800, resume: bool = False) -> str:
+    """Stop agent `name` and start it again in the same pane with the current config.
+    resume: continue the same conversation (reloads skills/MCP/settings, keeps the context); when the
+    agent's CLI cannot, falls back to a handoff (or a fresh start with handoff=False)."""
     m = ctx.cfg.member(name)
     if m is None or not m.is_agent:
         raise KeyError(f"'{name}'는 설정된 agent가 아닙니다")
@@ -181,9 +191,13 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
             st = (res.get("agent") or {}).get("agent_status")
             if st == "blocked":
                 raise RuntimeError(f"'{name}'가 승인 대기 중이라 재시작하지 않습니다")
+        from .up import live_session, resume_id, update_sessions
+        rid = resume_id(ctx, m, live_session(ctx, name)) if resume and st is not None else None
+        if rid:
+            update_sessions(ctx.project, lambda rec: rec.update({name: {"agent": m.kind, "id": rid, "at": time.time()}}))
         handoff_path = None
         hp = (ctx.project.handoff_dir / f"{name}.md").resolve()
-        if handoff and st is not None:
+        if handoff and st is not None and not rid:
             ctx.project.handoff_dir.mkdir(parents=True, exist_ok=True)
             handoff_path = hp
             # an earlier handoff of this agent: it may answer "already written, nothing changed"
@@ -212,23 +226,27 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
         if not ctx.h.pane_shell_idle(pane):
             raise RuntimeError(f"'{name}' 창이 쉘 프롬프트로 돌아오지 않았습니다")
         _wait_agent_gone(ctx, name)
-        why = start_agent(ctx, m, pane, handoff_path)
+        why = start_agent(ctx, m, pane, handoff_path, resume=rid)
         if why and why.startswith("시작 실패"):  # one more try: herdr may still be settling the pane
             _sleep(2.0)
             if ctx.h.pane_shell_idle(pane):
                 _wait_agent_gone(ctx, name)
-                why = start_agent(ctx, m, pane, handoff_path)
+                why = start_agent(ctx, m, pane, handoff_path, resume=rid)
         ctx.state.save()
         if why and why.startswith("시작 실패"):
             raise RuntimeError(f"'{name}' {why}. 창은 쉘 상태입니다. 다시 반영하면 "
                                + ("이미 써 둔 인수인계 파일로 " if handoff_path else "") + "시작합니다")
     finally:
         release(ctx.project, name, "restart")
-    _tell_orchestrator(ctx, m, f"[hctrl] '{name}'가 새 설정으로 재시작됐습니다." +
+    _tell_orchestrator(ctx, m, f"[hctrl] '{name}'가 " + ("같은 대화로 다시 시작됐습니다 (설정·skill·MCP 다시 불러옴)."
+                                                         if rid else "새 설정으로 재시작됐습니다.") +
                        (f" 인수인계: {handoff_path}" if handoff_path else ""))
+    how = " (대화 유지)" if rid else (f" (인수인계 {handoff_path.name})" if handoff_path else "")
+    if resume and not rid and st is not None:
+        how += " — 이어 갈 대화를 찾지 못해 " + ("인수인계로 새로 시작" if handoff_path else "새로 시작")
     if why:
         return f"{name}: 재시작했지만 확인 필요 — {why}"
-    return f"{name}: 재시작 완료" + (f" (인수인계 {handoff_path.name})" if handoff_path else "")
+    return f"{name}: 재시작 완료{how}"
 
 
 def _stop_agent(ctx: Ctx, name: str, pane: str) -> None:
@@ -298,7 +316,7 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
         return restart(ctx, ch.name, handoff=False)
     if action == "add":
         m = ctx.cfg.member(ch.name)
-        rep = up(ctx, tab=m.tab, start_watch=False)
+        rep = up(ctx, tab=m.tab, start_watch=False, resume=True)  # a closed tab continues its conversations
         return f"{ch.name}: 추가됨 — " + "; ".join(rep.lines())
     if action == "remove":
         return remove_member(ctx, ch.name)
@@ -368,8 +386,25 @@ def watch_once(project, h, last_sig: str | None, which=None) -> tuple[str, list[
     return sig, changes, None
 
 
-MENU = "[s] 설정 열기(브라우저)   [c] 변경 반영   [t] 상태   [p] 답을 기다리는 질문"
+MENU_LINES = ("[Tab] 대상 탭 바꾸기  [s] 설정  [c] 변경 반영  [t] 상태  [p] 질문",
+              "[r] 재시작  [x] 탭 종료  [o] 탭 열기  [k] 정리  [d] 삭제  [?] 도움말")
+MENU = "  ".join(MENU_LINES)
 MENU_COMMANDS = {"c": ["changes"], "t": ["status"], "p": ["pending"]}
+HELP = """\
+[hctrl] _hc 메뉴 도움말 — 맨 위 '대상'이 지금 고른 탭입니다. 키는 그 탭에만 적용됩니다.
+  [Tab] / 숫자   대상 탭 바꾸기 (0 = 전체). worktree 탭(별도 workspace)도 여기서 고릅니다.
+  [s] 설정 화면(브라우저)   [c] 변경 반영   [t] 상태   [p] 답을 기다리는 질문
+  [r] 재시작: 탭 전체 또는 agent 하나. 기본은 같은 대화로 이어서(설정·skill·MCP 다시 불러옴),
+      [f]를 고르면 인수인계 파일을 남기고 새 대화로 시작
+  [x] 탭 종료:
+      1) 잠시 닫기   창만 닫음. 설정은 그대로, 나중에 [o]로 다시 열기
+      2) 완료(보관)  창을 닫고 보관함으로. 변경 알림 없음, 다시 생기지 않음
+      3) 삭제        설정에서 탭 제거 (작업 파일은 물어보고 지움)
+      worktree 폴더는 기준 브랜치(main 등)에 모두 병합됐을 때만 지우고, 아니면 알려 줍니다.
+      브랜치와 커밋은 병합되지 않았으면 지우지 않습니다.
+  [o] 닫힌·보관된 탭 다시 열기 (이전 대화 이어서 / 새로)
+  [k] 보관된 탭의 작업 파일 정리   [d] 보관된 탭 삭제
+"""
 
 
 class TtyKeys:
@@ -414,26 +449,256 @@ class TtyKeys:
             self._no_flow_control()
 
 
-class Menu:
-    """Key actions of the _hc tab. The _hc pane is the user's (never an agent's), so it may open the UI."""
+def _width(text: str) -> int:
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
 
-    def __init__(self, project, cooked=None, run: Callable[[list[str]], int] = subprocess.call):
+
+def _clip(text: str, cols: int) -> str:
+    out, w = [], 0
+    for ch in text:
+        cw = _width(ch)
+        if w + cw > cols:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
+class Menu:
+    """Key actions of the _hc tab. The _hc pane is the user's (never an agent's), so it may open the UI.
+
+    Keys act on the target tab shown in the header ("전체" = every tab). With `fixed`, the header stays
+    pinned at the top of the pane (a terminal scroll region keeps command output below it)."""
+
+    def __init__(self, project, cooked=None, run: Callable[[list[str]], int] = subprocess.call,
+                 fixed: bool = False, ask: Callable[[str], str] = input):
         self.project = project
         self.cooked = cooked
         self.run = run
         self.ui = None
+        self.fixed = fixed
+        self.ask = ask
+        self.target: str | None = None  # None: every tab
+        self._shown: tuple | None = None
+        self._esc = 0  # inside an escape sequence (arrow keys arrive as ESC [ C, one byte at a time)
+        self._set_default_target()
+
+    # ---------------------------------------------------------- target tab
+    def tabs(self) -> list[dict]:
+        """[{name, closed, running, worktree, changes}] from the saved config and state (no herdr call)."""
+        cfg, _ = check_file(self.project.config_path, which=lambda _k: "found")
+        if cfg is None:
+            return []
+        st = State(self.project)
+        pending = load_pending(self.project)
+        out = []
+        for t in cfg.tabs:
+            names = {m.name for m in t.members}
+            running = any((st.member(n) or {}).get("pane_id") for n in names)
+            out.append({"name": t.name, "closed": t.closed, "running": running,
+                        "worktree": (t.worktree or {}).get("branch"),
+                        "changes": sum(1 for c in pending if c.get("name") in names)})
+        return out
+
+    def _set_default_target(self) -> None:
+        tabs = self.tabs()
+        self.target = tabs[0]["name"] if len(tabs) == 1 else None
+
+    def cycle(self, step: int = 1) -> None:
+        names = [None] + [t["name"] for t in self.tabs()]
+        i = names.index(self.target) if self.target in names else 0
+        self.target = names[(i + step) % len(names)]
+
+    def pick(self, n: int) -> None:
+        tabs = self.tabs()
+        if n == 0:
+            self.target = None
+        elif n <= len(tabs):
+            self.target = tabs[n - 1]["name"]
+
+    def header_lines(self) -> list[str]:
+        tabs = self.tabs()
+        names = [t["name"] for t in tabs]
+        if self.target not in names:
+            self.target = None
+        if self.target is None:
+            run = sum(1 for t in tabs if t["running"] and not t["closed"])
+            arch = sum(1 for t in tabs if t["closed"])
+            info = f"탭 {len(tabs)}개 · 실행 {run}" + (f" · 보관 {arch}" if arch else "")
+            head = f"대상: ◀ [전체] ▶  {info}"
+        else:
+            t = tabs[names.index(self.target)]
+            state = "■ 보관됨" if t["closed"] else ("● 실행 중" if t["running"] else "○ 닫힘")
+            bits = [state] + ([f"worktree {t['worktree']}"] if t["worktree"] else []) \
+                + ([f"변경 {t['changes']}건"] if t["changes"] else [])
+            head = f"대상: ◀ [{names.index(self.target) + 1}/{len(names)}] {self.target} ▶  " + " · ".join(bits)
+        return [head, *MENU_LINES]
+
+    def draw(self, force: bool = False) -> None:
+        lines = self.header_lines()
+        key = (tuple(lines), shutil.get_terminal_size().lines if self.fixed else 0)
+        if key == self._shown and not force:
+            return
+        self._shown = key
+        if not self.fixed:
+            print("\n".join(lines), flush=True)
+            return
+        size = shutil.get_terminal_size()
+        rows, cols = size.lines, size.columns
+        top = len(lines) + 1  # + a rule under the header
+        out = ["\x1b7", "\x1b[r"]  # save cursor, whole screen scrolls while drawing
+        for i, line in enumerate(lines + ["─" * cols]):
+            out.append(f"\x1b[{i + 1};1H\x1b[2K{_clip(line, cols)}")
+        out.append(f"\x1b[{top + 1};{rows}r\x1b8")  # only the lines below the header scroll
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def start(self) -> None:
+        if self.fixed:
+            top = len(self.header_lines()) + 2
+            sys.stdout.write(f"\x1b[2J\x1b[{top};1H")
+        self.draw(force=True)
+
+    def stop(self) -> None:
+        if self.fixed:
+            sys.stdout.write("\x1b[r")
+            sys.stdout.flush()
+
+    # --------------------------------------------------------------- keys
+    def _hctrl(self, *args: str) -> int:
+        cmd = hc_command() + ["--project", str(self.project.root)] + list(args)
+        with self.cooked() if self.cooked else nullcontext():
+            return self.run(cmd)
+
+    def _input(self, prompt: str) -> str:
+        with self.cooked() if self.cooked else nullcontext():
+            try:
+                return self.ask(prompt).strip().lower()
+            except EOFError:
+                return ""
+
+    def _need_tab(self) -> dict | None:
+        tabs = {t["name"]: t for t in self.tabs()}
+        if self.target is None or self.target not in tabs:
+            print("[hctrl] 대상 탭을 먼저 고르세요: [Tab] 또는 숫자 키", flush=True)
+            return None
+        return tabs[self.target]
+
+    def _escape(self, key: str) -> bool:
+        """Swallow escape sequences; ←/→ move the target tab. True when the key was part of one."""
+        if key == "\x1b":
+            self._esc = 1
+            return True
+        if self._esc == 1:
+            self._esc = 2 if key in "[O" else 0
+            return True
+        if self._esc == 2:
+            if key.isdigit() or key == ";":  # parameters, e.g. ESC [ 1 ; 5 C
+                return True
+            self._esc = 0
+            if key in "CD":
+                self.cycle(1 if key == "C" else -1)
+                self.draw(force=self.fixed)
+            return True
+        return False
 
     def handle(self, key: str) -> None:
-        key = key.lower()
-        if key == "s":
-            self.settings()
-        elif key in MENU_COMMANDS:
-            cmd = hc_command() + ["--project", str(self.project.root)] + MENU_COMMANDS[key]
-            with self.cooked() if self.cooked else nullcontext():
-                self.run(cmd)
-        else:
+        if not key or self._escape(key):
             return
-        print(MENU, flush=True)
+        if key == "\t":
+            self.cycle()
+        elif key.isdigit():
+            self.pick(int(key))
+        elif key == "?":
+            print(HELP, flush=True)
+        else:
+            key = key.lower()
+            if key == "s":
+                self.settings()
+            elif key in MENU_COMMANDS:
+                extra = []
+                if self.target is not None:
+                    extra = ["--tab", self.target] if key == "c" else ([self.target] if key == "t" else [])
+                self._hctrl(*MENU_COMMANDS[key], *extra)
+            elif key in "rxokd":
+                getattr(self, {"r": "restart", "x": "finish", "o": "reopen", "k": "clean", "d": "delete"}[key])()
+            else:
+                return
+        if self.fixed:
+            self.draw(force=True)
+        else:
+            print(MENU, flush=True)
+            self.draw()
+
+    def restart(self) -> None:
+        t = self._need_tab()
+        if t is None:
+            return
+        if t["closed"] or not t["running"]:
+            print(f"[hctrl] '{t['name']}' 탭은 실행 중이 아닙니다. [o]로 여세요", flush=True)
+            return
+        who = self._input(f"재시작: [Enter] 탭 '{t['name']}' 전체, 또는 agent 이름 > ")
+        how = self._input("[Enter] 같은 대화로 이어서 (설정·skill·MCP 다시 불러옴)  [f] 새 대화 (인수인계) > ")
+        target = ["--tab", t["name"]] if not who else [who]
+        self._hctrl("restart", *target, *(["--fresh"] if how == "f" else []))
+
+    def finish(self) -> None:
+        t = self._need_tab()
+        if t is None:
+            return
+        if t["closed"]:
+            print(f"[hctrl] '{t['name']}'은 이미 보관된 탭입니다: [o] 열기  [k] 파일 정리  [d] 삭제", flush=True)
+            return
+        ans = self._input(f"'{t['name']}' 탭 종료: [1] 잠시 닫기  [2] 완료(보관)  [3] 삭제  [Enter] 취소 > ")
+        wt = []
+        if ans in ("2", "3") and t["worktree"]:
+            if self._input(f"worktree({t['worktree']}) 폴더도 정리할까요? 병합됐을 때만 지웁니다 [y/N] > ") == "y":
+                wt = ["--remove-worktree"]
+        if ans == "1":
+            self._hctrl("down", t["name"])
+        elif ans == "2":
+            self._hctrl("down", t["name"], "--archive", *wt)
+        elif ans == "3":
+            files = self._input("작업 파일(work/, 인수인계, 실행 기록, 역할 파일)도 지울까요? [y/N] > ") == "y"
+            self._hctrl("tab", "delete", t["name"], *(["--clean"] if files else []), *wt)
+        else:
+            print("[hctrl] 취소했습니다", flush=True)
+
+    def reopen(self) -> None:
+        t = self._need_tab()
+        if t is None:
+            return
+        if t["running"] and not t["closed"]:
+            print(f"[hctrl] '{t['name']}' 탭은 이미 실행 중입니다", flush=True)
+            return
+        fresh = self._input("[Enter] 이전 대화 이어서  [f] 새로 시작 > ") == "f"
+        self._hctrl("tab", "reopen", t["name"], *(["--fresh"] if fresh else []))
+
+    def _archived(self) -> dict | None:
+        t = self._need_tab()
+        if t is not None and not t["closed"]:
+            print(f"[hctrl] 보관된 탭에서만 씁니다. 먼저 [x] → 2) 완료(보관)", flush=True)
+            return None
+        return t
+
+    def clean(self) -> None:
+        t = self._archived()
+        if t is None:
+            return
+        ans = self._input("정리할 항목: [Enter] 전부  또는 work handoff runs roles sessions worktree (공백 구분) > ")
+        items = ["--all"] if not ans else [f"--{w}" for w in ans.split()
+                                            if w in ("work", "handoff", "runs", "roles", "sessions", "worktree")]
+        if items:
+            self._hctrl("tab", "clean", t["name"], *items)
+
+    def delete(self) -> None:
+        t = self._archived()
+        if t is None:
+            return
+        files = self._input("작업 파일도 지울까요? [y/N] > ") == "y"
+        wt = ["--remove-worktree"] if t["worktree"] else []
+        self._hctrl("tab", "delete", t["name"], *(["--clean"] if files else []), *wt)
 
     def settings(self) -> None:
         from . import __version__, update
@@ -529,8 +794,10 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
     sig = _signature(project)
     notified: str | None = None
     n = 0
+    if keys is not None and menu is not None:
+        menu.start()
     print(f"[hctrl watch] {project.flow_dir} 감시 중 (간격 {interval}s)", flush=True)
-    if keys is not None:
+    if keys is not None and menu is None:
         print(MENU, flush=True)
     update_seen, update_at = None, -UPDATE_POLL_S  # interactive _hc only: new-version notice (cache read, no network)
     upgrade_told: str | None = None
@@ -543,6 +810,8 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
             update_seen = _update_notice(h, update_seen)
         _pause(interval, keys, menu)
         sig2, changes, err = watch_once(project, h, sig)
+        if menu is not None:
+            menu.draw()  # header: target tab state and its pending changes
         if changes is None:
             continue
         sig = sig2

@@ -460,6 +460,10 @@ class UIServer:
                 return self.get_changes(project)
             if rest == ["apply"] and method == "POST":
                 return self.apply_changes(project, body)
+            if rest == ["tabs"] and method == "GET":
+                return self.tab_status(project)
+            if len(rest) == 3 and rest[0] == "tab" and method == "POST":
+                return self.tab_action(project, rest[1], rest[2], body or {})
             if len(rest) == 2 and rest[0] == "role":
                 if method == "GET":
                     return self.get_role(project, rest[1])
@@ -702,6 +706,91 @@ class UIServer:
                 remaining.append(ch)
         save_pending(project, remaining)
         return {"results": results, **self.get_changes(project)}
+
+    # ---- finishing / reopening / restarting a tab (tabops.py, same as hctrl down/tab/restart)
+    def tab_status(self, project: Project) -> dict:
+        """Per tab: archived?, open windows?, agents and their live status (when the session runs)."""
+        cfg, _ = check_file(project.config_path, which=self.which)
+        if cfg is None:
+            return {"running": False, "tabs": {}}
+        from .up import load_sessions
+        running = cfg.session in self.running_sessions()
+        st = State(project)
+        sessions = load_sessions(project)
+        live = {}
+        if running:
+            try:
+                live = {a["name"]: a.get("agent_status") for a in self.herdr(cfg.session).agent_list() if a.get("name")}
+            except HerdrError:
+                live = {}
+        tabs = {}
+        for t in cfg.tabs:
+            members = [{"name": m.name, "type": m.type,
+                        "status": (live.get(m.name) or ("창 있음" if st.member(m.name) else None)) if m.is_agent
+                        else ("창 있음" if st.member(m.name) else None)} for m in t.members]
+            tabs[t.name] = {"closed": t.closed, "open": any(st.member(m.name) for m in t.members),
+                            "worktree": (st["worktrees"].get(t.name) or {}).get("branch"),
+                            "sessions": sorted(n for n in sessions if n in {m.name for m in t.members}),
+                            "members": members}
+        return {"running": running, "tabs": tabs}
+
+    def _tab_ctx(self, project: Project):
+        from .up import Ctx
+        cfg, issues = check_file(project.config_path, which=self.which)
+        if cfg is None or any(i.level == "error" for i in issues):
+            raise ApiError(409, "저장된 설정에 오류가 있습니다 (먼저 고쳐서 저장하세요)")
+        return Ctx(project, cfg, self.herdr(cfg.session), State(project))
+
+    def tab_action(self, project: Project, tab: str, action: str, body: dict) -> dict:
+        from . import tabops as T
+        ctx = self._tab_ctx(project)
+        t = ctx.cfg.tab(tab)
+        if t is None:
+            raise ApiError(404, f"탭 '{tab}'이 저장된 설정에 없습니다")
+        items = [i for i in (body.get("items") or []) if i in T.CLEAN_ITEMS]
+        worktree = body.get("worktree") or "keep"
+        if worktree not in ("keep", "remove", "force"):
+            raise ApiError(400, "worktree는 keep/remove/force 중 하나")
+        live = ctx.cfg.session in self.running_sessions()
+        try:
+            if action == "plan":  # what clean/delete would remove, and the worktree's merge state
+                info = T.worktree_info(ctx, t)
+                return {"files": T.clean_plan(ctx, t, items or T.CLEAN_ITEMS), "worktree": info,
+                        "worktree_summary": T.worktree_summary(info) if info else None}
+            if action in ("finish", "reopen", "restart") and not live and not (action == "finish" and t.closed):
+                raise ApiError(409, "세션이 실행 중이 아닙니다 (hctrl로 프로젝트를 연 뒤 다시 하세요)")
+            if action == "finish":
+                mode = body.get("mode")
+                if mode not in T.MODES:
+                    raise ApiError(400, "mode는 close/archive/delete 중 하나")
+                lines = T.finish(ctx, t.name, mode, worktree, body.get("delete_branch", True) is not False, items)
+            elif action == "reopen":
+                lines = T.reopen(ctx, t.name, resume=body.get("resume", True) is not False)
+            elif action == "restart":
+                from .watch import restart
+                resume = body.get("resume", True) is not False
+                name = body.get("name")
+                if name:
+                    m = ctx.cfg.member(str(name))
+                    if m is None or m.tab != t.name or not m.is_agent:
+                        raise ApiError(400, f"탭 '{t.name}'의 agent가 아닙니다: {name}")
+                    lines = [restart(ctx, m.name, resume=resume)]
+                else:
+                    lines = T.restart_tab(ctx, t.name, resume=resume)
+            elif action == "clean":
+                lines = T.clean(ctx, t, items)
+                if worktree != "keep":
+                    lines += T.remove_worktree(ctx, t, force=worktree == "force",
+                                               delete_branch=body.get("delete_branch", True) is not False)
+            else:
+                raise ApiError(404, "없는 동작입니다")
+        except T.WorktreeNotMerged as e:
+            return {"ok": False, "worktree": e.info, "error": str(e)}
+        except (T.TabOpError, RuntimeError, KeyError, HerdrError, LockBusy) as e:
+            raise ApiError(409, e.args[0] if isinstance(e, KeyError) and e.args else str(e)) from e
+        text = project.config_path.read_text() if project.config_path.exists() else None
+        return {"ok": True, "lines": lines, "version": digest(text) if text is not None else None,
+                **self.tab_status(project)}
 
     def _member(self, project: Project, name: str):
         cfg, _ = check_file(project.config_path, which=self.which)

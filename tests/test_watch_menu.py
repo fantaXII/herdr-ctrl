@@ -21,7 +21,7 @@ def test_keys_dispatch_while_polling(project, monkeypatch, capsys):
     menu = W.Menu(project, run=lambda cmd: ran.append(cmd[-1]) or 0)
     settings = []
     monkeypatch.setattr(menu, "settings", lambda: settings.append(1))
-    W.watch_loop(project, FakeHerdr(), interval=0.01, iterations=3, keys=scripted_keys("c", "t", "x", "P", "s"),
+    W.watch_loop(project, FakeHerdr(), interval=0.3, iterations=3, keys=scripted_keys("c", "t", "x", "P", "s"),
                  menu=menu)
     assert ran == ["changes", "status", "pending"] and settings == [1]
     assert len(polls) == 3  # change detection kept running
@@ -178,3 +178,60 @@ def test_settings_reuses_ui_when_disk_version_matches(project, monkeypatch):
         assert menu.ui is server and len(opened) == 2
     finally:
         menu.close()
+
+
+# ------------------------------------------------------- target tab in the header
+def test_target_tab_scopes_menu_commands(project):
+    ran = []
+    answers = iter(["", "f", "2"])
+    menu = W.Menu(project, run=lambda cmd: ran.append(cmd[cmd.index("--project") + 2:]) or 0,
+                  ask=lambda prompt: next(answers))
+    assert menu.target is None and "[전체]" in menu.header_lines()[0]
+    menu.handle("c")
+    assert ran[-1] == ["changes"]  # every tab, as before
+    menu.handle("\t")
+    assert menu.target == "X" and "[1/2] X" in menu.header_lines()[0]
+    menu.handle("c")
+    menu.handle("t")
+    assert ran[-2:] == [["changes", "--tab", "X"], ["status", "X"]]
+    menu.handle("2")
+    assert menu.target == "Y"
+    menu.handle("0")
+    assert menu.target is None
+    menu.handle("1")
+    menu.handle("r")  # not running: nothing is run
+    assert ran[-1] == ["status", "X"]
+
+
+def test_finish_and_reopen_keys_build_tab_commands(project, monkeypatch):
+    ran = []
+    answers = iter(["2", "", "f"])
+    menu = W.Menu(project, run=lambda cmd: ran.append(cmd[cmd.index("--project") + 2:]) or 0,
+                  ask=lambda prompt: next(answers))
+    monkeypatch.setattr(menu, "tabs", lambda: [{"name": "X", "closed": False, "running": True, "worktree": None,
+                                                "changes": 0}])
+    menu.target = "X"
+    menu.handle("x")
+    assert ran[-1] == ["down", "X", "--archive"]
+    menu.handle("r")
+    assert ran[-1] == ["restart", "--tab", "X", "--fresh"]
+
+
+def test_help_explains_the_keys(project, capsys):
+    W.Menu(project).handle("?")
+    out = capsys.readouterr().out
+    assert "잠시 닫기" in out and "완료(보관)" in out and "병합" in out
+
+
+def test_arrow_keys_move_the_target_and_run_nothing(project):
+    ran = []
+    menu = W.Menu(project, run=lambda cmd: ran.append(cmd) or 0)
+    for k in "\x1b[C":
+        menu.handle(k)
+    assert menu.target == "X"
+    for k in "\x1b[D\x1b[D":
+        menu.handle(k)
+    assert menu.target == "Y"
+    for k in "\x1b[1;5C":  # ctrl+→: parameters are swallowed too
+        menu.handle(k)
+    assert ran == [] and menu.target is None

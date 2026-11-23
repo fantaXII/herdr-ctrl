@@ -473,14 +473,22 @@ x2: model sonnet → opus  (재시작 필요)
 | flow만 변경 | 다음 `hctrl run`부터 적용 (알림만) |
 | 쉘 창, 탭 `cwd`/`worktree`, 소속 탭 변경 | 창을 다시 배치해야 함 (`hctrl down X && hctrl up X`). `[k] 확인`으로 알림을 지움 |
 
-재시작(`hctrl restart x1`)은 다음 순서로 진행됩니다.
+변경 반영의 재시작(`[r]`)은 다음 순서로 진행됩니다.
 
 1. 작업 중이면 끝날 때까지 기다립니다.
 2. 기존 agent가 지금까지의 작업을 `handoff/x1.md`에 요약합니다.
 3. 같은 창, 같은 이름으로 새 설정의 agent를 띄웁니다.
 4. 새 agent에게 새 역할과 인수인계 파일을 전달합니다.
 
-재시작하면 대화 맥락은 사라지지만, 인수인계 파일 덕분에 이어서 작업할 수 있습니다. 인수인계를 생략하려면 `--no-handoff`를 붙입니다. orchestrator에게도 재시작 사실이 자동으로 전달됩니다.
+재시작하면 대화 맥락은 사라지지만, 인수인계 파일 덕분에 이어서 작업할 수 있습니다. 인수인계를 생략하려면 `[f]`(명령으로는 `--no-handoff`)를 고릅니다. orchestrator에게도 재시작 사실이 자동으로 전달됩니다.
+
+**직접 재시작 (skill·MCP를 바꿨을 때 등)**: `hctrl restart x1`은 기본으로 **같은 대화를 이어서** 다시 시작합니다(claude `--resume`, opencode `--session`). 설정·skill·MCP를 다시 불러오면서 지금까지의 대화가 그대로 남습니다. 이어 갈 대화를 찾지 못하면 인수인계 후 새로 시작합니다.
+
+```bash
+hctrl restart x1             # 같은 대화로 이어서 (기본)
+hctrl restart x1 --fresh     # 인수인계 파일을 남기고 새 대화로
+hctrl restart --tab X        # 탭 X 전체 (작업 agent 먼저, orchestrator 마지막)
+```
 
 설정에 오류가 있으면 반영하지 않고 오류만 알립니다.
 
@@ -514,9 +522,34 @@ hctrl up           # 설정된 모든 탭/창/agent 생성 (이미 있으면 건
 hctrl up X         # 탭 X만
 hctrl status       # 탭별 agent 상태: idle / working / blocked / done / unknown
 hctrl zoom x2      # x2 창만 크게 보기 (한 번 더 실행하면 분할 화면으로 복귀)
-hctrl down X       # 탭 X의 agent와 창 정리
+hctrl down X       # 탭 X의 agent와 창 닫기 (설정은 그대로, 다시 열기: hctrl tab reopen X)
 hctrl tab rename X login   # 탭 ID 변경 (창과 agent는 그대로)
 ```
+
+### 탭 끝내기: 잠시 닫기 / 완료(보관) / 삭제
+
+| | 창 | config의 탭 | 작업 파일 (`work/<탭>/`, 인수인계, 실행 기록, 역할 파일) | worktree 폴더 | 브랜치 |
+|---|---|---|---|---|---|
+| 잠시 닫기 `hctrl down X` | 닫음 | 그대로 | 그대로 | 그대로 | 그대로 |
+| 완료(보관) `hctrl down X --archive` | 닫음 | `closed: true` | 그대로 | `--remove-worktree`일 때 정리 | 병합됐으면 삭제, 아니면 유지 |
+| 삭제 `hctrl tab delete X` | 닫음 | 제거 (이 탭의 flow와 단계도) | `--clean`일 때만 삭제 | `--remove-worktree`일 때 정리 | 병합됐으면 삭제, 아니면 유지 |
+
+- **보관된 탭**은 `hctrl up`과 변경 감시에서 빠집니다(알림 없음, 다시 생기지 않음). 다시 열기: `hctrl tab reopen X` (기본은 닫을 때 기록한 대화를 이어서, `--fresh`는 새로).
+- **나중에 정리**: `hctrl tab clean X --all` (또는 `--work --handoff --runs --roles --sessions --worktree` 중 골라서). 지우기 전에 목록과 크기를 보여 주고 확인합니다.
+- **worktree 폴더는 기준 브랜치(`worktree.base`, 없으면 만들 때의 브랜치)에 모두 병합됐을 때만** 지웁니다. 커밋 안 된 파일이 있거나 병합 안 된 커밋이 있으면(squash·rebase 병합도 인정) 지우지 않고 목록을 보여 줍니다. 그래도 지우려면 `--force-worktree` (브랜치는 남김).
+- 설정 화면에서는 탭 화면 맨 위 **실행 제어** 카드의 [■ 탭 종료] / [↻ 재시작 ▾] / [▶ 탭 열기]로 같은 일을 합니다. 보관된 탭은 왼쪽 메뉴 **보관된 탭** 묶음에 있습니다.
+
+### _hc 탭 메뉴 (대상 탭)
+
+`_hc` 탭 맨 위에는 지금 고른 **대상 탭**이 항상 보입니다. 키는 그 탭에만 적용되고, worktree 탭(별도 workspace)도 여기서 고릅니다.
+
+```
+대상: ◀ [2/3] login ▶  ● 실행 중 · worktree feat/login · 변경 1건
+[Tab] 대상 탭 바꾸기  [s] 설정  [c] 변경 반영  [t] 상태  [p] 질문  [r] 재시작  [x] 탭 종료  [o] 탭 열기  [?] 도움말
+```
+
+- `[Tab]`이나 숫자 키로 대상을 바꿉니다(`0` = 전체). `[?]`를 누르면 키 설명이 나옵니다.
+- 보관된 탭이 대상이면 `[o]` 열기, `[k]` 작업 파일 정리, `[d]` 삭제를 씁니다.
 
 ## 4. 파이프라인 정의와 실행
 

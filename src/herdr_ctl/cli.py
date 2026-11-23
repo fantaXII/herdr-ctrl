@@ -302,15 +302,124 @@ def cmd_up(args) -> int:
     return 0
 
 
+def _worktree_mode(args) -> str:
+    return "force" if getattr(args, "force_worktree", False) else (
+        "remove" if getattr(args, "remove_worktree", False) else "keep")
+
+
+def _ask_unmerged(e) -> str | None:
+    """A worktree with work not in its base: keep it (default), remove anyway, or cancel."""
+    print(str(e))
+    if not tty():
+        raise Fail(str(e) + "\n  worktree는 그대로 두려면 --remove-worktree 없이, 그래도 지우려면 --force-worktree")
+    ans = input("  [k] worktree는 남기고 진행 (기본)  [f] 그래도 삭제 (브랜치는 유지)  [c] 취소 > ").strip().lower()
+    if ans == "c":
+        return None
+    if ans == "f":
+        if input("  정말 지울까요? 병합 안 된 커밋은 브랜치에 남지만 커밋 안 된 파일은 사라집니다 [y/N] > ").strip().lower() == "y":
+            return "force"
+        return None
+    return "keep"
+
+
+def _finish_tab(ctx, tab: str, mode: str, worktree: str, items=(), delete_branch: bool = True) -> int:
+    from .tabops import WorktreeNotMerged, finish
+    try:
+        lines = finish(ctx, tab, mode, worktree, delete_branch, items)
+    except WorktreeNotMerged as e:
+        worktree = _ask_unmerged(e)
+        if worktree is None:
+            print("취소했습니다")
+            return 1
+        lines = finish(ctx, tab, mode, worktree, delete_branch, items)
+    for line in lines:
+        print(line)
+    return 0
+
+
 def cmd_down(args) -> int:
     from .up import down
     ctx = load_ctx(args)
     guard(ctx, current_actor(ctx), "down")
-    closed = down(ctx, tab=args.tab, remove_worktree=args.remove_worktree)
+    if args.tab is not None:
+        return _finish_tab(ctx, args.tab, "archive" if args.archive else "close", _worktree_mode(args))
+    if args.archive:
+        raise Fail("보관할 탭을 지정하세요: hctrl down <탭> --archive")
+    closed = down(ctx)
     print("정리: " + (", ".join(closed) or "없음"))
+    if args.remove_worktree or args.force_worktree:
+        from .tabops import WorktreeNotMerged, remove_worktree
+        for t in ctx.cfg.tabs:
+            try:
+                for line in remove_worktree(ctx, t, force=args.force_worktree):
+                    print(line)
+            except WorktreeNotMerged as e:
+                print(f"{e} — 남겨 둠 (지우려면 hctrl down {t.name} --force-worktree)")
     if args.stop_session and args.tab is None:
         ctx.h.session_stop(ctx.cfg.session)
         print(f"세션 '{ctx.cfg.session}' 정지")
+    return 0
+
+
+def _clean_items(args) -> list[str]:
+    from .tabops import CLEAN_ITEMS
+    if args.all:
+        return list(CLEAN_ITEMS)
+    return [it for it in CLEAN_ITEMS if getattr(args, it, False)]
+
+
+def _confirm_plan(ctx, tab, items, yes: bool, what: str) -> bool:
+    from .tabops import CLEAN_LABELS, clean_plan, worktree_info, worktree_summary
+    plan = clean_plan(ctx, tab, items)
+    for row in plan:
+        print(f"  {CLEAN_LABELS[row['item']]:<14} {row['path']}" + (f"  ({row['bytes']:,} B)" if row["bytes"] else ""))
+    info = worktree_info(ctx, tab)
+    if info is not None:
+        print(f"  {'worktree':<14} {info['path']} — {worktree_summary(info)}")
+    if not plan and info is None and what == "정리":
+        print("  지울 파일이 없습니다")
+        return False
+    if yes:
+        return True
+    if not tty():
+        raise Fail(f"확인이 필요합니다: --yes를 붙여 다시 실행하세요")
+    return input(f"  위 내용을 {what}할까요? [y/N] > ").strip().lower() == "y"
+
+
+def cmd_tab_action(args, ctx) -> int:
+    from .tabops import CLEAN_ITEMS, TabOpError, WorktreeNotMerged, clean, reopen, remove_worktree
+    tab = ctx.cfg.tab(args.old)
+    if tab is None:
+        raise Fail(f"탭 '{args.old}'이 설정에 없습니다 (탭: {', '.join(t.name for t in ctx.cfg.tabs)})")
+    try:
+        if args.action == "reopen":
+            lines = reopen(ctx, tab.name, resume=not args.fresh)
+        elif args.action == "archive":
+            return _finish_tab(ctx, tab.name, "archive", _worktree_mode(args), delete_branch=not args.keep_branch)
+        elif args.action == "clean":
+            items = _clean_items(args)
+            if not items and not args.worktree:
+                raise Fail("지울 항목을 고르세요: --work --handoff --runs --roles --sessions --worktree 또는 --all")
+            if not _confirm_plan(ctx, tab, items, args.yes, "정리"):
+                return 1
+            lines = clean(ctx, tab, items)
+            if args.worktree or args.all:
+                try:
+                    lines += remove_worktree(ctx, tab, force=args.force_worktree, delete_branch=not args.keep_branch)
+                except WorktreeNotMerged as e:
+                    mode = _ask_unmerged(e)
+                    lines += remove_worktree(ctx, tab, force=True, delete_branch=False) if mode == "force" \
+                        else ["worktree는 남겨 둠"]
+        else:  # delete
+            items = (_clean_items(args) or list(CLEAN_ITEMS)) if args.clean else []
+            print(f"탭 '{tab.name}'을 설정에서 삭제합니다" + (" (작업 파일도 삭제)" if items else " (작업 파일은 남김)"))
+            if not _confirm_plan(ctx, tab, items, args.yes, "삭제"):
+                return 1
+            return _finish_tab(ctx, tab.name, "delete", _worktree_mode(args), items, delete_branch=not args.keep_branch)
+    except TabOpError as e:
+        raise Fail(str(e)) from e
+    for line in lines:
+        print(line)
     return 0
 
 
@@ -319,6 +428,10 @@ def cmd_tab(args) -> int:
     from .tabrename import RenameError, rename_in_data, rename_tabs
     ctx = load_ctx(args)
     guard(ctx, current_actor(ctx), "tab")
+    if args.action != "rename":
+        return cmd_tab_action(args, ctx)
+    if not args.new:
+        raise Fail("새 탭 ID를 주세요: hctrl tab rename <이전> <새>")
     tab = ctx.cfg.tab(args.old)
     if tab is None:
         raise Fail(f"탭 '{args.old}'이 설정에 없습니다 (탭: {', '.join(t.name for t in ctx.cfg.tabs)})")
@@ -350,7 +463,7 @@ def cmd_tab(args) -> int:
 def cmd_status(args) -> int:
     from .up import status
     ctx = load_ctx(args)
-    print("\n".join(status(ctx)))
+    print("\n".join(status(ctx, getattr(args, "tab", None))))
     return 0
 
 
@@ -624,10 +737,11 @@ def cmd_changes(args) -> int:
     from .watch import apply_change, default_actions, detect, save_pending
     ctx = load_ctx(args)
     guard(ctx, current_actor(ctx), "changes")
-    changes = detect(ctx)
+    changes = detect(ctx, tab=args.tab)
     if not changes:
-        save_pending(ctx.project, [])
-        print("반영 대기 중인 변경이 없습니다")
+        if args.tab is None:
+            save_pending(ctx.project, [])
+        print("반영 대기 중인 변경이 없습니다" + (f" (탭 {args.tab})" if args.tab else ""))
         return 0
     labels = {"notify": "[a] 알리기", "restart": "[r] 재시작", "fresh": "[f] 인수인계 없이 재시작", "add": "[c] 추가",
               "remove": "[x] 닫기", "skip": "[s] 건너뛰기", "ack": "[k] 확인"}
@@ -656,18 +770,32 @@ def cmd_changes(args) -> int:
             remaining.append(ch)
         if action == "skip":
             remaining.append(ch)
+    if args.tab is not None:  # other tabs' changes stay pending as they were
+        mine = {c.name for c in changes}
+        remaining += [c for c in detect(ctx) if c.name not in mine]
     save_pending(ctx.project, list({id(c): c for c in remaining}.values()))
     return 0
 
 
 def cmd_restart(args) -> int:
+    """Default: continue the same conversation (reloads settings, skills, MCP). --fresh: a new one with a
+    handoff file; --no-handoff: a new one without."""
     from .watch import restart
     ctx = load_ctx(args)
     actor = current_actor(ctx)
+    resume = not (args.fresh or args.no_handoff)
+    if args.tab:
+        from .tabops import restart_tab
+        guard(ctx, actor, "restart")  # a whole tab (orchestrator included): the user only
+        for line in restart_tab(ctx, args.tab, resume=resume, handoff=not args.no_handoff):
+            print(line)
+        return 0
+    if not args.name:
+        raise Fail("재시작할 agent 이름이나 --tab <탭>을 주세요")
     guard(ctx, actor, "restart", [args.name])
     if actor.name == args.name:
         raise Fail("orchestrator는 자기 자신을 재시작할 수 없습니다")
-    print(restart(ctx, args.name, handoff=not args.no_handoff))
+    print(restart(ctx, args.name, handoff=not args.no_handoff, resume=resume))
     return 0
 
 
@@ -695,7 +823,7 @@ def cmd_watch(args) -> int:
     again: Reexec | None = None
     resume = None
     with TtyKeys() as keys:  # _hc tab: key menu (settings UI, changes, status, pending)
-        menu = Menu(project, cooked=keys.cooked)
+        menu = Menu(project, cooked=keys.cooked, fixed=True)  # target tab pinned at the top of the pane
         try:
             reopen = os.environ.pop(REOPEN_UI_ENV, None)
             port, _, secret = os.environ.pop(RESUME_UI_ENV, "").partition(":")
@@ -711,6 +839,7 @@ def cmd_watch(args) -> int:
             if menu.ui is not None:
                 resume = f"{menu.ui.port}:{menu.ui.secret}"
         finally:
+            menu.stop()
             menu.close()
     if again is None:
         return 0
@@ -742,15 +871,29 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("up", help="탭/창/agent 구성 (멱등)")
     s.add_argument("tab", nargs="?")
     s.add_argument("--no-watch", action="store_true", help="설정 감시를 시작하지 않음")
-    s = sub.add_parser("down", help="탭의 창과 agent 정리")
+    s = sub.add_parser("down", help="탭의 창과 agent 닫기 (--archive: 완료한 탭을 보관)")
     s.add_argument("tab", nargs="?")
-    s.add_argument("--remove-worktree", action="store_true")
+    s.add_argument("--archive", action="store_true", help="설정에 보관(closed)으로 남기고 알림·재생성 안 함")
+    s.add_argument("--remove-worktree", action="store_true", help="기준 브랜치에 병합됐을 때만 worktree 폴더 정리")
+    s.add_argument("--force-worktree", action="store_true", help="병합 안 됐어도 worktree 폴더 삭제 (브랜치는 유지)")
     s.add_argument("--stop-session", action="store_true", help="(전체 정리 시) herdr 세션도 정지")
-    s = sub.add_parser("tab", help="탭 관리 (rename: 실행 중에도 창과 agent를 유지한 채 탭 ID 변경)")
-    s.add_argument("action", choices=["rename"])
-    s.add_argument("old")
-    s.add_argument("new")
-    sub.add_parser("status", help="상태")
+    s = sub.add_parser("tab", help="탭 관리: rename <이전> <새> | archive | reopen | clean | delete <탭>")
+    s.add_argument("action", choices=["rename", "archive", "reopen", "clean", "delete"])
+    s.add_argument("old", metavar="tab")
+    s.add_argument("new", nargs="?")
+    s.add_argument("--fresh", action="store_true", help="reopen: 이전 대화를 잇지 않고 새로 시작")
+    for it, label in (("work", "작업 폴더 .herdr-flow/work/<탭>/"), ("handoff", "인수인계 파일"), ("runs", "이 탭의 실행 기록"),
+                      ("roles", "역할 파일·이력·brief"), ("sessions", "이어 갈 대화 기록")):
+        s.add_argument(f"--{it}", action="store_true", help=f"clean/delete --clean: {label}")
+    s.add_argument("--worktree", action="store_true", help="clean: worktree 폴더 (병합됐을 때만)")
+    s.add_argument("--all", action="store_true", help="clean/delete --clean: 위 항목 전부")
+    s.add_argument("--clean", action="store_true", help="delete: 작업 파일도 삭제 (기본 --all, 항목을 주면 그것만)")
+    s.add_argument("--remove-worktree", action="store_true", help="archive/delete: 병합됐을 때만 worktree 폴더 정리")
+    s.add_argument("--force-worktree", action="store_true", help="병합 안 됐어도 worktree 폴더 삭제 (브랜치는 유지)")
+    s.add_argument("--keep-branch", action="store_true", help="worktree를 정리해도 병합된 브랜치를 남김")
+    s.add_argument("--yes", action="store_true", help="확인 없이 진행")
+    s = sub.add_parser("status", help="상태")
+    s.add_argument("tab", nargs="?")
     s = sub.add_parser("zoom", help="창 하나 크게 보기 / 복귀")
     s.add_argument("name")
     s = sub.add_parser("run", help="flow 실행 (A 방식)")
@@ -788,11 +931,14 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--reject", type=int)
     s = sub.add_parser("changes", help="설정 변경 확인 및 반영")
     s.add_argument("--list", action="store_true")
+    s.add_argument("--tab", help="이 탭의 변경만")
     s.add_argument("--yes", action="store_true", help="각 변경에 기본 조치 적용")
     s.add_argument("--no-handoff", action="store_true")
-    s = sub.add_parser("restart", help="agent 재시작 (인수인계 후)")
-    s.add_argument("name")
-    s.add_argument("--no-handoff", action="store_true")
+    s = sub.add_parser("restart", help="agent 재시작 (기본: 같은 대화로 이어서, 설정·skill·MCP 다시 불러옴)")
+    s.add_argument("name", nargs="?")
+    s.add_argument("--tab", help="탭 전체 (작업 agent 먼저, orchestrator 마지막)")
+    s.add_argument("--fresh", action="store_true", help="새 대화로 시작 (인수인계 파일 전달)")
+    s.add_argument("--no-handoff", action="store_true", help="새 대화로 시작 (인수인계 없이)")
     s = sub.add_parser("watch", help="설정 변경 감시 (_hc 탭에서 자동 실행)")
     s.add_argument("--interval", type=float, default=2.0)
     sub.add_parser("pending", help="무인 모드: 답을 기다리는 질문 목록")

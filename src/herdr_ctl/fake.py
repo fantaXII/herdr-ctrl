@@ -199,7 +199,8 @@ class FakeHerdr:
 
     def agent_get(self, target):
         a = self._agent(target)
-        return {"name": a.name, "agent": a.kind, "agent_status": a.status, "pane_id": a.pane_id}
+        return {"name": a.name, "agent": a.kind, "agent_status": a.status, "pane_id": a.pane_id,
+                "agent_session": {"agent": a.kind, "kind": "id", "value": f"fake-{a.name}-session"}}
 
     def agent_start(self, name, kind, pane_id, args=None, timeout_ms=60000):
         p = self._pane(pane_id)
