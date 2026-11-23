@@ -307,34 +307,94 @@ def _worktree_mode(args) -> str:
         "remove" if getattr(args, "remove_worktree", False) else "keep")
 
 
+def _ask(prompt: str) -> str:
+    return input(prompt).strip().lower()
+
+
+def _cancelled() -> int:
+    print("취소했습니다 (바뀐 것 없음)")
+    return 1
+
+
 def _ask_unmerged(e) -> str | None:
     """A worktree with work not in its base: keep it (default), remove anyway, or cancel."""
     print(str(e))
     if not tty():
         raise Fail(str(e) + "\n  worktree는 그대로 두려면 --remove-worktree 없이, 그래도 지우려면 --force-worktree")
-    ans = input("  [k] worktree는 남기고 진행 (기본)  [f] 그래도 삭제 (브랜치는 유지)  [c] 취소 > ").strip().lower()
+    ans = _ask("  [k] worktree는 남기고 진행 (기본)  [f] 그래도 삭제 (브랜치는 유지)  [c] 취소 > ")
     if ans == "c":
         return None
     if ans == "f":
-        if input("  정말 지울까요? 병합 안 된 커밋은 브랜치에 남지만 커밋 안 된 파일은 사라집니다 [y/N] > ").strip().lower() == "y":
+        if _ask("  정말 지울까요? 병합 안 된 커밋은 브랜치에 남지만 커밋 안 된 파일은 사라집니다 [y/N] > ") == "y":
             return "force"
         return None
     return "keep"
 
 
-def _finish_tab(ctx, tab: str, mode: str, worktree: str, items=(), delete_branch: bool = True) -> int:
+def _finish_tab(ctx, tab: str, mode: str, worktree: str) -> int:
     from .tabops import WorktreeNotMerged, finish
     try:
-        lines = finish(ctx, tab, mode, worktree, delete_branch, items)
+        lines = finish(ctx, tab, mode, worktree)
     except WorktreeNotMerged as e:
         worktree = _ask_unmerged(e)
         if worktree is None:
-            print("취소했습니다")
-            return 1
-        lines = finish(ctx, tab, mode, worktree, delete_branch, items)
+            return _cancelled()
+        lines = finish(ctx, tab, mode, worktree)
     for line in lines:
-        print(line)
+        print("✔ " + line)
     return 0
+
+
+def _confirm(question: str, yes: bool) -> bool:
+    if yes:
+        return True
+    if not tty():
+        raise Fail("확인이 필요합니다: --yes를 붙여 다시 실행하세요")
+    return _ask(f"{question} [y/N] > ") == "y"
+
+
+def _fmt_bytes(n: int) -> str:
+    return f"{n / 1048576:.1f} MB" if n >= 1048576 else (f"{n // 1024} KB" if n >= 1024 else f"{n} B")
+
+
+def end_tab(ctx, args, name: str) -> int:
+    """탭 종료: show the session files that go and what stays, settle the worktree, confirm, end."""
+    from .tabops import CLEAN_LABELS, clean_plan, worktree_info, worktree_summary
+    tab = ctx.cfg.tab(name)
+    plan = clean_plan(ctx, tab)
+    print(f"'{tab.name}' 탭 종료 — 지우는 것 (hctrl 세션 산출물)")
+    if plan:
+        for row in plan:
+            print(f"  {CLEAN_LABELS[row['item']]:<14} {row['path']}" + (f"  {_fmt_bytes(row['bytes'])}" if row["bytes"] else ""))
+    else:
+        print("  (지울 산출물 없음)")
+    print("  남는 것: 탭 설정, prompt(역할 상세), LLM 대화 원본")
+    worktree = _worktree_mode(args)
+    info = worktree_info(ctx, tab)
+    if info is not None and worktree == "keep" and tty() and not args.yes:
+        if info["safe"]:
+            if _ask(f"  worktree({info['branch']}): {info['base']}에 병합됨 ✔ → 폴더와 브랜치도 정리할까요? [Y/n] > ") != "n":
+                worktree = "remove"
+        else:
+            print("  " + worktree_summary(info) + " → worktree는 남깁니다")
+    if not _confirm("종료할까요?", args.yes):
+        return _cancelled()
+    return _finish_tab(ctx, tab.name, "end", worktree)
+
+
+def delete_tab(ctx, args, name: str) -> int:
+    """탭 설정 삭제: the tab leaves config.yaml; files stay."""
+    from .tabops import delete_plan
+    tab = ctx.cfg.tab(name)
+    print(f"'{tab.name}' 탭 설정 삭제")
+    print("  지우는 것: config.yaml의 탭 '" + tab.name + "'" + "".join(", " + x for x in delete_plan(ctx, tab)))
+    print("  남는 것  : prompt(역할 상세), 작업 파일, worktree")
+    if ctx.state.member(next((m.name for m in tab.members), "")) is not None:
+        print("  창이 열려 있어 먼저 닫습니다.")
+    print("  💡 구성을 다시 쓰려면 먼저 템플릿으로 저장하세요 (hctrl ui → 템플릿)")
+    if not _confirm("설정에서 지울까요?", args.yes):
+        return _cancelled()
+    return _finish_tab(ctx, tab.name, "delete", _worktree_mode(args))
 
 
 def cmd_down(args) -> int:
@@ -342,9 +402,9 @@ def cmd_down(args) -> int:
     ctx = load_ctx(args)
     guard(ctx, current_actor(ctx), "down")
     if args.tab is not None:
-        return _finish_tab(ctx, args.tab, "archive" if args.archive else "close", _worktree_mode(args))
-    if args.archive:
-        raise Fail("보관할 탭을 지정하세요: hctrl down <탭> --archive")
+        if ctx.cfg.tab(args.tab) is None:
+            raise Fail(f"탭 '{args.tab}'이 설정에 없습니다")
+        return _finish_tab(ctx, args.tab, "close", _worktree_mode(args))
     closed = down(ctx)
     print("정리: " + (", ".join(closed) or "없음"))
     if args.remove_worktree or args.force_worktree:
@@ -361,66 +421,21 @@ def cmd_down(args) -> int:
     return 0
 
 
-def _clean_items(args) -> list[str]:
-    from .tabops import CLEAN_ITEMS
-    if args.all:
-        return list(CLEAN_ITEMS)
-    return [it for it in CLEAN_ITEMS if getattr(args, it, False)]
-
-
-def _confirm_plan(ctx, tab, items, yes: bool, what: str) -> bool:
-    from .tabops import CLEAN_LABELS, clean_plan, worktree_info, worktree_summary
-    plan = clean_plan(ctx, tab, items)
-    for row in plan:
-        print(f"  {CLEAN_LABELS[row['item']]:<14} {row['path']}" + (f"  ({row['bytes']:,} B)" if row["bytes"] else ""))
-    info = worktree_info(ctx, tab)
-    if info is not None:
-        print(f"  {'worktree':<14} {info['path']} — {worktree_summary(info)}")
-    if not plan and info is None and what == "정리":
-        print("  지울 파일이 없습니다")
-        return False
-    if yes:
-        return True
-    if not tty():
-        raise Fail(f"확인이 필요합니다: --yes를 붙여 다시 실행하세요")
-    return input(f"  위 내용을 {what}할까요? [y/N] > ").strip().lower() == "y"
-
-
 def cmd_tab_action(args, ctx) -> int:
-    from .tabops import CLEAN_ITEMS, TabOpError, WorktreeNotMerged, clean, reopen, remove_worktree
+    from .tabops import TabOpError, reopen
     tab = ctx.cfg.tab(args.old)
     if tab is None:
         raise Fail(f"탭 '{args.old}'이 설정에 없습니다 (탭: {', '.join(t.name for t in ctx.cfg.tabs)})")
     try:
         if args.action == "reopen":
-            lines = reopen(ctx, tab.name, resume=not args.fresh)
-        elif args.action == "archive":
-            return _finish_tab(ctx, tab.name, "archive", _worktree_mode(args), delete_branch=not args.keep_branch)
-        elif args.action == "clean":
-            items = _clean_items(args)
-            if not items and not args.worktree:
-                raise Fail("지울 항목을 고르세요: --work --handoff --runs --roles --sessions --worktree 또는 --all")
-            if not _confirm_plan(ctx, tab, items, args.yes, "정리"):
-                return 1
-            lines = clean(ctx, tab, items)
-            if args.worktree or args.all:
-                try:
-                    lines += remove_worktree(ctx, tab, force=args.force_worktree, delete_branch=not args.keep_branch)
-                except WorktreeNotMerged as e:
-                    mode = _ask_unmerged(e)
-                    lines += remove_worktree(ctx, tab, force=True, delete_branch=False) if mode == "force" \
-                        else ["worktree는 남겨 둠"]
-        else:  # delete
-            items = (_clean_items(args) or list(CLEAN_ITEMS)) if args.clean else []
-            print(f"탭 '{tab.name}'을 설정에서 삭제합니다" + (" (작업 파일도 삭제)" if items else " (작업 파일은 남김)"))
-            if not _confirm_plan(ctx, tab, items, args.yes, "삭제"):
-                return 1
-            return _finish_tab(ctx, tab.name, "delete", _worktree_mode(args), items, delete_branch=not args.keep_branch)
+            for line in reopen(ctx, tab.name, resume=not args.fresh):
+                print(line)
+            return 0
+        if args.action == "end":
+            return end_tab(ctx, args, tab.name)
+        return delete_tab(ctx, args, tab.name)
     except TabOpError as e:
         raise Fail(str(e)) from e
-    for line in lines:
-        print(line)
-    return 0
 
 
 def cmd_tab(args) -> int:
@@ -871,26 +886,19 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("up", help="탭/창/agent 구성 (멱등)")
     s.add_argument("tab", nargs="?")
     s.add_argument("--no-watch", action="store_true", help="설정 감시를 시작하지 않음")
-    s = sub.add_parser("down", help="탭의 창과 agent 닫기 (--archive: 완료한 탭을 보관)")
+    s = sub.add_parser("down", help="창과 agent 닫기 (탭을 주면 그 탭만, 다시 열기: hctrl tab reopen)")
     s.add_argument("tab", nargs="?")
-    s.add_argument("--archive", action="store_true", help="설정에 보관(closed)으로 남기고 알림·재생성 안 함")
     s.add_argument("--remove-worktree", action="store_true", help="기준 브랜치에 병합됐을 때만 worktree 폴더 정리")
     s.add_argument("--force-worktree", action="store_true", help="병합 안 됐어도 worktree 폴더 삭제 (브랜치는 유지)")
     s.add_argument("--stop-session", action="store_true", help="(전체 정리 시) herdr 세션도 정지")
-    s = sub.add_parser("tab", help="탭 관리: rename <이전> <새> | archive | reopen | clean | delete <탭>")
-    s.add_argument("action", choices=["rename", "archive", "reopen", "clean", "delete"])
+    s = sub.add_parser("tab", help="탭 관리: end <탭> (세션 종료·산출물 정리) | reopen <탭> | delete <탭> (설정 삭제) "
+                                   "| rename <이전> <새>")
+    s.add_argument("action", choices=["end", "reopen", "delete", "rename"])
     s.add_argument("old", metavar="tab")
     s.add_argument("new", nargs="?")
     s.add_argument("--fresh", action="store_true", help="reopen: 이전 대화를 잇지 않고 새로 시작")
-    for it, label in (("work", "작업 폴더 .herdr-flow/work/<탭>/"), ("handoff", "인수인계 파일"), ("runs", "이 탭의 실행 기록"),
-                      ("roles", "역할 파일·이력·brief"), ("sessions", "이어 갈 대화 기록")):
-        s.add_argument(f"--{it}", action="store_true", help=f"clean/delete --clean: {label}")
-    s.add_argument("--worktree", action="store_true", help="clean: worktree 폴더 (병합됐을 때만)")
-    s.add_argument("--all", action="store_true", help="clean/delete --clean: 위 항목 전부")
-    s.add_argument("--clean", action="store_true", help="delete: 작업 파일도 삭제 (기본 --all, 항목을 주면 그것만)")
-    s.add_argument("--remove-worktree", action="store_true", help="archive/delete: 병합됐을 때만 worktree 폴더 정리")
+    s.add_argument("--remove-worktree", action="store_true", help="end/delete: 병합됐을 때만 worktree 폴더 정리")
     s.add_argument("--force-worktree", action="store_true", help="병합 안 됐어도 worktree 폴더 삭제 (브랜치는 유지)")
-    s.add_argument("--keep-branch", action="store_true", help="worktree를 정리해도 병합된 브랜치를 남김")
     s.add_argument("--yes", action="store_true", help="확인 없이 진행")
     s = sub.add_parser("status", help="상태")
     s.add_argument("tab", nargs="?")

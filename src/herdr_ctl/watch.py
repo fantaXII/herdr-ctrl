@@ -387,23 +387,22 @@ def watch_once(project, h, last_sig: str | None, which=None) -> tuple[str, list[
 
 
 MENU_LINES = ("[Tab] 대상 탭 바꾸기  [s] 설정  [c] 변경 반영  [t] 상태  [p] 질문",
-              "[r] 재시작  [x] 탭 종료  [o] 탭 열기  [k] 정리  [d] 삭제  [?] 도움말")
+              "[r] 재시작  [x] 탭 종료  [o] 탭 열기  [D] 탭 설정 삭제  [?] 도움말")
 MENU = "  ".join(MENU_LINES)
 MENU_COMMANDS = {"c": ["changes"], "t": ["status"], "p": ["pending"]}
 HELP = """\
 [hctrl] _hc 메뉴 도움말 — 맨 위 '대상'이 지금 고른 탭입니다. 키는 그 탭에만 적용됩니다.
-  [Tab] / 숫자   대상 탭 바꾸기 (0 = 전체). worktree 탭(별도 workspace)도 여기서 고릅니다.
+  [Tab] / ←→ / 숫자   대상 탭 바꾸기 (0 = 전체). worktree 탭(별도 workspace)도 여기서 고릅니다.
   [s] 설정 화면(브라우저)   [c] 변경 반영   [t] 상태   [p] 답을 기다리는 질문
   [r] 재시작: 탭 전체 또는 agent 하나. 기본은 같은 대화로 이어서(설정·skill·MCP 다시 불러옴),
       [f]를 고르면 인수인계 파일을 남기고 새 대화로 시작
-  [x] 탭 종료:
-      1) 잠시 닫기   창만 닫음. 설정은 그대로, 나중에 [o]로 다시 열기
-      2) 완료(보관)  창을 닫고 보관함으로. 변경 알림 없음, 다시 생기지 않음
-      3) 삭제        설정에서 탭 제거 (작업 파일은 물어보고 지움)
-      worktree 폴더는 기준 브랜치(main 등)에 모두 병합됐을 때만 지우고, 아니면 알려 줍니다.
-      브랜치와 커밋은 병합되지 않았으면 지우지 않습니다.
-  [o] 닫힌·보관된 탭 다시 열기 (이전 대화 이어서 / 새로)
-  [k] 보관된 탭의 작업 파일 정리   [d] 보관된 탭 삭제
+  [x] 1) 잠시 닫기  창만 닫음. 다시 열면 이전 대화 이어서
+      2) 탭 종료    이 탭의 hctrl 세션을 끝내고 산출물(작업 폴더·인수인계·실행 기록·대화 기록)을 지움.
+                    탭 설정과 prompt(역할 상세)는 남고, 다시 열면 새 세션으로 시작
+      worktree는 기준 브랜치(main 등)에 모두 병합됐을 때만 정리하고, 아니면 남깁니다.
+  [o] 닫힌·종료된 탭 열기
+  [D] 탭 설정 삭제 (대문자 D): config.yaml에서 탭과 그 flow를 지움. prompt·작업 파일은 남음
+  LLM(claude/opencode)의 대화 원본은 어떤 경우에도 지우지 않습니다.
 """
 
 
@@ -525,11 +524,11 @@ class Menu:
         if self.target is None:
             run = sum(1 for t in tabs if t["running"] and not t["closed"])
             arch = sum(1 for t in tabs if t["closed"])
-            info = f"탭 {len(tabs)}개 · 실행 {run}" + (f" · 보관 {arch}" if arch else "")
+            info = f"탭 {len(tabs)}개 · 실행 {run}" + (f" · 종료 {arch}" if arch else "")
             head = f"대상: ◀ [전체] ▶  {info}"
         else:
             t = tabs[names.index(self.target)]
-            state = "■ 보관됨" if t["closed"] else ("● 실행 중" if t["running"] else "○ 닫힘")
+            state = "■ 종료됨" if t["closed"] else ("● 실행 중" if t["running"] else "○ 닫힘")
             bits = [state] + ([f"worktree {t['worktree']}"] if t["worktree"] else []) \
                 + ([f"변경 {t['changes']}건"] if t["changes"] else [])
             head = f"대상: ◀ [{names.index(self.target) + 1}/{len(names)}] {self.target} ▶  " + " · ".join(bits)
@@ -612,6 +611,8 @@ class Menu:
             self.pick(int(key))
         elif key == "?":
             print(HELP, flush=True)
+        elif key == "D":  # uppercase only: deleting settings should not be one stray keypress away
+            self.delete()
         else:
             key = key.lower()
             if key == "s":
@@ -621,8 +622,8 @@ class Menu:
                 if self.target is not None:
                     extra = ["--tab", self.target] if key == "c" else ([self.target] if key == "t" else [])
                 self._hctrl(*MENU_COMMANDS[key], *extra)
-            elif key in "rxokd":
-                getattr(self, {"r": "restart", "x": "finish", "o": "reopen", "k": "clean", "d": "delete"}[key])()
+            elif key in "rxo":
+                getattr(self, {"r": "restart", "x": "finish", "o": "reopen"}[key])()
             else:
                 return
         if self.fixed:
@@ -648,22 +649,16 @@ class Menu:
         if t is None:
             return
         if t["closed"]:
-            print(f"[hctrl] '{t['name']}'은 이미 보관된 탭입니다: [o] 열기  [k] 파일 정리  [d] 삭제", flush=True)
+            print(f"[hctrl] '{t['name']}'은 이미 종료된 탭입니다: [o] 다시 시작  [D] 탭 설정 삭제", flush=True)
             return
-        ans = self._input(f"'{t['name']}' 탭 종료: [1] 잠시 닫기  [2] 완료(보관)  [3] 삭제  [Enter] 취소 > ")
-        wt = []
-        if ans in ("2", "3") and t["worktree"]:
-            if self._input(f"worktree({t['worktree']}) 폴더도 정리할까요? 병합됐을 때만 지웁니다 [y/N] > ") == "y":
-                wt = ["--remove-worktree"]
+        ans = self._input(f"'{t['name']}' 탭: [1] 잠시 닫기 (다시 열면 대화 이어서)  "
+                          "[2] 탭 종료 (세션 산출물 정리, 설정·prompt는 남음)  [Enter] 취소 > ")
         if ans == "1":
             self._hctrl("down", t["name"])
         elif ans == "2":
-            self._hctrl("down", t["name"], "--archive", *wt)
-        elif ans == "3":
-            files = self._input("작업 파일(work/, 인수인계, 실행 기록, 역할 파일)도 지울까요? [y/N] > ") == "y"
-            self._hctrl("tab", "delete", t["name"], *(["--clean"] if files else []), *wt)
+            self._hctrl("tab", "end", t["name"])  # lists what goes and what stays, then asks
         else:
-            print("[hctrl] 취소했습니다", flush=True)
+            print("[hctrl] 취소했습니다 (바뀐 것 없음)", flush=True)
 
     def reopen(self) -> None:
         t = self._need_tab()
@@ -672,33 +667,17 @@ class Menu:
         if t["running"] and not t["closed"]:
             print(f"[hctrl] '{t['name']}' 탭은 이미 실행 중입니다", flush=True)
             return
+        if t["closed"]:  # an ended tab has no conversation left to continue
+            self._hctrl("tab", "reopen", t["name"], "--fresh")
+            return
         fresh = self._input("[Enter] 이전 대화 이어서  [f] 새로 시작 > ") == "f"
         self._hctrl("tab", "reopen", t["name"], *(["--fresh"] if fresh else []))
 
-    def _archived(self) -> dict | None:
-        t = self._need_tab()
-        if t is not None and not t["closed"]:
-            print(f"[hctrl] 보관된 탭에서만 씁니다. 먼저 [x] → 2) 완료(보관)", flush=True)
-            return None
-        return t
-
-    def clean(self) -> None:
-        t = self._archived()
-        if t is None:
-            return
-        ans = self._input("정리할 항목: [Enter] 전부  또는 work handoff runs roles sessions worktree (공백 구분) > ")
-        items = ["--all"] if not ans else [f"--{w}" for w in ans.split()
-                                            if w in ("work", "handoff", "runs", "roles", "sessions", "worktree")]
-        if items:
-            self._hctrl("tab", "clean", t["name"], *items)
-
     def delete(self) -> None:
-        t = self._archived()
+        t = self._need_tab()
         if t is None:
             return
-        files = self._input("작업 파일도 지울까요? [y/N] > ") == "y"
-        wt = ["--remove-worktree"] if t["worktree"] else []
-        self._hctrl("tab", "delete", t["name"], *(["--clean"] if files else []), *wt)
+        self._hctrl("tab", "delete", t["name"])  # lists what goes and what stays, then asks
 
     def settings(self) -> None:
         from . import __version__, update

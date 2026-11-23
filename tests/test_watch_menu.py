@@ -205,22 +205,28 @@ def test_target_tab_scopes_menu_commands(project):
 
 def test_finish_and_reopen_keys_build_tab_commands(project, monkeypatch):
     ran = []
-    answers = iter(["2", "", "f"])
+    answers = iter(["2", "", "f", "1"])
     menu = W.Menu(project, run=lambda cmd: ran.append(cmd[cmd.index("--project") + 2:]) or 0,
                   ask=lambda prompt: next(answers))
     monkeypatch.setattr(menu, "tabs", lambda: [{"name": "X", "closed": False, "running": True, "worktree": None,
                                                 "changes": 0}])
     menu.target = "X"
     menu.handle("x")
-    assert ran[-1] == ["down", "X", "--archive"]
+    assert ran[-1] == ["tab", "end", "X"]
     menu.handle("r")
     assert ran[-1] == ["restart", "--tab", "X", "--fresh"]
+    menu.handle("x")
+    assert ran[-1] == ["down", "X"]
+    menu.handle("d")  # lowercase d does nothing: deleting settings is uppercase D only
+    assert ran[-1] == ["down", "X"]
+    menu.handle("D")
+    assert ran[-1] == ["tab", "delete", "X"]
 
 
 def test_help_explains_the_keys(project, capsys):
     W.Menu(project).handle("?")
     out = capsys.readouterr().out
-    assert "잠시 닫기" in out and "완료(보관)" in out and "병합" in out
+    assert "잠시 닫기" in out and "탭 종료" in out and "탭 설정 삭제" in out and "병합" in out
 
 
 def test_arrow_keys_move_the_target_and_run_nothing(project):

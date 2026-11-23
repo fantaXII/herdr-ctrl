@@ -709,7 +709,7 @@ class UIServer:
 
     # ---- finishing / reopening / restarting a tab (tabops.py, same as hctrl down/tab/restart)
     def tab_status(self, project: Project) -> dict:
-        """Per tab: archived?, open windows?, agents and their live status (when the session runs)."""
+        """Per tab: ended?, open windows?, agents and their live status (when the session runs)."""
         cfg, _ = check_file(project.config_path, which=self.which)
         if cfg is None:
             return {"running": False, "tabs": {}}
@@ -747,23 +747,22 @@ class UIServer:
         t = ctx.cfg.tab(tab)
         if t is None:
             raise ApiError(404, f"탭 '{tab}'이 저장된 설정에 없습니다")
-        items = [i for i in (body.get("items") or []) if i in T.CLEAN_ITEMS]
         worktree = body.get("worktree") or "keep"
         if worktree not in ("keep", "remove", "force"):
             raise ApiError(400, "worktree는 keep/remove/force 중 하나")
         live = ctx.cfg.session in self.running_sessions()
         try:
-            if action == "plan":  # what clean/delete would remove, and the worktree's merge state
+            if action == "plan":  # what ending / deleting would remove, and the worktree's merge state
                 info = T.worktree_info(ctx, t)
-                return {"files": T.clean_plan(ctx, t, items or T.CLEAN_ITEMS), "worktree": info,
+                return {"files": T.clean_plan(ctx, t), "flows": T.delete_plan(ctx, t), "worktree": info,
                         "worktree_summary": T.worktree_summary(info) if info else None}
             if action in ("finish", "reopen", "restart") and not live and not (action == "finish" and t.closed):
                 raise ApiError(409, "세션이 실행 중이 아닙니다 (hctrl로 프로젝트를 연 뒤 다시 하세요)")
             if action == "finish":
                 mode = body.get("mode")
                 if mode not in T.MODES:
-                    raise ApiError(400, "mode는 close/archive/delete 중 하나")
-                lines = T.finish(ctx, t.name, mode, worktree, body.get("delete_branch", True) is not False, items)
+                    raise ApiError(400, "mode는 close/end/delete 중 하나")
+                lines = T.finish(ctx, t.name, mode, worktree, body.get("delete_branch", True) is not False)
             elif action == "reopen":
                 lines = T.reopen(ctx, t.name, resume=body.get("resume", True) is not False)
             elif action == "restart":
@@ -777,11 +776,6 @@ class UIServer:
                     lines = [restart(ctx, m.name, resume=resume)]
                 else:
                     lines = T.restart_tab(ctx, t.name, resume=resume)
-            elif action == "clean":
-                lines = T.clean(ctx, t, items)
-                if worktree != "keep":
-                    lines += T.remove_worktree(ctx, t, force=worktree == "force",
-                                               delete_branch=body.get("delete_branch", True) is not False)
             else:
                 raise ApiError(404, "없는 동작입니다")
         except T.WorktreeNotMerged as e:

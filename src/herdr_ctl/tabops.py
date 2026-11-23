@@ -1,5 +1,11 @@
-"""Finishing a tab: close (windows only), archive (`closed: true`), reopen, clean its files, delete it;
-and restarting a whole tab. Shared by the CLI, the _hc menu and the settings UI.
+"""Ending a tab and restarting one. Shared by the CLI, the _hc menu and the settings UI.
+
+- close:  windows and agents stop; everything stays (reopening continues the conversations).
+- end:    the tab's hctrl session is over: windows close, its session files go (work folder, handoffs,
+          runs, briefs, conversation record) and the tab is marked `closed: true` (not laid out or
+          watched again). The tab settings and the prompts (role files) stay; reopening starts fresh.
+- delete: the tab leaves config.yaml (with its flows); files stay where they are.
+LLM conversation transcripts (claude/opencode's own storage) are never touched.
 
 A tab's worktree is only removed when everything in it reached the branch it came from: no uncommitted
 or untracked files, and every commit of its branch is in the base (merged, squashed or rebased).
@@ -15,10 +21,10 @@ from .config import TabCfg, check_data, load_yaml
 from .herdr import HerdrError
 from .up import Ctx, down, git_branch, load_sessions, up, update_sessions
 
-CLEAN_ITEMS = ("work", "handoff", "runs", "roles", "sessions")
-CLEAN_LABELS = {"work": "작업 폴더", "handoff": "인수인계", "runs": "실행 기록", "roles": "역할 파일·이력·brief",
-                "sessions": "이어 갈 대화 기록", "worktree": "worktree 폴더"}
-MODES = ("close", "archive", "delete")
+SESSION_ITEMS = ("work", "handoff", "runs", "briefs", "sessions")  # what "end" removes
+CLEAN_LABELS = {"work": "작업 폴더", "handoff": "인수인계", "runs": "실행 기록", "briefs": "agent 안내문(brief)",
+                "sessions": "대화 기록", "worktree": "worktree 폴더"}
+MODES = ("close", "end", "delete")
 
 
 class TabOpError(RuntimeError):
@@ -148,9 +154,9 @@ def _tab_runs(ctx: Ctx, tab: TabCfg) -> list[Path]:
     return out
 
 
-def clean_plan(ctx: Ctx, tab: TabCfg, items) -> list[dict]:
-    """[{item, path, bytes}] that clean() would remove (only paths that exist)."""
-    from .roles import role_file
+def clean_plan(ctx: Ctx, tab: TabCfg, items=SESSION_ITEMS) -> list[dict]:
+    """[{item, path, bytes}] of the tab's session files that clean() would remove (existing ones only).
+    Prompts (role files and their history) are never part of it."""
     p = ctx.project
     agents = [m for m in tab.members if m.is_agent]
     paths: list[tuple[str, Path]] = []
@@ -160,24 +166,21 @@ def clean_plan(ctx: Ctx, tab: TabCfg, items) -> list[dict]:
         paths += [("handoff", p.handoff_dir / f"{m.name}.md") for m in agents]
     if "runs" in items:
         paths += [("runs", d) for d in _tab_runs(ctx, tab)]
-    if "roles" in items:
-        for m in agents:
-            if not m.role_file:  # a custom role_file is the user's own document: never removed
-                paths.append(("roles", role_file(p, m)))
-            paths += [("roles", p.roles_dir / "history" / m.name), ("roles", p.var_dir / "briefs" / f"{m.name}.md")]
+    if "briefs" in items:  # generated again whenever an agent starts
+        paths += [("briefs", p.var_dir / "briefs" / f"{m.name}.md") for m in agents]
         if tab.orchestrator:
             from .roles import orchestrator_rules_path
-            paths.append(("roles", orchestrator_rules_path(p, tab)))
+            paths.append(("briefs", orchestrator_rules_path(p, tab)))
     out = [{"item": it, "path": str(path), "bytes": _size(path)} for it, path in paths if path.exists()]
     if "sessions" in items:
         known = load_sessions(ctx.project)
         for m in agents:
             if m.name in known:
-                out.append({"item": "sessions", "path": f"대화 기록 id ({m.name})", "bytes": 0})
+                out.append({"item": "sessions", "path": f"{m.name} → {known[m.name]['id']}", "bytes": 0})
     return out
 
 
-def clean(ctx: Ctx, tab: TabCfg, items) -> list[str]:
+def clean(ctx: Ctx, tab: TabCfg, items=SESSION_ITEMS) -> list[str]:
     plan = clean_plan(ctx, tab, items)
     done = []
     for row in plan:
@@ -193,7 +196,7 @@ def clean(ctx: Ctx, tab: TabCfg, items) -> list[str]:
         names = {m.name for m in tab.members}
         gone = sorted(names & set(load_sessions(ctx.project)))
         update_sessions(ctx.project, lambda rec: [rec.pop(n, None) for n in names])
-        done += [f"대화 기록 id 삭제: {n}" for n in gone]
+        done += [f"대화 기록 삭제: {n} (LLM 대화 원본은 남음)" for n in gone]
     return done
 
 
@@ -264,11 +267,29 @@ def remove_from_config(ctx: Ctx, tab: TabCfg) -> list[str]:
 
 
 # -------------------------------------------------------------- operations
-def finish(ctx: Ctx, name: str, mode: str, worktree: str = "keep", delete_branch: bool = True,
-           items=()) -> list[str]:
-    """End a tab. mode: close (windows only) | archive (closed: true) | delete (out of the config).
+def delete_plan(ctx: Ctx, tab: TabCfg) -> list[str]:
+    """Flows that deleting the tab removes or shortens (shown before asking)."""
+    from .templates import tab_flows
+    data, _ = load_yaml(ctx.project.config_path)
+    if not isinstance(data, dict):
+        return []
+    own = set(tab_flows(data, tab.name))
+    names = {m.name for m in tab.members}
+    out = []
+    for fname, f in (data.get("flows") or {}).items():
+        steps = f.get("steps") if isinstance(f, dict) else None
+        hit = [s for s in steps or [] if isinstance(s, dict) and (s.get("agent") or s.get("shell")) in names]
+        if fname in own or (steps and len(hit) == len(steps)):
+            out.append(f"flow {fname}")
+        elif hit:
+            out.append(f"flow {fname}의 이 탭 단계 {len(hit)}개")
+    return out
+
+
+def finish(ctx: Ctx, name: str, mode: str, worktree: str = "keep", delete_branch: bool = True) -> list[str]:
+    """mode: close | end | delete (see the module docstring).
     worktree: keep | remove (only when merged and clean, else WorktreeNotMerged before anything is
-    touched) | force. items: files to clean (delete; archived tabs via clean())."""
+    touched) | force (the branch then stays)."""
     if mode not in MODES:
         raise ValueError(mode)
     tab = _tab(ctx, name)
@@ -280,18 +301,16 @@ def finish(ctx: Ctx, name: str, mode: str, worktree: str = "keep", delete_branch
     out = [f"창 닫음: {', '.join(closed)}" if closed else "열린 창 없음"]
     if worktree in ("remove", "force"):
         out += remove_worktree(ctx, tab, force=worktree == "force", delete_branch=delete_branch)
-    if mode == "archive" and not tab.closed:
-        set_closed(ctx, tab.name, True)
-        out.append(f"보관함으로 옮김 (다시 열기: hctrl tab reopen {tab.name})")
-    elif mode == "delete":
-        if items:
-            out += clean(ctx, tab, items)
-        out += remove_from_config(ctx, tab)
-        update_sessions(ctx.project, lambda rec: [rec.pop(m.name, None) for m in tab.members])
-        out.append(f"설정에서 탭 '{tab.name}' 삭제")
-    if mode == "archive":
+    if mode == "end":
+        out += clean(ctx, tab)
+        if not tab.closed:
+            set_closed(ctx, tab.name, True)
+        out.append(f"탭 '{tab.name}' 종료 — 설정과 prompt는 남음 (다시 시작: hctrl tab reopen {tab.name})")
         from .watch import detect, save_pending
-        save_pending(ctx.project, detect(ctx))  # the archived tab's members no longer show as "new"
+        save_pending(ctx.project, detect(ctx))  # the ended tab's members no longer show as "new"
+    elif mode == "delete":
+        out += remove_from_config(ctx, tab)
+        out.append(f"설정에서 탭 '{tab.name}' 삭제 — prompt·작업 파일은 남음")
     if mode == "delete" and worktree == "keep" and ctx.state["worktrees"].get(tab.name):
         rec = ctx.state["worktrees"][tab.name]
         out.append(f"worktree 남김: {rec.get('cwd')} ({rec.get('branch')}) — 병합한 뒤 "
@@ -300,7 +319,8 @@ def finish(ctx: Ctx, name: str, mode: str, worktree: str = "keep", delete_branch
 
 
 def reopen(ctx: Ctx, name: str, resume: bool = True) -> list[str]:
-    """Open a closed or archived tab again; resume: continue each agent's last conversation."""
+    """Open a closed or ended tab again; resume: continue each agent's recorded conversation (an
+    ended tab has none left, so it starts fresh)."""
     tab = _tab(ctx, name)
     if tab.closed:
         set_closed(ctx, tab.name, False)

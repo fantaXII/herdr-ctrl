@@ -633,7 +633,8 @@ def test_opencode_agents_failure_keeps_status_failed(tmp_path):
 
 
 def test_tab_status_finish_reopen_and_restart_from_ui(client, tmp_path, herdr):
-    """The tab card: live status, [탭 종료] (archive), [다시 열기] and [재시작] with the conversation kept."""
+    """The tab card: live status, [재시작] keeping the conversation, 잠시 닫기 → [탭 열기] continuing it,
+    [탭 종료] (session files go, settings stay) and [탭 설정 삭제]."""
     import yaml as _y
     from herdr_ctl.up import up
     from conftest import make_ctx
@@ -645,7 +646,7 @@ def test_tab_status_finish_reopen_and_restart_from_ui(client, tmp_path, herdr):
         a.status = "idle"
     for name in list(h.agents):
         h.on_prompt[name] = lambda a, t: (h.kill_agent(a.name) if t == "/exit" else None) or "idle"
-    assert client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "archive"})[0] == 409  # not running
+    assert client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "end"})[0] == 409  # not running
     herdr.running = {"projA"}
     st, res = client.json("GET", "/api/project/projA/tabs")
     assert st == 200 and res["running"] and res["tabs"]["X"]["open"]
@@ -653,13 +654,18 @@ def test_tab_status_finish_reopen_and_restart_from_ui(client, tmp_path, herdr):
     st, res = client.json("POST", "/api/project/projA/tab/X/restart", {"name": "x2"})
     assert st == 200 and "대화 유지" in res["lines"][0]
     assert client.json("POST", "/api/project/projA/tab/X/restart", {"name": "y1"})[0] == 400  # another tab's
-    st, res = client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "archive"})
-    assert st == 200 and res["ok"] and res["tabs"]["X"]["closed"] and "x2" in res["tabs"]["X"]["sessions"]
-    assert _y.safe_load(p.config_path.read_text())["tabs"]["X"]["closed"] is True
+    st, res = client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "close"})
+    assert st == 200 and res["ok"] and not res["tabs"]["X"]["open"] and "x2" in res["tabs"]["X"]["sessions"]
     st, plan = client.json("POST", "/api/project/projA/tab/X/plan", {})
     assert st == 200 and plan["worktree"] is None and any(f["item"] == "sessions" for f in plan["files"])
+    assert "flow build-review-x" in plan["flows"]
     st, res = client.json("POST", "/api/project/projA/tab/X/reopen", {"resume": True})
     assert st == 200 and not res["tabs"]["X"]["closed"] and res["tabs"]["X"]["open"]
     assert h.agents["x2"].args[:2] == ["--session", "fake-x2-session"]
-    assert client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "nope"})[0] == 400
-    assert client.json("POST", "/api/project/projA/tab/Q/finish", {"mode": "close"})[0] == 404
+    st, res = client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "end"})
+    assert st == 200 and res["tabs"]["X"]["closed"] and res["tabs"]["X"]["sessions"] == []
+    assert _y.safe_load(p.config_path.read_text())["tabs"]["X"]["closed"] is True
+    st, res = client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "delete"})
+    assert st == 200 and "X" not in res["tabs"] and "X" not in _y.safe_load(p.config_path.read_text())["tabs"]
+    assert client.json("POST", "/api/project/projA/tab/Y/finish", {"mode": "nope"})[0] == 400
+    assert client.json("POST", "/api/project/projA/tab/X/finish", {"mode": "close"})[0] == 404

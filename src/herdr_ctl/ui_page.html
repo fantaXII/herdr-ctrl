@@ -1331,12 +1331,12 @@ function renderNav() {
       title: id + (t && t.title ? " · " + t.title : "") }, dot,
       h("span", { class: "grow" }, t && t.title ? t.title + " (" + id + ")" : id), memberDots(t), markFor("tabs." + id));
   };
-  const archived = Object.keys(d.tabs).filter((id) => d.tabs[id] && d.tabs[id].closed === true);
+  const archived = Object.keys(d.tabs).filter((id) => d.tabs[id] && d.tabs[id].closed === true);  // ended tabs
   const tabs = Object.keys(d.tabs).filter((id) => !archived.includes(id)).map(tabItem);
   if (archived.length) {
     const open = S.showArchived || archived.includes(S.tab);
     tabs.push(h("button", { class: "nav-item muted small", "aria-expanded": String(open), onclick: () => { S.showArchived = !open; render(); } },
-      h("span", { class: "grow" }, (open ? "▾" : "▸") + " 보관된 탭 (" + archived.length + ")")));
+      h("span", { class: "grow" }, (open ? "▾" : "▸") + " 종료된 탭 (" + archived.length + ")")));
     if (open) tabs.push(...archived.map(tabItem));
   }
   const flows = Object.keys(d.flows || {}).map((fname) => {
@@ -1938,9 +1938,10 @@ function showApply() {
   dlg.showModal();
 }
 
-// ------------------------------------------------------- running tab: finish / reopen / restart
-// Same operations as `hctrl down/tab/restart` (tabops.py). They change config.yaml (archive, delete),
-// so they need a saved page; afterwards the page reloads the project.
+// ------------------------------------------------------- running tab: close / end / reopen / restart
+// Same operations as `hctrl down / tab end / tab reopen / tab delete / restart` (tabops.py).
+// - 잠시 닫기: windows only.  - 탭 종료: the tab's hctrl session ends, its session files go; settings and
+//   prompts stay.  - 탭 설정 삭제: the tab leaves config.yaml; files stay. LLM transcripts are never touched.
 const liveTab = (id) => (S.live && S.live.tabs && S.live.tabs[id]) || null;
 async function refreshLive() {
   try { S.live = await api("GET", "/api/project/" + encodeURIComponent(S.project) + "/tabs"); }
@@ -1948,8 +1949,6 @@ async function refreshLive() {
   if (S.view === "tab") render(); else renderNavOnly();
 }
 function renderNavOnly() { const n = document.querySelector("nav.nav"); if (n && S.data) n.replaceWith(renderNav()); }
-const CLEAN_ITEMS = [["work", "작업 폴더 (.herdr-flow/work/<탭>/)"], ["handoff", "인수인계 파일"], ["runs", "이 탭의 실행 기록"],
-  ["roles", "역할 파일·이력·brief"], ["sessions", "이어 갈 대화 기록"]];
 async function tabOp(tname, action, body) {
   return api("POST", "/api/project/" + encodeURIComponent(S.project) + "/tab/" + encodeURIComponent(tname) + "/" + action, body || {});
 }
@@ -1959,19 +1958,19 @@ async function afterTabOp(tname, res) {
   await openProject(S.project);
   if (S.data && S.data.tabs[keep]) { S.tab = keep; S.view = "tab"; render(); }
 }
-function savedTab(tname) { return S.exists && S.saved && S.saved.tabs && S.saved.tabs[tname] && !dirty(); }
 function liveCard(tname, t) {
   const saved = S.exists && S.saved && S.saved.tabs && S.saved.tabs[tname];
   if (!saved) return null;
-  const lt = liveTab(tname), archived = t.closed === true;
+  const lt = liveTab(tname), ended = t.closed === true;
   const needSave = () => { if (dirty()) { toast("저장하지 않은 변경이 있습니다. 먼저 저장하세요"); return true; } return false; };
-  if (archived) {
-    return h("div", { class: "card k base livecard" }, h("h3", {}, "■ 보관된 탭 (완료)"),
-      desc("이 탭은 완료되어 보관 중입니다. 창이 열리지 않고 변경 알림도 뜨지 않습니다. 작업 파일과 브랜치는 그대로 남아 있습니다."),
-      h("p", { class: "row" },
-        h("button", { class: "primary", title: "보관을 풀고 창과 agent를 다시 엽니다", onclick: () => { if (!needSave()) reopenDialog(tname); } }, "▶ 다시 열기"),
-        h("button", { title: "보관한 채로 작업 파일·worktree 폴더를 지웁니다", onclick: () => { if (!needSave()) cleanDialog(tname); } }, "🧹 작업 파일 정리"),
-        h("button", { class: "danger", title: "설정에서 이 탭을 지웁니다", onclick: () => { if (!needSave()) finishDialog(tname, "delete", true); } }, "삭제")));
+  const delBtn = h("button", { class: "danger", title: "config.yaml에서 이 탭과 그 flow를 지웁니다. prompt·작업 파일은 남습니다",
+    onclick: () => { if (!needSave()) deleteDialog(tname); } }, "🗑 탭 설정 삭제");
+  if (ended) {
+    return h("div", { class: "card k base livecard" }, h("h3", {}, "■ 종료된 탭"),
+      desc("이 탭의 hctrl 세션은 끝났습니다. 탭 설정과 prompt(역할 상세)는 남아 있어 언제든 같은 구성으로 새로 시작할 수 있습니다. 변경 알림은 뜨지 않습니다."),
+      h("p", { class: "row", style: "margin-bottom:0" },
+        h("button", { class: "primary", title: "같은 구성으로 새 세션을 시작합니다", onclick: () => { if (!needSave()) reopenNow(tname, false); } }, "▶ 다시 시작"),
+        delBtn));
   }
   if (!S.running) return null;
   const members = (lt && lt.members) || [];
@@ -1981,14 +1980,15 @@ function liveCard(tname, t) {
   const open = lt && lt.open;
   return h("div", { class: "card k base livecard" }, h("h3", {}, "실행 제어", h("span", { class: "grow" }),
       h("button", { class: "link small", title: "상태 새로고침", onclick: refreshLive }, "↻ 새로고침")),
-    desc(open ? "이 탭의 창과 agent를 다시 시작하거나 끝냅니다. skill·MCP를 바꿨다면 [재시작]으로 같은 대화를 이어서 다시 불러올 수 있습니다."
-      : "이 탭의 창이 닫혀 있습니다."),
+    desc(open ? "skill·MCP를 바꿨다면 [재시작]으로 같은 대화를 이어서 다시 불러올 수 있습니다. 작업이 끝났으면 [탭 종료]로 세션 산출물을 정리합니다."
+      : "이 탭의 창이 닫혀 있습니다. [탭 열기]는 이전 대화를 이어서 엽니다."),
     h("div", { class: "mstat" }, members.map(stat)),
     h("p", { class: "row", style: "margin-bottom:0" },
       open ? h("button", { title: "같은 대화로 이어서(기본) 또는 새 대화로 다시 시작합니다", onclick: () => restartDialog(tname) }, "↻ 재시작 ▾")
-        : h("button", { class: "primary", onclick: () => { if (!needSave()) reopenDialog(tname); } }, "▶ 탭 열기"),
+        : h("button", { class: "primary", onclick: () => { if (!needSave()) reopenNow(tname, true); } }, "▶ 탭 열기"),
       pend ? h("button", { onclick: () => refreshChanges(true) }, "변경 반영 (" + pend + ")") : null,
-      h("button", { class: "danger", title: "잠시 닫기 / 완료(보관) / 삭제 중에서 고릅니다", onclick: () => { if (!needSave()) finishDialog(tname, "archive", false); } }, "■ 탭 종료")));
+      h("button", { title: "잠시 닫기 또는 탭 종료(세션 산출물 정리)", onclick: () => { if (!needSave()) endDialog(tname); } }, "■ 탭 종료 ▾"),
+      delBtn));
 }
 function opDialog(title, body, buttons) {
   $("tabOpBody").replaceChildren(h("div", {}, h("h3", { style: "margin-top:0" }, title), body,
@@ -1996,75 +1996,79 @@ function opDialog(title, body, buttons) {
   if (!$("tabOpDialog").open) $("tabOpDialog").showModal();
 }
 const fmtBytes = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B";
-function planList(files) {
-  if (!files || !files.length) return h("p", { class: "muted small" }, "지울 작업 파일이 없습니다.");
-  return h("details", {}, h("summary", { class: "small" }, "지울 파일 " + files.length + "개 · " + fmtBytes(files.reduce((a, f) => a + f.bytes, 0))),
-    h("ul", { class: "small" }, files.map((f) => h("li", {}, code(f.path), f.bytes ? " " + fmtBytes(f.bytes) : ""))));
+const ITEM_LABELS = { work: "작업 폴더", handoff: "인수인계", runs: "실행 기록", briefs: "agent 안내문(brief)", sessions: "대화 기록" };
+function planTable(files) {
+  if (!files || !files.length) return h("p", { class: "muted small" }, "지울 산출물이 없습니다.");
+  const groups = {};
+  for (const f of files) (groups[f.item] = groups[f.item] || []).push(f);
+  return h("table", { class: "map small" }, Object.entries(groups).map(([k, fs]) => h("tr", {},
+    h("td", {}, ITEM_LABELS[k] || k), h("td", {}, code(fs[0].path), fs.length > 1 ? " 외 " + (fs.length - 1) + "개" : ""),
+    h("td", { class: "muted" }, k === "sessions" ? "LLM 대화 원본은 남음" : fmtBytes(fs.reduce((a, f) => a + f.bytes, 0))))));
 }
-function worktreeBox(plan) {
-  const w = plan && plan.worktree;
+function worktreeBox(w) {
   if (!w) return null;
   return h("div", { class: w.safe ? "notice small" : "warnbox small" },
-    w.safe ? ["worktree ", code(w.branch), ": ", code(w.base), "에 모두 병합되어 폴더와 브랜치를 지워도 됩니다."]
+    w.safe ? ["worktree ", code(w.branch), ": ", code(w.base), "에 모두 병합됨 ✔"]
       : [h("b", {}, "⚠ worktree " + w.branch + "은 아직 " + (w.base || "기준 브랜치") + "에 다 들어가지 않았습니다"),
         w.unmerged.length ? h("div", {}, "병합 안 된 커밋 " + w.unmerged.length + "개: " + w.unmerged.slice(0, 5).join(", ") + (w.unmerged.length > 5 ? " …" : "")) : null,
         !w.merged && !w.unmerged.length ? h("div", {}, "병합됐는지 확인할 수 없습니다.") : null,
         w.dirty.length ? h("div", {}, "커밋 안 된 파일 " + w.dirty.length + "개: " + w.dirty.slice(0, 5).join(", ") + (w.dirty.length > 5 ? " …" : "")) : null,
-        h("div", { class: "muted" }, "이대로 두면 worktree는 남기고 나머지만 진행합니다. 병합한 뒤 다시 정리하세요.")]);
+        h("div", { class: "muted" }, "worktree는 남깁니다. 병합한 뒤 다시 정리하세요.")]);
 }
-const branchBox = (o) => h("label", { class: "row", style: "margin-left:24px" },
-  h("input", { type: "checkbox", checked: o.branch, onchange: (e) => { o.branch = e.target.checked; } }),
-  "병합된 브랜치도 삭제", h("span", { class: "muted small" }, "병합되지 않았으면 이 설정과 관계없이 남깁니다"));
 // the server refused to remove an unmerged worktree: keep it (default), remove anyway, or cancel
 function unmergedChoice(title, res, retry) {
-  opDialog(title, h("div", {}, worktreeBox({ worktree: res.worktree })),
+  opDialog(title, h("div", {}, worktreeBox(res.worktree)),
     [h("button", { onclick: () => { if (confirm("병합 안 된 커밋은 브랜치에 남지만, 커밋 안 된 파일은 사라집니다. 그래도 worktree 폴더를 지울까요?")) retry("force"); } }, "그래도 삭제 (브랜치 유지)"),
       h("button", { class: "primary", onclick: () => retry("keep") }, "worktree는 남기고 진행")]);
 }
-async function finishDialog(tname, mode, archivedOnly) {
-  const lt = liveTab(tname);
+async function endDialog(tname) {
   let plan = null;
-  try { plan = await tabOp(tname, "plan", {}); } catch (e) { plan = null; }
-  const o = { mode: archivedOnly ? "delete" : mode, files: false, wt: !!(plan && plan.worktree), branch: true };
+  try { plan = await tabOp(tname, "plan", {}); } catch (e) { toast(e.message); return; }
+  const w = plan.worktree;
+  const o = { mode: "end", wt: !!(w && w.safe), branch: true };
   const draw = () => {
-    const opt = (key, label, help) => h("label", { class: "opt" }, h("input", { type: "radio", name: "finmode", checked: o.mode === key,
+    const opt = (key, label, help) => h("label", { class: "opt" }, h("input", { type: "radio", name: "endmode", checked: o.mode === key,
       onchange: () => { o.mode = key; draw(); } }), h("b", {}, label), h("span", { class: "muted small" }, help));
     const body = h("div", {},
-      archivedOnly ? h("p", {}, "보관된 탭 '" + tname + "'을 설정에서 지웁니다.") : [
-        opt("close", "잠시 닫기", "창만 닫습니다. 설정은 그대로 두고 나중에 [탭 열기]로 다시 엽니다."),
-        opt("archive", "완료 (보관)", "창을 닫고 보관함으로 옮깁니다. 변경 알림이 뜨지 않고 다시 생기지 않습니다. 나중에 다시 열 수 있습니다."),
-        opt("delete", "삭제", "창을 닫고 설정에서 탭을 지웁니다. 이 탭의 flow와 다른 flow 속 이 탭 단계도 빠집니다.")],
-      o.mode === "delete" ? [h("label", { class: "row", style: "margin-top:8px" }, h("input", { type: "checkbox", checked: o.files, onchange: (e) => { o.files = e.target.checked; draw(); } }),
-        "작업 파일도 지우기", h("span", { class: "muted small" }, "작업 폴더, 인수인계, 실행 기록, 역할 파일, 대화 기록")), o.files ? planList(plan && plan.files) : null] : null,
-      plan && plan.worktree && o.mode !== "close" ? [h("label", { class: "row", style: "margin-top:8px" },
-        h("input", { type: "checkbox", checked: o.wt, onchange: (e) => { o.wt = e.target.checked; draw(); } }),
-        "worktree 폴더 정리", h("span", { class: "muted small" }, "기준 브랜치에 병합됐을 때만 지웁니다")),
-        o.wt ? [branchBox(o), worktreeBox(plan)] : null] : null,
-      h("p", { class: "muted small" }, "브랜치와 커밋은 병합되지 않았으면 지우지 않습니다."));
+      opt("close", "잠시 닫기", "창만 닫습니다. 다시 열면 이전 대화를 이어서 작업합니다."),
+      opt("end", "탭 종료", "이 탭의 hctrl 세션을 끝내고 산출물을 지웁니다. 탭 설정과 prompt(역할 상세)는 남고, 다시 시작하면 새 세션입니다."),
+      o.mode === "end" ? [h("p", { class: "small", style: "margin:10px 0 4px" }, h("b", {}, "지우는 것"), " (hctrl 세션 산출물)"), planTable(plan.files),
+        h("p", { class: "small", style: "margin:6px 0" }, h("b", {}, "남는 것"), ": 탭 설정, prompt(역할 상세), LLM 대화 원본"),
+        w ? [w.safe ? h("label", { class: "row" }, h("input", { type: "checkbox", checked: o.wt, onchange: (e) => { o.wt = e.target.checked; draw(); } }),
+              "worktree 폴더 정리 (" + w.branch + ")") : null,
+            w.safe && o.wt ? h("label", { class: "row", style: "margin-left:24px" }, h("input", { type: "checkbox", checked: o.branch,
+              onchange: (e) => { o.branch = e.target.checked; } }), "병합된 브랜치도 삭제") : null,
+            worktreeBox(w)] : null] : null);
     const run = async (worktree) => {
       try {
-        const res = await tabOp(tname, "finish", { mode: o.mode, worktree, delete_branch: o.branch, items: o.mode === "delete" && o.files ? CLEAN_ITEMS.map((x) => x[0]) : [] });
+        const res = await tabOp(tname, "finish", { mode: o.mode, worktree, delete_branch: o.branch });
         if (res.ok === false) return unmergedChoice("탭 '" + tname + "' 종료", res, run);
         $("tabOpDialog").close(); afterTabOp(tname, res);
       } catch (e) { toast(e.message); }
     };
-    opDialog("탭 '" + tname + "' 종료", body, h("button", { class: "danger", onclick: () => {
-      if (o.mode === "delete" && !confirm("탭 '" + tname + "'을 설정에서 지울까요?")) return;
-      run(o.wt && o.mode !== "close" ? "remove" : "keep"); } }, o.mode === "close" ? "닫기" : o.mode === "archive" ? "완료 (보관)" : "삭제"));
+    opDialog("탭 '" + tname + "'", body, h("button", { class: o.mode === "end" ? "danger" : "primary",
+      onclick: () => run(o.mode === "end" && o.wt ? "remove" : "keep") }, o.mode === "end" ? "탭 종료" : "닫기"));
   };
   draw();
 }
-function reopenDialog(tname) {
-  const lt = liveTab(tname), had = lt && lt.sessions && lt.sessions.length;
-  const o = { resume: true };
+async function deleteDialog(tname) {
+  let plan = null;
+  try { plan = await tabOp(tname, "plan", {}); } catch (e) { toast(e.message); return; }
+  const lt = liveTab(tname);
   const body = h("div", {},
-    h("label", { class: "opt" }, h("input", { type: "radio", name: "reo", checked: true, onchange: () => { o.resume = true; } }), h("b", {}, "이전 대화 이어서"),
-      h("span", { class: "muted small" }, had ? "기록된 대화: " + lt.sessions.join(", ") + ". 대화가 없는 agent는 새로 시작합니다." : "기록된 대화가 없으면 새로 시작합니다.")),
-    h("label", { class: "opt" }, h("input", { type: "radio", name: "reo", onchange: () => { o.resume = false; } }), h("b", {}, "새로 시작"),
-      h("span", { class: "muted small" }, "모든 agent를 새 대화로 시작합니다.")));
-  opDialog("탭 '" + tname + "' 열기", body, h("button", { class: "primary", onclick: async () => {
-    try { const res = await tabOp(tname, "reopen", { resume: o.resume }); $("tabOpDialog").close(); afterTabOp(tname, res); } catch (e) { toast(e.message); }
-  } }, "열기"));
+    h("p", { class: "small" }, h("b", {}, "지우는 것"), ": config.yaml의 탭 '" + tname + "'", (plan.flows || []).map((f) => ", " + f)),
+    h("p", { class: "small" }, h("b", {}, "남는 것"), ": prompt(역할 상세), 작업 파일, worktree, LLM 대화 원본"),
+    lt && lt.open ? h("p", { class: "small" }, "창이 열려 있어 먼저 닫습니다.") : null,
+    h("div", { class: "notice small" }, "💡 이 구성을 다시 쓰려면 먼저 템플릿으로 저장하세요 ",
+      h("button", { class: "link small", onclick: () => { $("tabOpDialog").close(); openSaveTpl(tname); } }, "☆ 템플릿으로 저장")));
+  opDialog("탭 '" + tname + "' 설정 삭제", body, h("button", { class: "danger", onclick: async () => {
+    try { const res = await tabOp(tname, "finish", { mode: "delete", worktree: "keep" }); $("tabOpDialog").close(); afterTabOp(tname, res); }
+    catch (e) { toast(e.message); }
+  } }, "설정에서 삭제"));
+}
+async function reopenNow(tname, resume) {
+  try { toast(resume ? "이전 대화를 이어서 여는 중…" : "새 세션으로 시작하는 중…"); afterTabOp(tname, await tabOp(tname, "reopen", { resume })); }
+  catch (e) { toast(e.message); }
 }
 function restartDialog(tname) {
   const lt = liveTab(tname), agents = ((lt && lt.members) || []).filter((m) => m.type !== "shell");
@@ -2082,31 +2086,6 @@ function restartDialog(tname) {
       S.live = { running: res.running, tabs: res.tabs }; toast((res.lines || []).join(" · ")); render(); }
     catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "재시작"; }
   } }, "재시작"));
-}
-async function cleanDialog(tname) {
-  let plan = null;
-  try { plan = await tabOp(tname, "plan", {}); } catch (e) { toast(e.message); return; }
-  const o = { items: new Set(CLEAN_ITEMS.map((x) => x[0])), wt: !!plan.worktree, branch: true };
-  const draw = () => {
-    const files = (plan.files || []).filter((f) => o.items.has(f.item));
-    const body = h("div", {}, h("p", { class: "muted small" }, "탭은 보관한 채로, 고른 작업 파일만 지웁니다."),
-      CLEAN_ITEMS.map(([k, label]) => h("label", { class: "row" }, h("input", { type: "checkbox", checked: o.items.has(k),
-        onchange: (e) => { if (e.target.checked) o.items.add(k); else o.items.delete(k); draw(); } }), label,
-        h("span", { class: "muted small" }, (plan.files || []).filter((f) => f.item === k).length + "개"))),
-      planList(files),
-      plan.worktree ? [h("label", { class: "row" }, h("input", { type: "checkbox", checked: o.wt, onchange: (e) => { o.wt = e.target.checked; draw(); } }),
-        "worktree 폴더 (" + plan.worktree.branch + ")"), o.wt ? [branchBox(o), worktreeBox(plan)] : null] : null);
-    const run = async (worktree) => {
-      try {
-        const res = await tabOp(tname, "clean", { items: [...o.items], worktree, delete_branch: o.branch });
-        if (res.ok === false) return unmergedChoice("탭 '" + tname + "' 정리", res, run);
-        $("tabOpDialog").close(); afterTabOp(tname, res);
-      } catch (e) { toast(e.message); }
-    };
-    opDialog("탭 '" + tname + "' 작업 파일 정리", body, h("button", { class: "danger", disabled: !files.length && !o.wt,
-      onclick: () => { if (confirm("고른 파일을 지울까요? 되돌릴 수 없습니다.")) run(o.wt ? "remove" : "keep"); } }, "지우기"));
-  };
-  draw();
 }
 
 // ------------------------------------------------------------------- roles

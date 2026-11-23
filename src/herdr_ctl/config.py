@@ -117,7 +117,7 @@ class TabCfg:
     unattended: str = "off"
     policy: dict = field(default_factory=lambda: dict(DEFAULT_POLICY, deny=[]))
     title: str | None = None  # herdr tab label shown on screen; `name` stays the id used by commands
-    closed: bool = False  # finished and archived: kept in config, never laid out or watched
+    closed: bool = False  # ended (hctrl tab end): kept in config with its prompts, never laid out or watched
 
     @property
     def display(self) -> str:
@@ -160,7 +160,7 @@ class Config:
 
     @property
     def open_tabs(self) -> list[TabCfg]:
-        """Tabs that run (archived `closed: true` tabs are left out of up / watch / status)."""
+        """Tabs that run (ended `closed: true` tabs are left out of up and watch)."""
         return [t for t in self.tabs if not t.closed]
 
     def member(self, name: str) -> Member | None:

@@ -390,7 +390,7 @@ def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True, resume: bool 
     if tab and tabs[0] is None:
         raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
     if tab and tabs[0].closed:
-        raise RuntimeError(f"탭 '{tabs[0].name}'은 보관(완료)된 탭입니다. 다시 열려면: hctrl tab reopen {tabs[0].name}")
+        raise RuntimeError(f"탭 '{tabs[0].name}'은 종료된 탭입니다. 다시 시작하려면: hctrl tab reopen {tabs[0].name}")
     ctx.project.ensure_dirs()
     wid = ensure_workspace(ctx)
     ensure_control(ctx, wid, start_watch)
@@ -493,7 +493,7 @@ def status(ctx: Ctx, tab: str | None = None) -> list[str]:
         raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
     for t in tabs:
         if t.closed:
-            lines.append(f"[{t.name}] 보관됨 (hctrl tab reopen {t.name})")
+            lines.append(f"[{t.name}] 종료됨 (다시 시작: hctrl tab reopen {t.name})")
             continue
         for group in group_tab(t):
             lines.append(f"[{group.label}]")
