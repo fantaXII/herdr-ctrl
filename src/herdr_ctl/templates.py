@@ -24,6 +24,7 @@ from pathlib import Path
 
 import yaml
 
+from .config import str_keys
 from .project import Project, config_home
 
 VERSION = 1
@@ -86,7 +87,7 @@ def tab_flows(data: dict, tab_id: str) -> list[str]:
 
 def build(project: Project, tab_id: str) -> dict:
     """Template content from the project's SAVED config.yaml and role files."""
-    data = yaml.safe_load(project.config_path.read_text()) if project.config_path.exists() else None
+    data = str_keys(yaml.safe_load(project.config_path.read_text())) if project.config_path.exists() else None
     if not isinstance(data, dict) or not isinstance((data.get("tabs") or {}).get(tab_id), dict):
         raise TemplateError(f"저장된 설정에 탭 '{tab_id}'이 없습니다 (먼저 저장하세요)")
     tab = copy.deepcopy(data["tabs"][tab_id])

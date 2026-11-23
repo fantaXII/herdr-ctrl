@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from . import roles as roles_mod
-from .config import check_file, format_issues, orch_name
+from .config import check_file, format_issues, orch_name, str_keys
 from .herdr import Herdr, HerdrError, clean_env
 from .orchestrator import LimitExceeded, ScopeError, current_actor, enforce, guard
 from .project import Project, find_project, load_registry, project_by_name, register
@@ -328,7 +328,7 @@ def cmd_tab(args) -> int:
         return 0
     if any(t.name.lower() == new.lower() and t is not tab for t in ctx.cfg.tabs):
         raise Fail(f"이미 있는 탭 ID입니다: {new}")
-    data = yaml.safe_load(ctx.project.config_path.read_text())
+    data = str_keys(yaml.safe_load(ctx.project.config_path.read_text()))
     data = rename_in_data(data, old, new)
     from .config import check_data
     cfg2, issues = check_data(data, root=ctx.project.root)

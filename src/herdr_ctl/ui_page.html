@@ -338,7 +338,7 @@ const ROLE_NAMES = ["coder", "tester", "reviewer", "helper"];
 const SHELL_BASE = "build", TAB_BASE = "work";
 const PANES_PER_TAB = 4;
 const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-const TAB_RE = /^[A-Za-z][A-Za-z0-9_-]{0,24}$/;
+const TAB_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,24}$/;
 
 // -------------------------------------------------------------------- state
 const S = { roles: {}, tabOrigin: {}, pending: [], mode: "launcher", cwd: "", models: null, project: null, data: null, saved: null, version: null,
@@ -356,7 +356,10 @@ document.body.classList.toggle("nohelp", !helpOn());
 
 function dirty() { return S.data && JSON.stringify(S.data) !== JSON.stringify(S.saved); }
 // differs from config.yaml AND from the draft: leaving now loses work
-function unsaved() { return dirty() && JSON.stringify(S.data) !== S.draftJson; }
+function unsaved() { return dirty() && (JSON.stringify(S.data) !== S.draftJson || pendingKey() !== S.draftPending); }
+// role details of members not saved yet: S.roleTexts (whole role file text) / S.copies (saved source member)
+const pendingKey = () => JSON.stringify({ r: S.roleTexts || {}, c: S.copies || {} });
+function setPending(from) { S.roleTexts = { ...((from && from.role_texts) || {}) }; S.copies = { ...((from && from.copies) || {}) }; }
 window.addEventListener("beforeunload", (e) => { if (unsaved()) { e.preventDefault(); e.returnValue = ""; } });
 window.addEventListener("hashchange", route);
 
@@ -534,7 +537,7 @@ async function openProject(name) {
     S.models = models;
     if (modelsLoading(models)) pollModels();
     S.project = name; S.version = cfg.version; S.running = cfg.running; S.roles = cfg.roles || {}; S.exists = cfg.exists; S.root = cfg.root;
-    S.git = !!cfg.git; S.copies = {}; S.roleTexts = {};
+    S.git = !!cfg.git; S.branch = cfg.branch || null; setPending(null); S.draftPending = pendingKey();
     await loadTemplates();
     if (cfg.parse_error || !cfg.data || typeof cfg.data !== "object") {
       $("app").replaceChildren(h("section", {}, h("h2", {}, name),
@@ -547,6 +550,7 @@ async function openProject(name) {
     if (cfg.draft) {  // an unfinished draft wins over config.yaml until it is saved or discarded
       S.data = cfg.draft.data; normalize(S.data);
       S.draftJson = JSON.stringify(S.data); S.draftAt = cfg.draft.saved_at;
+      setPending(cfg.draft); S.draftPending = pendingKey();
       toast("임시 저장본(" + (S.draftAt || "?") + ")을 불러왔습니다."
         + (cfg.draft.base !== cfg.version ? " 그 뒤에 config.yaml이 바뀌었으니 확인한 뒤 저장하세요." : ""));
     } else if (!cfg.exists) {  // starter config for a project without config.yaml: nothing to lose yet
@@ -584,6 +588,8 @@ function forSave(d) {  // the editor's empty containers are not written to confi
 }
 
 function changed() {
+  const names = new Set(allMembers(S.data || {}).filter((m) => m.type !== "shell").map((m) => m.name));
+  for (const pend of [S.roleTexts || {}, S.copies || {}]) for (const k of Object.keys(pend)) if (!names.has(k)) delete pend[k];
   render();
   clearTimeout(S.checkTimer);
   S.checkTimer = setTimeout(runCheck, 350);
@@ -611,7 +617,9 @@ function renderHeader() {
     S.running ? h("span", { class: "badge ok" }, "● 세션 실행 중") : null,
     S.pending.length ? h("button", { onclick: () => refreshChanges(true) }, "변경 반영 (" + S.pending.length + ")") : null,
     // back to the last kept state: the draft when there is one, otherwise config.yaml
-    h("button", { disabled: !unsaved(), onclick: () => { S.data = S.draftJson !== null ? JSON.parse(S.draftJson) : clone(S.saved); S.tabOrigin = {}; changed(); } }, "되돌리기"),
+    h("button", { disabled: !unsaved(), onclick: () => { S.data = S.draftJson !== null ? JSON.parse(S.draftJson) : clone(S.saved); S.tabOrigin = {};
+      if (S.draftJson !== null) { const p = JSON.parse(S.draftPending); setPending({ role_texts: p.r, copies: p.c }); } else setPending(null);
+      changed(); } }, "되돌리기"),
     S.draftJson !== null ? h("button", { title: "임시 저장본을 지우고 config.yaml 내용으로 돌아갑니다", onclick: discardDraft }, "임시본 버리기") : null,
     // incomplete settings (errors) can still be kept as a draft; once the check passes it becomes the real save
     nErr > 0 ? h("button", { class: "primary", disabled: !unsaved(), onclick: saveDraft,
@@ -677,7 +685,8 @@ async function save() {
     let msg = "저장했습니다.";
     if (res.renamed && res.renamed.length) msg += " " + res.renamed.join(", ") + ".";
     if (res.copied && res.copied.length) msg += " 역할 상세 생성: " + res.copied.join(", ") + ".";
-    S.copies = {}; S.roleTexts = {}; if (res.roles) S.roles = res.roles;  // role files made by this save
+    if (res.role_kept && res.role_kept.length) msg += " 역할 파일이 이미 있어 그대로 둠: " + res.role_kept.join(", ") + " (✎ 역할 상세에서 확인하세요).";
+    setPending(null); S.draftPending = pendingKey(); if (res.roles) S.roles = res.roles;  // role files made by this save
     toast(msg);
     render();
     if (S.running) refreshChanges(true);
@@ -730,8 +739,8 @@ function tabSteps(tname) {
 async function saveDraft() {
   try {
     const sent = clone(S.data);
-    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/draft", { data: sent, version: S.version });
-    S.draftJson = JSON.stringify(sent); S.draftAt = res.saved_at; S.issues = res.issues;
+    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/draft", { data: sent, version: S.version, role_texts: S.roleTexts || {}, copies: S.copies || {} });
+    S.draftJson = JSON.stringify(sent); S.draftAt = res.saved_at; S.issues = res.issues; S.draftPending = pendingKey();
     toast("임시 저장했습니다. 오류를 모두 고치면 [저장]으로 바뀝니다.");
     render();
   } catch (e) { toast("임시 저장 실패: " + e.message); }
@@ -740,7 +749,7 @@ async function discardDraft() {
   if (!confirm("임시 저장본을 버리고 config.yaml 내용으로 돌아갈까요?")) return;
   try {
     await api("POST", "/api/project/" + encodeURIComponent(S.project) + "/draft/discard", {});
-    S.draftJson = null; S.draftAt = null; S.data = clone(S.saved); S.tabOrigin = {};
+    S.draftJson = null; S.draftAt = null; S.data = clone(S.saved); S.tabOrigin = {}; setPending(null); S.draftPending = pendingKey();
     changed();
   } catch (e) { toast(e.message); }
 }
@@ -778,7 +787,7 @@ function copyPlan(src, id, base) {
 }
 function copyIdError(id, base) {
   const d = base || S.data;
-  if (!TAB_RE.test(id)) return "탭 이름: 영문으로 시작, 영문/숫자/_- 25자 이하";
+  if (!TAB_RE.test(id)) return "탭 이름: 영문 또는 숫자로 시작, 영문/숫자/_- 25자 이하";
   if (Object.keys(d.tabs).some((x) => x.toLowerCase() === id.toLowerCase())) return "이미 있는 탭 이름입니다";
   if (allMembers(d).some((m) => m.name === id.toLowerCase() + "-orch")) return "'" + id.toLowerCase() + "-orch' 이름을 이미 쓰고 있습니다";
   return "";
@@ -821,7 +830,7 @@ function copyBody(o) {
       h("table", { class: "map small" }, Object.entries(plan.names).map(([a, b]) => a === "@orch"
         ? h("tr", {}, h("td", {}, h("b", {}, b)), h("td", {}), h("td", {}))
         : h("tr", {}, h("td", {}, a), h("td", {}, "→"), h("td", {}, h("b", {}, b)), note(a, b))))] : null,
-    check("roles", tpl ? "역할 상세(prompt)도 가져오기" : "역할 상세(prompt)도 복사", { hint: "저장할 때 만들어집니다" }),
+    check("roles", tpl ? "역할 상세(prompt)도 가져오기" : "역할 상세(prompt)도 복사", { hint: "추가한 뒤 ✎ 역할 상세에서 바로 고칠 수 있고, 저장할 때 파일로 만들어집니다" }),
     check("flows", tpl ? "flow 가져오기" : "이 탭의 flow 복사", { hint: plan ? (plan.flows.length ? plan.flows.join(", ") : "없음") : "" }),
     check("wt", "별도 worktree에서 작업 (권장)", S.git ? { hint: "같은 폴더에서 두 팀이 같은 파일을 고치는 충돌을 막습니다" } : { disabled: true, hint: "git 저장소가 아니라 쓸 수 없습니다" }),
     o.wt ? h("label", { class: "field", style: "margin-left:24px" }, "브랜치",
@@ -883,7 +892,7 @@ function copyTab(o, plan, quiet) {
   S.tab = o.id; S.view = "tab"; changed();
   if (!quiet) toast(src.kind === "tpl"
     ? (o.replace ? "템플릿 '" + src.id + "'으로 시작합니다. 확인한 뒤 [만들기]를 누르세요."
-      : "템플릿 '" + src.id + "'을 '" + o.id + "' 탭으로 추가했습니다. prompt에 이전 프로젝트 얘기가 있으면 고치세요. 저장하면 반영됩니다.")
+      : "템플릿 '" + src.id + "'을 '" + o.id + "' 탭으로 추가했습니다. prompt에 이전 프로젝트 얘기가 있으면 각 멤버의 ✎ 역할 상세에서 고치세요. 저장하면 반영됩니다.")
     : "'" + src.id + "' 탭을 '" + o.id + "'(으)로 복사했습니다. 저장하면 반영됩니다.");
   return orchName;
 }
@@ -1491,7 +1500,7 @@ function renderTabView(tname, t) {
   const idLive = S.running && Object.keys((S.saved && S.saved.tabs) || {}).includes(S.tabOrigin[tname] || tname);
   const idInput = h("input", { value: tname, "aria-label": "탭 ID", onchange: (e) => {
     const nv = e.target.value.trim();
-    if (!TAB_RE.test(nv) || nv === tname) { e.target.value = tname; if (nv !== tname) toast("탭 ID: 영문으로 시작, 영문/숫자/_- 25자 이하"); return; }
+    if (!TAB_RE.test(nv) || nv === tname) { e.target.value = tname; if (nv !== tname) toast("탭 ID: 영문 또는 숫자로 시작, 영문/숫자/_- 25자 이하"); return; }
     if (Object.keys(d.tabs).some((x) => x !== tname && x.toLowerCase() === nv.toLowerCase())) { e.target.value = tname; toast("이미 있는 탭 ID입니다"); return; }
     d.tabs = renameKey(d.tabs, tname, nv);
     for (const f of Object.values(d.flows || {})) if (f && f.tab === tname) f.tab = nv;
@@ -1514,11 +1523,12 @@ function renderTabView(tname, t) {
       frow("탭 ID", idInput,
         idLive ? ["명령에서 이 탭을 가리키는 이름입니다. 세션 실행 중에도 저장하면 창과 agent는 그대로 둔 채 바뀌고, orchestrator 이름(",
             code(tname.toLowerCase() + "-orch"), ")도 따라 바뀝니다."]
-          : ["명령에서 이 탭을 가리키는 이름입니다 (예: ", code("hctrl ask " + tname + " \"…\""), "). 영문으로 시작, 25자 이하."]),
+          : ["명령에서 이 탭을 가리키는 이름입니다 (예: ", code("hctrl ask " + tname + " \"…\""), "). 영문 또는 숫자로 시작, 25자 이하."]),
       frow("표시 이름",
         h("input", { value: t.title || "", placeholder: tname, maxlength: 30, "aria-label": "표시 이름", onchange: (e) => {
           const v = e.target.value.trim(); if (v) t.title = v; else delete t.title; changed(); } }),
-        "herdr 화면의 탭 제목입니다. 한글도 됩니다. 비우면 탭 ID를 쓰고, 세션 실행 중에도 저장하면 바로 바뀝니다.")));
+        "herdr 화면의 탭 제목입니다. 한글도 됩니다. 비우면 탭 ID를 쓰고, 세션 실행 중에도 저장하면 바로 바뀝니다."),
+      worktreeRow(tname, t)));
   const left = h("div", {}, info, renderOrch(tname, t), renderAgents(tname, t), renderShells(tname, t));
   const right = h("div", { class: "card k base preview-card" }, h("h3", {}, "화면 배치 미리보기"),
     desc("저장하면 herdr에 이렇게 배치됩니다."), renderPreview(tname, t),
@@ -1526,6 +1536,27 @@ function renderTabView(tname, t) {
       h("span", { class: "dot agent" }), " agent  ", h("span", { class: "dot shell" }), " 쉘"));
   return h("div", {}, title, issueList("tabs." + tname), quickSetup(tname, t), h("div", { class: "cols" }, left, h("div", {}, right)),
     tabSteps(tname));
+}
+
+// where the tab works: the project folder on its current branch, or its own git worktree + branch
+function worktreeRow(tname, t) {
+  const cur = S.branch || "현재 브랜치";
+  const wt = t.worktree && typeof t.worktree === "object" ? t.worktree : null;
+  const sel = h("select", { "aria-label": "작업 위치", disabled: !S.git && !wt, onchange: (e) => {
+    if (e.target.value === "wt") t.worktree = { branch: "feat/" + tname.toLowerCase() }; else delete t.worktree;
+    changed(); } },
+    h("option", { value: "here", selected: !wt }, "프로젝트 폴더 (" + cur + " 브랜치 그대로)"),
+    h("option", { value: "wt", selected: !!wt }, "별도 worktree (새 브랜치)"));
+  const branchErr = wt && !/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(wt.branch || "") ? "브랜치 이름을 확인하세요"
+    : wt && S.branch && wt.branch === S.branch && !wt.base ? "'" + S.branch + "'는 프로젝트 폴더가 쓰고 있어 worktree에 다시 체크아웃할 수 없습니다. 다른 이름을 쓰세요" : "";
+  const help = !S.git ? "git 저장소가 아니라 프로젝트 폴더에서만 작업합니다."
+    : wt ? ["이 탭의 창들은 별도 worktree에서 ", code(wt.branch || "…"), " 브랜치로 작업합니다 (",
+        code(wt.base || cur), "에서 갈라짐). 다른 탭과 같은 파일을 고치는 충돌을 막습니다. 저장하면 다음 실행(또는 변경 반영) 때 적용됩니다."]
+    : "프로젝트 폴더에서 지금 체크아웃된 브랜치(" + cur + ")로 작업합니다. 여러 팀이 동시에 일하면 별도 worktree를 권합니다.";
+  return [...frow(["작업 위치", markFor("tabs." + tname + ".worktree")], sel, help),
+    ...(!wt ? [] : frow("브랜치", h("input", { value: wt.branch || "", "aria-label": "worktree 브랜치", placeholder: "feat/" + tname.toLowerCase(),
+      onchange: (e) => { const v = e.target.value.trim(); if (v) wt.branch = v; changed(); } }),
+      branchErr ? h("span", { style: "color:var(--err)" }, branchErr) : "이 탭이 worktree에서 쓸 브랜치 이름입니다."))];
 }
 
 function renderOrch(tname, t) {
@@ -1555,7 +1586,7 @@ function renderOrch(tname, t) {
         onchange: (e) => { const v = e.target.value.trim(); if (v) o.goal = v; else delete o.goal; changed(); } }),
       "orchestrator가 늘 염두에 둘 목표 한 줄입니다 (선택)."),
     frow("역할 상세 (prompt)", roleButton(oname),
-      "orchestrator 자신의 일하는 방식을 씁니다. 작업자 분담표는 각 agent의 한 줄 역할로 자동으로 만들어집니다. 저장한 뒤 편집할 수 있습니다.")));
+      "orchestrator 자신의 일하는 방식을 씁니다. 작업자 분담표는 각 agent의 한 줄 역할로 자동으로 만들어집니다.")));
   // rarely changed settings stay folded; non-default values are summarized on the folded line
   const changedBits = [o.primary_agent ? "주 agent " + o.primary_agent : null, o.permission && o.permission !== "readonly" ? "권한 " + o.permission : null,
     role !== "confirm" ? "역할 정책 " + role : null, unatt !== "off" ? "무인 모드 " + unatt : null].filter(Boolean);
@@ -1893,38 +1924,90 @@ function showApply() {
 
 // ------------------------------------------------------------------- roles
 // "역할 상세 (prompt)": the member's own instructions, sent to it as part of its prompt
+// Saved members are edited on the server right away. A member not saved yet (template, tab copy, new)
+// is edited in the page: the text waits in S.roleTexts (kept in the draft) and becomes its role file on [저장].
+const ROLE_HEADER = "# 역할:";
+const savedMember = (name) => !!S.exists && S.roles[name] !== undefined && !(name in (S.roleTexts || {})) && !(name in (S.copies || {}));
+const detailLines = (detail) => detail.split("\n").filter((l) => l.trim()).length;
+function splitRole(text) {
+  const lines = String(text || "").split("\n");
+  let one = null;
+  if (lines.length && lines[0].startsWith(ROLE_HEADER)) { one = lines[0].slice(ROLE_HEADER.length).trim(); lines.shift(); }
+  return { one, detail: lines.join("\n").trim() };
+}
+function joinRole(one, detail) { return detail ? ROLE_HEADER + " " + one + "\n\n" + detail + "\n" : ROLE_HEADER + " " + one + "\n"; }
+function memberSpec(name) {  // [spec, key of its one-liner on the card]
+  for (const m of allMembers(S.data || {})) {
+    if (m.name !== name) continue;
+    const t = S.data.tabs[m.tab];
+    return m.type === "orch" ? [t.orchestrator, "goal"] : m.type === "agent" ? [t.agents[name], "role"] : [null, null];
+  }
+  return [null, null];
+}
 function roleButton(name) {
-  const n = S.roles[name];
-  const stat = n === undefined ? "저장 후 편집" : n ? n + "줄 작성됨" : "비어 있음";
+  let stat;
+  if (savedMember(name)) { const n = S.roles[name]; stat = n ? n + "줄 작성됨" : "비어 있음"; }
+  else if (name in (S.roleTexts || {})) { const n = detailLines(splitRole(S.roleTexts[name]).detail); stat = (n ? n + "줄" : "한 줄 역할만") + " · 저장 시 생성"; }
+  else if (name in (S.copies || {})) stat = "'" + S.copies[name] + "'에서 복사 · 저장 시 생성";
+  else stat = "비어 있음 · 저장 전";
   return h("button", { class: "rolebtn", title: "이 멤버에게 그대로 전달되는 지시문 (.herdr-flow/roles/" + name + ".md)",
     onclick: () => editRole(name) }, h("span", {}, "✎ 역할 상세 (prompt)"), h("span", { class: "rstat" }, stat));
 }
+function openRoleDialog(name, r, saved, onSave) {
+  $("roleTitle").textContent = "역할 상세 (prompt): " + name + (saved ? "" : " (저장 전)");
+  $("roleOne").value = r.one; $("roleDetail").value = r.detail;
+  $("roleAuto").textContent = r.auto || "저장한 뒤 표시됩니다 (저장된 설정으로 만들어집니다).";
+  const orch = r.type === "orch";
+  $("roleOneLabel").textContent = orch ? "프로젝트 목표 (한 줄)" : "한 줄 역할";
+  $("roleOneHelp").textContent = (orch
+    ? "역할 파일에 저장되며 카드의 '프로젝트 목표'보다 우선합니다. 작업자 분담은 각 agent의 한 줄 역할로 자동 전달되니 여기에 다시 적지 않아도 됩니다."
+    : "역할 파일에 저장되며 카드의 '역할'보다 우선합니다. orchestrator가 일을 나눌 때 이 한 줄을 보므로, 무엇을 맡는지 분명하게 적으세요. 다른 멤버의 일이나 보고·질문 방식은 적지 않아도 됩니다.")
+    + (saved ? "" : " 아직 저장 전인 멤버라 [확인]하면 화면에만 반영되고, 설정을 [저장]할 때 파일로 만들어집니다.");
+  $("roleSave").textContent = saved ? "저장" : "확인";
+  const dlg = $("roleDialog");
+  $("roleCancel").onclick = () => dlg.close();
+  $("roleSave").onclick = async () => {
+    try { await onSave($("roleOne").value.split(/\s+/).filter(Boolean).join(" "), $("roleDetail").value.trim()); dlg.close(); }
+    catch (e) { toast(e.message); }
+  };
+  dlg.showModal();
+}
 async function editRole(name) {
-  if (dirty() || !S.exists) { toast("먼저 저장하세요 (역할 상세는 저장된 설정의 agent에만 쓸 수 있습니다)"); return; }
-  try {
-    const r = await api("GET", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name));
-    $("roleTitle").textContent = "역할 상세 (prompt): " + name;
-    $("roleOne").value = r.one; $("roleDetail").value = r.detail; $("roleAuto").textContent = r.auto || "";
-    const orch = r.type === "orch";
-    $("roleOneLabel").textContent = orch ? "프로젝트 목표 (한 줄)" : "한 줄 역할";
-    $("roleOneHelp").textContent = orch
-      ? "역할 파일에 저장되며 카드의 '프로젝트 목표'보다 우선합니다. 작업자 분담은 각 agent의 한 줄 역할로 자동 전달되니 여기에 다시 적지 않아도 됩니다."
-      : "역할 파일에 저장되며 카드의 '역할'보다 우선합니다. orchestrator가 일을 나눌 때 이 한 줄을 보므로, 무엇을 맡는지 분명하게 적으세요. 다른 멤버의 일이나 보고·질문 방식은 적지 않아도 됩니다.";
-    const dlg = $("roleDialog");
-    $("roleCancel").onclick = () => dlg.close();
-    $("roleSave").onclick = async () => {
-      try {
-        await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/role/" + encodeURIComponent(name),
-          { one: $("roleOne").value, detail: $("roleDetail").value });
-        dlg.close();
-        S.roles[name] = $("roleDetail").value.split("\n").filter((l) => l.trim()).length;
+  const base = "/api/project/" + encodeURIComponent(S.project) + "/role/";
+  if (savedMember(name)) {
+    try {
+      const r = await api("GET", base + encodeURIComponent(name));
+      openRoleDialog(name, r, true, async (one, detail) => {
+        await api("PUT", base + encodeURIComponent(name), { one, detail });
+        S.roles[name] = detailLines(detail);
         render();
         toast("역할을 저장했습니다.");
         if (S.running) refreshChanges(true);
-      } catch (e) { toast(e.message); }
-    };
-    dlg.showModal();
-  } catch (e) { toast(e.message); }
+      });
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  const [spec, key] = memberSpec(name);
+  if (!spec) { toast("멤버 '" + name + "'을 찾을 수 없습니다"); return; }
+  const type = key === "goal" ? "orch" : "agent";
+  let one = spec[key] || "", detail = "";
+  if (name in (S.roleTexts || {})) {
+    const r = splitRole(S.roleTexts[name]);
+    if (r.one !== null) one = r.one;
+    detail = r.detail;
+  } else if (name in (S.copies || {})) {  // tab copy: the saved source member's role
+    try {
+      const r = await api("GET", base + encodeURIComponent(S.copies[name]));
+      one = r.one || one; detail = r.detail || "";
+    } catch (e) { toast("복사할 원본 역할을 읽지 못했습니다: " + e.message); }
+  }
+  openRoleDialog(name, { one, detail, type, auto: "" }, false, async (one2, detail2) => {
+    if (one2) spec[key] = one2; else delete spec[key];  // the card shows the same one-liner
+    delete S.copies[name];
+    if (detail2) S.roleTexts[name] = joinRole(one2, detail2); else delete S.roleTexts[name];  // nothing to create beyond the card
+    changed();
+    toast("저장 전 멤버라 화면에만 반영했습니다. 설정을 [저장]하면 역할 파일이 만들어집니다.");
+  });
 }
 
 boot();

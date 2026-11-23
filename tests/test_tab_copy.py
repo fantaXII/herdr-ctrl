@@ -73,3 +73,14 @@ def test_project_reports_git(client, tmp_path):
     assert client.json("GET", "/api/project/projA")[1]["git"] is False
     (p.root / ".git").mkdir()
     assert client.json("GET", "/api/project/projA")[1]["git"] is True
+
+
+def test_project_reports_current_branch(client, tmp_path):
+    """The tab card offers 'project folder (<branch>)' or a worktree: the page needs the branch."""
+    import subprocess
+    p, _ = setup(client, tmp_path)
+    assert client.json("GET", "/api/project/projA")[1]["branch"] is None  # not a git repository
+    git = ["git", "-C", str(p.root), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q", "-b", "trunk", str(p.root)], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    assert client.json("GET", "/api/project/projA")[1]["branch"] == "trunk"

@@ -263,3 +263,16 @@ def test_primary_agent_warns_when_kind_unset():
     cfg, issues = check(text, primary_agents=["Sisyphus - ultraworker"])
     assert "tabs.X.agents.x1.primary_agent" in paths(issues, "warning")
     assert "tabs.X.agents.x1.kind" in paths(issues, "error")  # kind itself is required
+
+
+def test_numeric_tab_ids_are_allowed(tmp_path):
+    """Tab ids may start with a digit; an unquoted `1:` (an int in YAML) is read as the tab "1"."""
+    import yaml as _y
+    from herdr_ctl.config import check_data, str_keys
+    data = str_keys(_y.safe_load("session: s\ntabs:\n  1:\n    orchestrator: {kind: claude}\n"
+                                 "    agents: {coder: {kind: claude}}\n  '2':\n    agents: {tester: {kind: claude}}\n"
+                                 "flows:\n  f: {tab: 1, steps: [{agent: coder, prompt: x}]}\n"))
+    cfg, issues = check_data(data, which=lambda k: "/bin/true")
+    assert [i for i in issues if i.level == "error"] == []
+    assert [t.name for t in cfg.tabs] == ["1", "2"] and cfg.tab("1").orchestrator.name == "1-orch"
+    assert data["flows"]["f"]["tab"] == "1"

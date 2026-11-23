@@ -13,7 +13,7 @@ import yaml
 from .herdr import AGENT_KINDS
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-TAB_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,24}$")
+TAB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,24}$")  # "1", "2" are fine tab ids
 DURATION_RE = re.compile(r"^(\d+)\s*(ms|s|m|h)?$")
 MAX_PANES_PER_TAB = 4
 CONTROL_TAB = "_hc"
@@ -339,7 +339,7 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
         tpath = f"tabs.{tname}"
         tname = str(tname)
         if not TAB_RE.match(tname) or tname == CONTROL_TAB:
-            c.err(tpath, "탭 이름은 영문으로 시작하고 영문/숫자/_- 25자 이하 ('_hc'는 예약됨)")
+            c.err(tpath, "탭 이름은 영문 또는 숫자로 시작하고 영문/숫자/_- 25자 이하 ('_hc'는 예약됨)")
         if [t.lower() for t in tab_names].count(tname.lower()) > 1:
             c.err(tpath, "대소문자만 다른 탭 이름이 있습니다 (탭 이름은 대소문자를 구분하지 않습니다)")
         for other in tab_names:
@@ -567,11 +567,23 @@ def check_data(data: Any, root: Path | None = None, which: Callable[[str], str |
     return cfg, c.issues
 
 
+def str_keys(data: Any) -> Any:
+    """A tab id written without quotes (`1:`) is an int in YAML: tab ids and flow `tab:` are strings."""
+    if not isinstance(data, dict):
+        return data
+    if isinstance(data.get("tabs"), dict):
+        data["tabs"] = {str(k): v for k, v in data["tabs"].items()}
+    for f in (data.get("flows") or {}).values() if isinstance(data.get("flows"), dict) else []:
+        if isinstance(f, dict) and isinstance(f.get("tab"), int) and not isinstance(f.get("tab"), bool):
+            f["tab"] = str(f["tab"])
+    return data
+
+
 def load_yaml(path: Path) -> tuple[Any, list[Issue]]:
     if not path.exists():
         return None, [Issue("error", str(path), "설정 파일이 없습니다 (hctrl init으로 생성)")]
     try:
-        return yaml.safe_load(path.read_text()), []
+        return str_keys(yaml.safe_load(path.read_text())), []
     except yaml.YAMLError as e:
         mark = getattr(e, "problem_mark", None)
         where = f" (줄 {mark.line + 1}, 칸 {mark.column + 1})" if mark else ""

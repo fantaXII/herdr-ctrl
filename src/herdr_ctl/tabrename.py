@@ -72,7 +72,7 @@ def check(ctx: Ctx, renames: dict[str, str]) -> None:
             problems.append(f"탭 '{old}'이 설정에 없습니다")
             continue
         if not TAB_RE.match(new) or new == CONTROL_TAB:
-            problems.append(f"'{new}': 탭 ID는 영문으로 시작하고 영문/숫자/_- 25자 이하입니다")
+            problems.append(f"'{new}': 탭 ID는 영문 또는 숫자로 시작하고 영문/숫자/_- 25자 이하입니다")
         elif new.lower() in olds and new.lower() != old.lower():
             problems.append(f"'{old}' → '{new}': 이름을 서로 맞바꾸는 변경은 한 번에 할 수 없습니다. 나눠서 저장하세요")
         names = {m.name for m in tab.members}

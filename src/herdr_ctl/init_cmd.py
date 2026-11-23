@@ -8,7 +8,7 @@ from typing import Callable
 import yaml
 
 from .config import (DEFAULT_AGENT_NAMES, DEFAULT_ROLES, DEFAULT_SHELL_NAME, NAME_RE, TAB_RE, check_data,
-                     format_issues, next_tab_id, unique_name)
+                     format_issues, next_tab_id, str_keys, unique_name)
 from .herdr import AGENT_KINDS
 from .project import Project, ensure_gitignore
 
@@ -47,7 +47,7 @@ def ask_tab(ask: Ask, existing: set[str], used_names: set[str], default: str | N
     if not (default and valid(default)):
         default = next_tab_id(existing)
     name = _q(ask, "탭 이름", default,
-              lambda a: None if valid(a) else "영문으로 시작, 영문/숫자/_- (기존 탭과 중복 불가, 대소문자 무시)")
+              lambda a: None if valid(a) else "영문 또는 숫자로 시작, 영문/숫자/_- (기존 탭과 중복 불가, 대소문자 무시)")
     tab: dict = {}
     if _yes(ask, "orchestrator(지휘 LLM)를 둘까요?", True):
         kind, model = _kind_model(ask, "  orchestrator", "claude/opus")
@@ -135,7 +135,7 @@ def run_init(project: Project, ask: Ask = input, add_tab: str | None = None, whi
     existing: dict = {}
     if project.config_path.exists():
         try:
-            existing = yaml.safe_load(project.config_path.read_text()) or {}
+            existing = str_keys(yaml.safe_load(project.config_path.read_text())) or {}
             if not isinstance(existing, dict):
                 raise ValueError("최상위가 객체가 아닙니다")
             for key in ("tabs", "flows"):

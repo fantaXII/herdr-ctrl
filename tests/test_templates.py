@@ -173,6 +173,7 @@ def test_save_with_role_texts_creates_role_files(client, proj):
                           {"data": data, "version": cfg["version"], "role_texts": texts})
     assert st == 200, res
     assert sorted(res["copied"]) == ["coder", "team-orch"]  # shell ignored, x1's file already exists
+    assert res["role_kept"] == ["x1"]  # the page says so instead of dropping the text silently
     assert (proj.roles_dir / "coder.md").read_text() == "# 역할: 구현\n\n상세\n"
     assert (proj.root / "docs" / "x1.md").read_text().startswith("# 역할: 로그인 구현")
     assert client.json("PUT", "/api/project/projA/config",
@@ -253,3 +254,17 @@ def test_instantiate_moves_the_team_work_folder():
     tab, flows, texts = T.instantiate(T.load("dev-team"), "web")
     assert ".herdr-flow/work/web/task.md" in flows["dev"]["steps"][0]["prompt"]
     assert ".herdr-flow/work/web/" in texts["web-orch"] and "work/dev-team/" not in texts["coder"]
+
+
+def test_draft_keeps_role_details_written_before_the_first_save(client, proj):
+    """Role details typed in the page for unsaved members survive a draft save and a reload."""
+    cfg = login(client, proj)
+    data = yaml.safe_load(proj.config_path.read_text())
+    texts, copies = {"coder": "# 역할: 구현\n\n상세\n"}, {"x1-b": "x1"}
+    st, _ = client.json("PUT", "/api/project/projA/draft",
+                        {"data": data, "version": cfg["version"], "role_texts": texts, "copies": copies})
+    assert st == 200
+    draft = client.json("GET", "/api/project/projA")[1]["draft"]
+    assert draft["role_texts"] == texts and draft["copies"] == copies
+    assert client.json("PUT", "/api/project/projA/draft",
+                       {"data": data, "version": cfg["version"], "role_texts": {"a": 1}})[0] == 400

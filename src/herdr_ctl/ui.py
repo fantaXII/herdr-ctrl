@@ -36,6 +36,10 @@ from .state import LockBusy, State, digest
 COOKIE = "hctrl_ui"
 MAX_BODY = 1 << 20
 TOKEN_TTL_S = 120.0
+
+
+def _str_map(v: Any) -> bool:
+    return isinstance(v, dict) and all(isinstance(k, str) and isinstance(x, str) for k, x in v.items())
 PING_S = 30.0  # an open page pings this often (ui_page.html)
 IDLE_S = 180.0  # no request for this long: the page is closed (background tabs ping ~once a minute)
 INTEGRATIONS_TTL_S = 15.0
@@ -495,6 +499,8 @@ class UIServer:
         else:
             data, issues = load_yaml(project.config_path)
             parse_error = issues[0].message if issues else None
+        from .up import git_branch
+        git = (project.root / ".git").exists()
         running = False
         if isinstance(data, dict) and data.get("session"):
             running = data["session"] in self.running_sessions()
@@ -503,7 +509,7 @@ class UIServer:
                 "parse_error": parse_error, "running": running,
                 "issues": self._check_fresh(project, data) if data is not None else [],
                 "draft": self.load_draft(project), "roles": self.role_summary(project),
-                "git": (project.root / ".git").exists()}  # worktree needs a git repository
+                "git": git, "branch": git_branch(project.root) if git else None}  # worktree needs a git repository
 
     def role_summary(self, project: Project) -> dict:
         """{member: lines in its role detail (prompt)} for the saved config's agents and orchestrators."""
@@ -534,15 +540,22 @@ class UIServer:
             return None
         if not isinstance(d, dict) or not isinstance(d.get("data"), dict):
             return None
-        return {"data": d["data"], "base": d.get("base"), "saved_at": d.get("saved_at")}
+        out = {"data": d["data"], "base": d.get("base"), "saved_at": d.get("saved_at")}
+        for key in ("role_texts", "copies"):  # members' role details waiting for the first save
+            v = d.get(key)
+            out[key] = v if _str_map(v) else {}
+        return out
 
     def save_draft(self, project: Project, body: dict) -> dict:
         data = body.get("data")
         if not isinstance(data, dict):
             raise ApiError(400, "data는 객체여야 합니다")
+        pending = {k: body.get(k) or {} for k in ("role_texts", "copies")}
+        if not all(_str_map(v) for v in pending.values()):
+            raise ApiError(400, "role_texts, copies는 {멤버: 문자열} 객체여야 합니다")
         path = self.draft_path(project)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        rec = {"data": data, "base": body.get("version"), "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        rec = {"data": data, "base": body.get("version"), "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"), **pending}
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1))
         os.replace(tmp, path)
@@ -566,13 +579,11 @@ class UIServer:
                                                     for k, v in renames.items()):
             raise ApiError(400, "renames는 {이전 탭 ID: 새 탭 ID} 객체여야 합니다")
         copies = body.get("copies") or {}
-        if not isinstance(copies, dict) or not all(isinstance(k, str) and isinstance(v, str)
-                                                  for k, v in copies.items()):
+        if not _str_map(copies):
             raise ApiError(400, "copies는 {새 멤버: 원본 멤버} 객체여야 합니다")
         old_cfg = check_file(project.config_path, which=self.which)[0] if current is not None else None
         role_texts = body.get("role_texts") or {}
-        if not isinstance(role_texts, dict) or not all(isinstance(k, str) and isinstance(v, str)
-                                                      for k, v in role_texts.items()):
+        if not _str_map(role_texts):
             raise ApiError(400, "role_texts는 {멤버: 역할 상세 전문} 객체여야 합니다")
         tabs = data.get("tabs") if isinstance(data, dict) else None
         renames = {o: n for o, n in renames.items() if o != n and isinstance(tabs, dict) and n in tabs}
@@ -591,12 +602,15 @@ class UIServer:
             write_config(project, data)
         self.discard_draft(project)  # the draft is now the saved config
         renamed = moved + self.sync_live_titles(project)
-        copied = self.copy_roles(project, old_cfg, copies) + self.write_role_texts(project, role_texts)
+        kept: list[str] = []
+        copied = self.copy_roles(project, old_cfg, copies, kept) + self.write_role_texts(project, role_texts, kept)
         return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed,
-                "copied": copied, "roles": self.role_summary(project)}
+                "copied": copied, "role_kept": kept, "roles": self.role_summary(project)}
 
-    def write_role_texts(self, project: Project, texts: dict[str, str]) -> list[str]:
-        """Team template: create each new member's role file from the template text (never overwrite)."""
+    def write_role_texts(self, project: Project, texts: dict[str, str], kept: list[str] | None = None) -> list[str]:
+        """Role details written in the page before the member was saved (team template text, tab copy
+        edited in the page, a new member): create each one's role file. An existing file is never
+        overwritten; its member goes to `kept` so the page can say so."""
         if not texts:
             return []
         cfg, _ = check_file(project.config_path, which=self.which)
@@ -607,13 +621,16 @@ class UIServer:
                 continue
             try:
                 if roles_mod.write_role_text(project, name, text, roles_mod.role_file(project, m),
-                                             reason="팀 템플릿"):
+                                             reason="hctrl ui (저장 전 작성)"):
                     done.append(name)
+                elif kept is not None:
+                    kept.append(name)
             except (OSError, RuntimeError):
                 continue
         return done
 
-    def copy_roles(self, project: Project, old_cfg, copies: dict[str, str]) -> list[str]:
+    def copy_roles(self, project: Project, old_cfg, copies: dict[str, str],
+                   kept: list[str] | None = None) -> list[str]:
         """Tab copy: give each new member its source's role detail (as its own file, with history).
         Sources come from the config as it was before this save; a member that already has a role
         file keeps it."""
@@ -626,7 +643,11 @@ class UIServer:
             if m is None or s is None or m.type == "shell" or s.type == "shell" or new == src:
                 continue
             try:
-                if not roles_mod.role_file(project, s).exists() or roles_mod.role_file(project, m).exists():
+                if not roles_mod.role_file(project, s).exists():
+                    continue
+                if roles_mod.role_file(project, m).exists():
+                    if kept is not None:
+                        kept.append(new)
                     continue
                 one, detail = roles_mod.effective_role(project, s)
                 roles_mod.write_role(project, m, one, detail, actor="user", reason=f"탭 복사: {src}")
