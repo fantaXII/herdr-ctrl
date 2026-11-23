@@ -169,7 +169,17 @@ def claude_transcript(session_id: str) -> Path | None:
 
 
 def _user_text(row: dict) -> str | None:
-    """Text of a message the user typed (not a tool result, not a meta/command line)."""
+    """Text of a message the user typed (not a tool result, not a meta/command line).
+
+    A message typed while claude is busy is never a "user" row: claude queues it and records it as
+    an attachment (type queued_command, origin human) when it absorbs it mid-turn."""
+    att = row.get("attachment") if row.get("type") == "attachment" else None
+    if isinstance(att, dict):
+        if att.get("type") != "queued_command" or att.get("commandMode") != "prompt" \
+                or (att.get("origin") or {}).get("kind") != "human":
+            return None
+        p = att.get("prompt")
+        return p if isinstance(p, str) and p.strip() else None
     if row.get("type") != "user" or row.get("isMeta"):
         return None
     c = (row.get("message") or {}).get("content")
@@ -180,6 +190,13 @@ def _user_text(row: dict) -> str | None:
     if not isinstance(c, str) or not c.strip():
         return None
     return c
+
+
+def _typed_by_user(text: str) -> bool:
+    """hctrl's own prompts start with "[hctrl]"; claude's wrappers (<task-notification>, <command-name>,
+    <bash-input>, ...) start with "<" — except pasted text, which is the user's instruction."""
+    t = text.lstrip()
+    return not t.startswith("[hctrl]") and (not t.startswith("<") or t.startswith("<pasted_content"))
 
 
 def last_user_prompt(ctx, name: str) -> float | None:
@@ -210,7 +227,7 @@ def last_user_prompt(ctx, name: str) -> float | None:
         except ValueError:
             continue
         text = _user_text(row) if isinstance(row, dict) else None
-        if text is None or text.lstrip().startswith(("[hctrl]", "<")):
+        if text is None or not _typed_by_user(text):
             continue
         try:
             return datetime.fromisoformat(str(row.get("timestamp")).replace("Z", "+00:00")).timestamp()

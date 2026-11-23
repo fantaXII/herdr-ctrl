@@ -366,3 +366,54 @@ def test_hctrl_and_tool_turns_do_not_reset_the_budget(two, tmp_path, monkeypatch
     ])
     with pytest.raises(LimitExceeded, match="지시 상한"):
         enforce(a, orch, ["x1"], "c")
+
+
+def _queued(ts, text, kind="human", mode="prompt"):
+    """A message claude queued while busy and absorbed mid-turn (never written as a "user" row)."""
+    return {"type": "attachment", "timestamp": ts,
+            "attachment": {"type": "queued_command", "prompt": text, "commandMode": mode, "origin": {"kind": kind}}}
+
+
+def _stale_budget(two):
+    import time as _t
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import read_json, write_json
+    a, _ = two
+    tab = a.cfg.tab("X")
+    start_ask(a, tab)
+    b = read_json(_budget_path(a, tab))
+    b["started"] = _t.time() - 3 * 3600  # older than max_minutes_per_ask
+    write_json(_budget_path(a, tab), b)
+    return a, tab
+
+
+@pytest.mark.parametrize("row", [
+    lambda ts: _queued(ts, "완료하면 commit하고 release까지 진행해줘."),  # typed while the orchestrator worked
+    lambda ts: _user(ts, "\n\n<pasted_content id=\"ab12\">\n붙여 넣은 지시\n</pasted_content>"),
+])
+def test_queued_and_pasted_messages_start_a_fresh_budget(two, tmp_path, monkeypatch, row):
+    """Seen live: a message typed while the orchestrator was busy (or a pasted one) did not reset the
+    2-hour budget, so the next hctrl send was refused with the time limit."""
+    import time as _t
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import read_json
+    a, tab = _stale_budget(two)
+    orch = Actor("orch", "x-orch", "X")
+    now = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - 60))
+    _transcript(tmp_path, monkeypatch, a, [row(now)])
+    enforce(a, orch, ["x1"], "a")
+    assert read_json(_budget_path(a, tab))["steps"] == 1
+
+
+def test_queued_notifications_do_not_reset_the_budget(two, tmp_path, monkeypatch):
+    import time as _t
+    a, _ = _stale_budget(two)
+    orch = Actor("orch", "x-orch", "X")
+    now = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - 60))
+    _transcript(tmp_path, monkeypatch, a, [
+        _queued(now, "<task-notification>done</task-notification>", kind="task-notification", mode="task-notification"),
+        _queued(now, "[hctrl] 'coder'가 재시작됐습니다"),
+        _user(now, "<task-notification>x</task-notification>"),
+    ])
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, orch, ["x1"], "a")
