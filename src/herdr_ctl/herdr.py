@@ -260,6 +260,14 @@ class Herdr:
     def agent_list(self) -> list[dict]:
         return self.call("agent", "list").get("agents", [])
 
+    def pane_shell_name(self, pane_id: str) -> str | None:
+        """The name of the pane's shell (e.g. "bash"), when herdr reports it."""
+        info = self.call("pane", "process-info", "--pane", pane_id).get("process_info", {})
+        for p in info.get("foreground_processes") or []:
+            if p.get("pid") == info.get("shell_pid"):
+                return p.get("name")
+        return None
+
     def agent_get(self, target: str) -> dict:
         return self.call("agent", "get", target)["agent"]
 

@@ -81,7 +81,8 @@ def detect(ctx: Ctx, tab: str | None = None) -> list[Change]:
 def notify_role(ctx: Ctx, name: str) -> str:
     """Tell a live agent its role changed (agent must be idle)."""
     m = ctx.cfg.member(name)
-    from .up import brief_for
+    from .up import brief_for, seal_brief
+    seal_brief(ctx, m)  # the copy a fresh conversation / hand-started agent reads its role from
     brief = brief_for(ctx, m)
     st = agent_status(ctx.h, name)
     if st not in READY_STATES:

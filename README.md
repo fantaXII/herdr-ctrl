@@ -451,6 +451,20 @@ LLM이 역할을 바꾸는 범위는 탭 설정 `role_update`로 정합니다.
 - 작업 agent는 역할을 직접 고치지 않고, 결과 파일에 제안만 남깁니다.
 - 모든 변경은 이력으로 남습니다.
 
+**역할이 유지되는 범위**: claude와 opencode는 역할(brief)을 시스템 프롬프트로 받습니다. 그래서 대화를 비워도(claude `/clear`, opencode `/new`) 역할이 남습니다. hctrl은 agent를 띄우기 전에 그 창의 쉘에도 역할을 걸어 둡니다. 그래서 agent를 종료한 뒤 **같은 창에서 직접** `claude`나 `opencode`를 다시 실행해도 역할이 유지됩니다.
+
+| agent | 창 쉘에 걸리는 것 |
+|---|---|
+| claude | `claude` 함수. `--append-system-prompt-file <brief>`가 없을 때만 붙여 실행합니다. `claude` alias가 있어도 함께 동작하고, 원래 명령은 `command claude`로 쓸 수 있습니다. |
+| opencode | `OPENCODE_CONFIG` 환경변수. `~/.local/state/herdr_ctl/<프로젝트>/opencode/<이름>.json`(`instructions`에 brief)을 가리키며, 사용자 opencode 설정과 합쳐집니다. |
+
+- 여기서 쓰는 brief는 `~/.local/state/herdr_ctl/<프로젝트>/briefs/<이름>.md`에 둔 사본입니다. 프로젝트 안의 brief는 agent가 고칠 수 있기 때문입니다. 재시작 때의 인수인계 내용은 그 시작에만 쓰고, 사본에는 넣지 않습니다(opencode에는 인수인계 파일을 첫 지시로 한 번 알립니다).
+- hctrl은 쉘에 건 줄이 실제로 실행됐는지 확인합니다. 확인되지 않으면 opencode에는 brief를 첫 지시로 보냅니다.
+
+- 쉘이 bash·zsh 같은 POSIX 계열일 때만 걸어 둡니다. 다른 쉘(fish 등)에서는 쉘에 걸지 않고, opencode에는 첫 지시로 brief를 보냅니다.
+- 다른 창이나 새 쉘에서 띄운 agent에는 역할이 없습니다.
+- 이미 `OPENCODE_CONFIG`를 쓰고 있었다면 그 창에서는 hctrl의 값으로 바뀝니다.
+
 ### 진행 중 설정 변경 (사용자가 yaml이나 역할 파일을 수정한 경우)
 
 세션이 열려 있는 동안 `config.yaml`이나 `roles/*.md`를 고치면 **자동으로 감지해서 알려줍니다.**

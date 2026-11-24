@@ -6,6 +6,7 @@ exit codes are exercised for real. Agent behaviour is scripted through
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -54,6 +55,7 @@ class FakeHerdr:
         self.default_on_prompt: Callable | None = None
         self.start_status: dict[str, str] = {}  # name -> status after start (e.g. blocked)
         self.background_patterns = [r"herdr_ctl\.cli\b.*\swatch\b"]  # regexes
+        self.shell_name: str | None = "bash"  # what pane_shell_name reports for every pane
         self._n = 0
 
     def _id(self) -> int:
@@ -154,6 +156,8 @@ class FakeHerdr:
         if any(re.search(pat, command) for pat in self.background_patterns):
             p.busy = True  # long-running (e.g. hctrl watch): recorded, not executed
             return
+        if not os.path.isdir(p.cwd):
+            return  # fake worktrees have no folder: recorded, not run (a real pane would be there)
         proc = subprocess.run(["bash", "-c", command], cwd=p.cwd, capture_output=True, text=True)
         p.output += proc.stdout + proc.stderr
 
@@ -183,6 +187,10 @@ class FakeHerdr:
     def pane_shell_idle(self, pane_id):
         p = self._pane(pane_id)
         return not p.busy and not any(a.pane_id == pane_id for a in self.agents.values())
+
+    def pane_shell_name(self, pane_id):
+        self._pane(pane_id)
+        return self.shell_name
 
     # agents ---------------------------------------------------------------
     def _agent(self, target) -> FAgent:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import time
@@ -15,7 +16,7 @@ from .layout import TabGroup, group_tab, source_slot
 from .project import Project
 from .selfcmd import self_cmd
 from .roles import render_agent_brief, render_orchestrator_rules, role_fingerprint
-from .state import State, digest, lock_holder
+from .state import State, digest, lock_holder, write_json
 
 
 @dataclass
@@ -320,17 +321,100 @@ def resume_id(ctx: Ctx, m: Member, sess: dict | None) -> str | None:
     return sess["id"]
 
 
+# ------------------------------------------------------------ role in the pane shell
+POSIX_SHELLS = {"bash", "zsh", "sh", "dash", "ksh", "mksh"}
+ARM_WAIT_MS = 5000  # how long the armed line may take to run before hctrl falls back
+
+
+def sealed_brief_path(project: Project, m: Member, start: bool = False) -> Path:
+    """A copy of `m`'s brief in the private state home. The rendered brief lives in the project
+    tree, where any agent may edit it; the copies are what a system prompt is read from."""
+    return project.secure_dir / "briefs" / f"{m.name}{'.start' if start else ''}.md"
+
+
+def opencode_config_path(project: Project, m: Member) -> Path:
+    """opencode config adding `m`'s sealed brief to its system prompt. In the private state home:
+    an auto-edit agent could otherwise give itself MCP servers or permissions through it."""
+    return project.secure_dir / "opencode" / f"{m.name}.json"
+
+
+def _private_write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    return path
+
+
+def seal_brief(ctx: Ctx, m: Member) -> Path:
+    """Render `m`'s brief without a handoff and copy it to the private state home: the role a fresh
+    conversation (opencode /new, an agent started by hand) gets. An old handoff does not belong there."""
+    return _private_write(sealed_brief_path(ctx.project, m), brief_for(ctx, m).read_text())
+
+
+def arm_line(m: Member, shell: str, target: Path, nonce: str) -> str | None:
+    """The shell line keeping `m`'s role in its pane (None for kinds without one); `target` is the
+    opencode config or the sealed claude brief. It ends by printing __HC_ARM_<nonce> (split in the
+    command text, so the echo of the command does not match)."""
+    if m.kind == "opencode":
+        line = f"export OPENCODE_CONFIG={shlex.quote(str(target))}"
+    elif m.kind == "claude":
+        # `function` keeps a user alias named claude from breaking the definition (the alias still
+        # applies on use and then reaches this function). The flag is checked argument by argument.
+        head = "claude() {" if shell in ("sh", "dash") else "function claude {"
+        line = (f"{head} for __hc_a in \"$@\"; do case $__hc_a in --append-system-prompt-file|"
+                "--append-system-prompt-file=*) command claude \"$@\"; return;; esac; done; "
+                f"command claude --append-system-prompt-file {shlex.quote(str(target))} \"$@\"; }}")
+    else:
+        return None
+    return f"{line}; printf '%s%s\\n' __HC_ARM_ {nonce}"
+
+
+def arm_pane_shell(ctx: Ctx, m: Member, pane_id: str, sealed: Path) -> bool:
+    """Keep `m`'s role in its pane's shell, so it holds for a fresh conversation and for the agent
+    started there by hand after an exit (verified on opencode 1.19 / Claude Code 2.1):
+    - opencode: OPENCODE_CONFIG → a config whose `instructions` is the sealed brief (system prompt;
+      merged with the user's own config, and kept across /new).
+    - claude: a `claude` shell function adding --append-system-prompt-file when it is missing
+      (herdr types the agent command into this shell, so hctrl's own start passes through as is).
+    False when the shell was not armed (not a POSIX shell, herdr could not tell, or the line did not
+    run in time): the caller then falls back to a first prompt."""
+    if m.kind not in ("opencode", "claude"):
+        return False
+    try:
+        shell = os.path.basename(ctx.h.pane_shell_name(pane_id) or "").lstrip("-")  # "-bash": login shell
+        if shell not in POSIX_SHELLS:
+            return False
+        target = sealed
+        if m.kind == "opencode":
+            target = opencode_config_path(ctx.project, m)
+            write_json(target, {"instructions": [str(sealed)]})
+        nonce = f"{time.time_ns()}"
+        # leading space: kept out of history (HISTCONTROL=ignorespace)
+        ctx.h.pane_run(pane_id, " " + arm_line(m, shell, target, nonce))
+        ctx.h.pane_wait_output(pane_id, f"__HC_ARM_{nonce}", timeout_ms=ARM_WAIT_MS)
+    except HerdrError:
+        return False
+    return True
+
+
 def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None,
                 resume: str | None = None) -> str | None:
     """Start agent `m` in `pane_id` (continuing conversation `resume` when given).
     Returns None on success or an attention reason."""
     h = ctx.h
-    brief = brief_for(ctx, m, handoff)
+    sealed = seal_brief(ctx, m)
+    brief = brief_for(ctx, m, handoff)  # this start's brief (with the handoff, when there is one)
+    armed = arm_pane_shell(ctx, m, pane_id, sealed)
     from .unattended import hook_settings
     tab = ctx.cfg.tab(m.tab)
     settings = hook_settings(ctx, tab, m) if tab else None
-    args = agent_args(m, brief if m.kind == "claude" else None, settings,
-                      handoff_file=ctx.project.handoff_dir / f"{m.name}.md")
+    # claude reads this start's brief (with its handoff) from a private copy as well
+    start_brief = _private_write(sealed_brief_path(ctx.project, m, start=True), brief.read_text()) \
+        if m.kind == "claude" else None
+    args = agent_args(m, start_brief, settings, handoff_file=ctx.project.handoff_dir / f"{m.name}.md")
     if resume and m.kind in RESUME_ARGS:
         args = [RESUME_ARGS[m.kind], resume] + args
     try:
@@ -343,10 +427,20 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None,
         ctx.state["attention"][m.name] = reason
         ctx.state["applied"][m.name] = fingerprint(ctx.project, m)
         return reason
-    if m.kind != "claude" and not resume:  # a continued conversation already has its brief
+    # claude has its brief in the system prompt (args), an armed opencode through OPENCODE_CONFIG
+    # (without the handoff: that one is told once); the rest get it as a first prompt.
+    # A continued conversation already has both.
+    prompt = None
+    if resume:
+        pass
+    elif m.kind == "opencode" and armed:
+        if handoff:
+            prompt = f"이전 작업 상태가 {handoff} 에 있습니다. 먼저 읽고 이어서 작업하세요."
+    elif m.kind != "claude":
+        prompt = f"{brief} 파일을 읽고 그 역할과 규칙을 따르세요. 확인했으면 '준비됨'이라고만 답하세요."
+    if prompt:
         try:
-            h.agent_prompt(m.name, f"{brief} 파일을 읽고 그 역할과 규칙을 따르세요. "
-                                   "확인했으면 '준비됨'이라고만 답하세요.", wait=False)
+            h.agent_prompt(m.name, prompt, wait=False)
         except HerdrError:
             pass
     ctx.state["attention"].pop(m.name, None)

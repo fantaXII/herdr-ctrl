@@ -213,8 +213,7 @@ $ hctrl check
 
 **역할 전달**
 
-- `hctrl up`으로 agent를 시작할 때 한 줄 역할과 상세 파일을 합쳐 첫 지시로 보낸다.
-- claude는 시작 옵션(시스템 프롬프트 추가)을 쓸 수 있는지 M2에서 `--help`로 확인한다.
+- `hctrl up`으로 agent를 시작할 때 한 줄 역할과 상세 파일을 합친 brief를 만든다. claude·opencode는 시스템 프롬프트로, 나머지는 첫 지시로 전달한다(아래 "역할 전달" 구현 메모).
 - 이미 실행 중인 agent는 자동으로 갱신되지 않는다. `--apply`로 알린다.
 - 역할이 크게 바뀐 경우 `hctrl down`/`hctrl up`으로 새로 띄우는 것을 권장한다.
 
@@ -535,7 +534,12 @@ flows:
 - **백그라운드 실행 위치:** `--detach` 실행은 독립 백그라운드 프로세스로 돈다(로그 `runs/<id>/worker.log`). `_hc` control pane에서는 `hctrl watch`만 실행한다.
 - **변경 대기 목록:** `var/pending_changes.json`에 따로 저장한다. state.json을 동시에 쓰지 않게 하기 위해서다.
 - **쉘 단계 실행 방식:** `bash -c 'set -o pipefail; { cmd ; } 2>&1 | tee <out>; echo <marker>$?__'`로 실행해 pane의 쉘 종류와 무관하게 동작한다. 완료 표시에는 실행마다 고유한 값(`time_ns`)을 넣어 resume 때 이전 표시에 반응하지 않게 했다.
-- **claude 역할 전달:** `--append-system-prompt-file <brief>`로 넘긴다. 다른 agent는 첫 지시로 brief 파일 경로를 보낸다.
+- **역할 전달 (claude / opencode는 시스템 프롬프트로):** 첫 지시로 brief를 보내면 대화 기록에만 남아 opencode `/new`, 직접 다시 띄운 agent에서 역할이 사라진다(opencode 1.19.4 / Claude Code 2.1에서 확인). 그래서 둘 다 시스템 프롬프트로 넣고, 창의 쉘에도 걸어 둔다(herdr는 agent 명령을 그 쉘에 입력해 실행한다).
+  - claude: `--append-system-prompt-file <brief>`. 쉘에는 이 옵션이 없을 때만 붙이는 `claude` 함수를 정의한다. `/clear`와 `--resume`(대화 기록에 시스템 프롬프트 스냅샷이 저장됨)은 원래 역할을 유지한다.
+  - opencode: 비공개 상태 폴더(`~/.local/state/herdr_ctl/<프로젝트>/opencode/<name>.json`)에 `{"instructions": [brief]}` 설정을 쓰고 쉘에서 `export OPENCODE_CONFIG=...`. 사용자 설정과 합쳐지고 `/new` 뒤에도 유지된다. agent의 `prompt`는 기본 시스템 프롬프트를 대체하므로 쓰지 않는다. 첫 지시로 brief를 보내지 않는다(시작 직후 "Finishing startup" 중 입력이 버려지기도 했고, 파일로 받은 역할을 프롬프트 인젝션으로 보고 거부하기도 했다).
+  - 쉘이 POSIX 계열(bash, zsh 등)이 아니면 쉘에 걸지 않고, opencode는 예전처럼 첫 지시로 brief를 보낸다. 다른 agent도 첫 지시로 brief 파일 경로를 보낸다.
+  - 시스템 프롬프트가 읽는 brief는 비공개 상태 폴더의 사본(`briefs/<name>.md`, 0600)이다. 프로젝트 안 brief는 agent가 고칠 수 있는데, 이제 `/new`·수동 재시작 때마다 다시 읽히기 때문이다. 사본에는 인수인계를 넣지 않는다(이번 시작용은 `<name>.start.md`, opencode는 인수인계 파일을 첫 지시로 한 번 알린다). `hctrl role --apply`도 사본을 갱신한다.
+  - 쉘에 거는 줄 끝에서 `__HC_ARM_<nonce>`를 출력하고 `pane wait-output`으로 실행을 확인한다(최대 5초). 확인되지 않으면 쉘에 걸지 못한 것으로 보고 첫 지시로 돌아간다. claude 함수는 `function claude { ... }` 형식이라 사용자 `claude` alias와 충돌하지 않는다.
 - **권한 매핑 (claude):** `edit` → `--permission-mode acceptEdits`, `auto` → `--permission-mode auto`, `readonly` → `--allowedTools Read Grep Glob Bash(hctrl:*)`. opencode는 시작 옵션으로 권한을 지정할 수 없어 `hctrl check`가 경고한다.
 - **herdr 오류 출력:** herdr는 오류 JSON을 **stderr**로 출력한다.
 - **worktree 생성 옵션:** `herdr worktree create`의 `--workspace`와 `--cwd`는 함께 쓸 수 없다. 그래서 `--cwd`(저장소 루트)만 쓴다.

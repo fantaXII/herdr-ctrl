@@ -74,8 +74,118 @@ def test_up_passes_model_permission_and_brief(ctx):
     rules = ctx.project.flow_dir / "orchestrator-X.md"
     text = rules.read_text()
     assert "x1" in text and "build-review-x" in text and "금지 사항" in text and "로그인 모듈" in text
-    # non-claude agent gets its brief as a first prompt
+    # opencode gets its brief through OPENCODE_CONFIG (system prompt), not as a first prompt
+    assert not any("briefs/x2.md" in p for p in ctx.h.agents["x2"].prompts)
+
+
+def test_up_arms_pane_shells_with_the_role(ctx):
+    """The role lives in the pane shell too: a fresh conversation or a hand-started agent keeps it."""
+    import json
+    import shlex
+    import stat
+    from herdr_ctl.up import opencode_config_path, sealed_brief_path
+    up(ctx, start_watch=False)
+    h = ctx.h
+    runs = {c[1]: c[2] for c in h.calls if c[0] == "pane_run"}
+    x2 = ctx.cfg.member("x2")
+    # opencode: OPENCODE_CONFIG → a private config whose instructions is a private copy of the brief
+    x2_pane = ctx.state.member("x2")["pane_id"]
+    cfg_path = opencode_config_path(ctx.project, x2)
+    sealed = sealed_brief_path(ctx.project, x2)
+    assert runs[x2_pane].startswith(f" export OPENCODE_CONFIG={shlex.quote(str(cfg_path))}; printf")
+    assert json.loads(cfg_path.read_text()) == {"instructions": [str(sealed)]}
+    for p in (cfg_path, sealed):  # not editable by the agents (outside the project tree)
+        assert not str(p).startswith(str(ctx.project.root))
+    assert sealed.read_text() == (ctx.project.var_dir / "briefs" / "x2.md").read_text()
+    assert stat.S_IMODE(sealed.stat().st_mode) == 0o600
+    # claude: a shell function adding the private brief when the flag is missing; the start args
+    # read a private copy too
+    x1, x1_pane = ctx.cfg.member("x1"), ctx.state.member("x1")["pane_id"]
+    assert runs[x1_pane].startswith(" function claude {")
+    assert str(sealed_brief_path(ctx.project, x1)) in runs[x1_pane]
+    x1_args = next(c[4] for c in h.calls if c[0] == "agent_start" and c[1] == "x1")
+    i = x1_args.index("--append-system-prompt-file")
+    assert x1_args[i + 1] == str(sealed_brief_path(ctx.project, x1, start=True))
+    orch = ctx.cfg.member("x-orch")
+    assert sealed_brief_path(ctx.project, orch).read_text() == \
+        (ctx.project.flow_dir / "orchestrator-X.md").read_text()
+    # the shell is armed (and its line ran) before the agent command is typed into it
+    i_run = next(i for i, c in enumerate(h.calls) if c[0] == "pane_run" and c[1] == x2_pane)
+    i_start = next(i for i, c in enumerate(h.calls) if c[0] == "agent_start" and c[1] == "x2")
+    assert i_run < i_start
+    assert "__HC_ARM_" in h.panes[x2_pane].output.split("$ ")[-1]
+
+
+def test_claude_shell_function_adds_the_brief_only_when_missing(ctx, tmp_path):
+    """The armed line, run by a real bash: hand-started claude gets the flag, hctrl's start does not
+    get it twice, subcommands keep working, and a user alias named claude still works."""
+    import subprocess
+    from herdr_ctl.up import sealed_brief_path
+    up(ctx, start_watch=False)
+    x1_pane = ctx.state.member("x1")["pane_id"]
+    line = next(c[2] for c in ctx.h.calls if c[0] == "pane_run" and c[1] == x1_pane)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "claude").write_text('#!/bin/sh\nprintf "%s|" "$@"\n')
+    (fake / "claude").chmod(0o755)
+    brief = str(sealed_brief_path(ctx.project, ctx.cfg.member("x1")))
+
+    def argv(cmd, before=""):
+        out = subprocess.run(["bash", "-c", before + line + "\n" + cmd], capture_output=True, text=True,
+                             env={"PATH": f"{fake}:/usr/bin:/bin"}).stdout
+        out = out.split("\n", 1)[1] if out.startswith("__HC_ARM_") else out
+        return out.rstrip("|").split("|") if out else []
+    assert argv("claude") == ["--append-system-prompt-file", brief]
+    assert argv("claude -c") == ["--append-system-prompt-file", brief, "-c"]
+    assert argv("claude --append-system-prompt-file /other.md --model x") == \
+        ["--append-system-prompt-file", "/other.md", "--model", "x"]
+    assert argv("claude --append-system-prompt-file=/o.md") == ["--append-system-prompt-file=/o.md"]
+    assert argv("claude 'see --append-system-prompt-file in docs'") == \
+        ["--append-system-prompt-file", brief, "see --append-system-prompt-file in docs"]
+    assert argv("claude mcp list") == ["--append-system-prompt-file", brief, "mcp", "list"]
+    alias = "shopt -s expand_aliases; alias claude='claude --mine'\n"
+    assert argv("claude", before=alias) == ["--append-system-prompt-file", brief, "--mine"]
+
+
+def test_opencode_falls_back_to_a_brief_prompt_without_a_posix_shell(ctx):
+    ctx.h.shell_name = "fish"
+    up(ctx, start_watch=False)
+    assert not any(c[0] == "pane_run" and c[1] == ctx.state.member("x2")["pane_id"] for c in ctx.h.calls)
     assert any("briefs/x2.md" in p for p in ctx.h.agents["x2"].prompts)
+
+
+def test_login_shell_name_is_armed(ctx):
+    ctx.h.shell_name = "-bash"
+    up(ctx, start_watch=False)
+    assert any(c[0] == "pane_run" and c[1] == ctx.state.member("x2")["pane_id"] for c in ctx.h.calls)
+    assert not ctx.h.agents["x2"].prompts
+
+
+def test_opencode_falls_back_when_the_armed_line_did_not_run(ctx, monkeypatch):
+    """No marker in the pane (the shell dropped the line): opencode gets its brief as a first prompt."""
+    from herdr_ctl.herdr import HerdrError
+
+    def no_output(pane_id, regex, timeout_ms=None):
+        raise HerdrError("timeout", regex)
+    monkeypatch.setattr(ctx.h, "pane_wait_output", no_output)
+    up(ctx, start_watch=False)
+    assert any("briefs/x2.md" in p for p in ctx.h.agents["x2"].prompts)
+
+
+def test_handoff_stays_out_of_the_shell_brief(ctx, tmp_path):
+    """A restart's handoff is for that start only: a later fresh conversation does not resume it."""
+    from herdr_ctl.up import sealed_brief_path, start_agent
+    up(ctx, start_watch=False)
+    for name in ("x1", "x2"):
+        m, pane = ctx.cfg.member(name), ctx.state.member(name)["pane_id"]
+        ctx.h.kill_agent(name)
+        handoff = tmp_path / f"{name}-handoff.md"
+        handoff.write_text("이전 상태")
+        assert start_agent(ctx, m, pane, handoff) is None
+        assert str(handoff) not in sealed_brief_path(ctx.project, m).read_text()
+    assert str(tmp_path / "x1-handoff.md") in sealed_brief_path(ctx.project, ctx.cfg.member("x1"),
+                                                                start=True).read_text()
+    assert any(str(tmp_path / "x2-handoff.md") in p for p in ctx.h.agents["x2"].prompts)
 
 
 def test_up_is_idempotent(ctx):
