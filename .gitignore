@@ -9,10 +9,8 @@ venv/
 .pytest_cache/
 
 # herdr_ctl runtime (when hctrl is used inside this repo)
-.herdr-flow/runs/
-.herdr-flow/handoff/
-.herdr-flow/var/
-.herdr-flow/state.json
+.herdr-flow/
+.omo/
 
 # local tooling / test scratch
 .omc/
