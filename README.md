@@ -417,6 +417,7 @@ claude는 bypass 모드를 처음 켤 때 확인 창을 띄웁니다. 이 창이
 
 - `model`: agent의 모델을 지정합니다. claude는 `opus`, `sonnet`, `haiku` 또는 전체 모델 ID를 쓰고, opencode는 `제공자/모델` 형식입니다.
 - `primary_agent` (opencode 전용): opencode의 주 agent를 `--agent`로 지정합니다. 표시 이름(`Sisyphus - ultraworker`)과 키(`sisyphus`) 모두 대소문자 구분 없이 쓸 수 있습니다. OMO가 있으면 Sisyphus 등, 없으면 build/plan이 주 agent입니다. subagent나 없는 이름을 주면 opencode가 경고만 내고 기본 agent로 대체합니다. 설정 화면의 'agent' 목록은 `opencode agent list`(12~20초)를 백그라운드로 받아 하루 동안 저장합니다(↻로 새로 받음). `hctrl check`는 저장된 목록에 없는 이름을 경고합니다(목록이 없으면 검사 생략). claude 등 다른 종류에 쓰면 경고하고 적용하지 않습니다.
+- `effort` (claude 전용): 추론 노력 수준을 `--effort`로 지정합니다. `low`, `medium`, `high`, `xhigh`, `max` 중 하나이고, 비우면 claude 설정을 따릅니다. 높을수록 깊게 생각하지만 느리고 사용량이 늘어납니다. 설정 화면에서는 claude 카드의 모델 아래에서 고릅니다. 바꾸면 재시작해야 적용됩니다(반영 창에서 "재시작"). 다른 값은 오류이고, opencode 등 다른 종류에 쓰면 경고하고 적용하지 않습니다.
 - `args`: 그 밖의 agent 실행 옵션입니다. agent 프로그램에 그대로 전달됩니다.
 
 ### orchestrator와 작업 agent

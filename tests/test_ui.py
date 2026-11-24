@@ -194,6 +194,25 @@ def test_config_save_refuses_errors_and_keeps_unmodelled_keys(client, tmp_path):
     assert st == 409
 
 
+def test_claude_effort_saves_and_bad_values_are_refused(client, tmp_path):
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    _, cfg = client.json("GET", "/api/project/projA")
+    bad = json.loads(json.dumps(cfg["data"]))
+    bad["tabs"]["X"]["agents"]["x1"]["effort"] = "extreme"
+    st, _ = client.json("PUT", "/api/project/projA/config", {"data": bad, "version": cfg["version"]})
+    assert st == 422
+    good = cfg["data"]
+    good["tabs"]["X"]["agents"]["x1"]["effort"] = "xhigh"
+    good["tabs"]["X"]["orchestrator"]["effort"] = "max"
+    st, _ = client.json("PUT", "/api/project/projA/config", {"data": good, "version": cfg["version"]})
+    assert st == 200
+    saved = yaml.safe_load(p.config_path.read_text())["tabs"]["X"]
+    assert saved["agents"]["x1"]["effort"] == "xhigh" and saved["orchestrator"]["effort"] == "max"
+    _, again = client.json("GET", "/api/project/projA")
+    assert again["data"]["tabs"]["X"]["agents"]["x1"]["effort"] == "xhigh"
+
+
 def test_draft_keeps_incomplete_config_outside_project(client, tmp_path, server):
     p = make_project(tmp_path)
     register("projA", p.root)

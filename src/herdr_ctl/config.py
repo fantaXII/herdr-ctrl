@@ -21,8 +21,8 @@ CONTROL_TAB = "_hc"
 TOP_KEYS = {"session", "tabs", "flows"}
 TAB_KEYS = {"title", "cwd", "orchestrator", "role_update", "worktree", "limits", "agents", "shells", "closed",
             "unattended", "unattended_policy"}
-AGENT_KEYS = {"kind", "model", "primary_agent", "role", "role_file", "permission", "args"}
-ORCH_KEYS = {"kind", "model", "primary_agent", "goal", "permission", "args"}
+AGENT_KEYS = {"kind", "model", "effort", "primary_agent", "role", "role_file", "permission", "args"}
+ORCH_KEYS = {"kind", "model", "effort", "primary_agent", "goal", "permission", "args"}
 SHELL_KEYS = {"cwd"}
 WORKTREE_KEYS = {"branch", "base"}
 LIMIT_KEYS = {"max_steps_per_ask", "max_minutes_per_ask", "max_retries_per_agent"}
@@ -35,6 +35,7 @@ PERMISSIONS = ("ask", "edit", "auto", "readonly", "bypass")
 ROLE_UPDATE = ("confirm", "auto", "off")
 ON_FAIL = ("stop", "continue")
 UNATTENDED = ("off", "questions", "approve")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # claude --effort
 DANGEROUS_ARGS = ("--dangerously-skip-permissions", "bypassPermissions", "--yolo",
                   "--dangerously-bypass-approvals-and-sandbox")
 DEFAULT_LIMITS = {"max_steps_per_ask": 20, "max_minutes_per_ask": 120, "max_retries_per_agent": 3}
@@ -89,6 +90,7 @@ class Member:
     kind: str | None = None
     model: str | None = None
     primary_agent: str | None = None  # opencode only (--agent)
+    effort: str | None = None  # claude only (--effort)
     args: list[str] = field(default_factory=list)
     permission: str | None = None
     role: str | None = None
@@ -288,6 +290,8 @@ class _Checker:
             elif kind == "opencode" and str(a).split("=", 1)[0] in OPENCODE_MANAGED_ARGS:
                 self.warn(f"{path}.args", f"'{a}'는 hctrl이 primary_agent / permission 값으로 직접 지정하는 옵션이라 "
                                           "충돌합니다. primary_agent / permission 값을 쓰세요")
+            elif kind == "claude" and str(a).split("=", 1)[0] == "--effort" and data.get("effort"):
+                self.warn(f"{path}.args", f"'{a}'와 effort 값이 겹칩니다. effort 값만 쓰세요")
             elif kind == "claude" and str(a).split("=", 1)[0] in MANAGED_ARGS:
                 self.warn(f"{path}.args", f"'{a}'는 hctrl이 permission/무인 모드로 직접 지정하는 옵션이라 "
                                           "충돌합니다. permission 값을 쓰세요")
@@ -311,6 +315,15 @@ class _Checker:
                 self.warn(f"{path}.primary_agent", f"'{primary}'은 캐시된 opencode primary agent 목록에 없습니다. "
                                                    "subagent이거나 없는 이름이면 opencode가 기본 agent로 대체합니다 "
                                                    f"(목록: {', '.join(self.primary_agents)})")
+        effort = self.text(data, "effort", path)
+        if effort is not None and not effort.strip():
+            effort = None
+        if effort and effort not in EFFORTS:
+            self.err(f"{path}.effort", f"{' | '.join(EFFORTS)} 중 하나여야 합니다 (현재 '{effort}')")
+            effort = None
+        elif effort and kind not in ("claude", None):  # kind unset: the UI reads it as claude
+            self.warn(f"{path}.effort", "claude 전용 설정이라 적용되지 않습니다")
+            effort = None
         role_file = self.text(data, "role_file", path)
         if role_file and not self.inside_root(role_file):
             self.err(f"{path}.role_file", f"프로젝트 폴더 안의 경로여야 합니다: {role_file}")
@@ -318,7 +331,7 @@ class _Checker:
         elif role_file and self.root and not (self.root / role_file).exists():
             self.warn(f"{path}.role_file", f"파일이 없습니다: {role_file}")
         return Member(name=name, type=mtype, tab=tab, kind=kind, model=model,
-                      primary_agent=primary.strip() if primary else None,
+                      primary_agent=primary.strip() if primary else None, effort=effort,
                       args=[str(a) for a in args], permission=perm, role=self.text(data, "role", path),
                       role_file=role_file, goal=self.text(data, "goal", path))
 
@@ -676,6 +689,8 @@ def agent_args(m: Member, system_prompt_file: Path | None = None,
         args += ["--append-system-prompt-file", str(system_prompt_file)]
     if m.primary_agent and m.kind == "opencode":
         args += ["--agent", m.primary_agent]
+    if m.effort and m.kind == "claude":
+        args += ["--effort", m.effort]
     args += list(m.args)
     if settings_file and m.kind == "claude":
         args += ["--settings", str(settings_file)]

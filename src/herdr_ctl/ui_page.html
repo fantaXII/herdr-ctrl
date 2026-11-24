@@ -1178,6 +1178,16 @@ function modelControl(spec, onChange) {
   }
   return textBox("모델 (선택)", false);
 }
+// claude --effort: unset follows claude's own setting
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const EFFORT_HELP = "claude의 추론 노력 수준(--effort)입니다. 높을수록 깊게 생각하지만 느리고 사용량이 늘어납니다. 비우면 claude 설정을 따릅니다.";
+function effortControl(spec) {
+  return h("select", { "aria-label": "effort", title: EFFORT_HELP, onchange: (e) => {
+      if (e.target.value) spec.effort = e.target.value; else delete spec.effort; changed(); } },
+    h("option", { value: "" }, "(기본: claude 설정)"),
+    EFFORTS.map((v) => h("option", { value: v, selected: v === spec.effort }, v)),
+    spec.effort && !EFFORTS.includes(spec.effort) ? h("option", { value: spec.effort, selected: true }, spec.effort + " (지원 안 함)") : null);
+}
 // opencode primary agent: select from the cached list; a value missing from it stays visible
 function agentControl(spec) {
   const value = spec.primary_agent || "";
@@ -1223,6 +1233,7 @@ function kindSelect(spec) {
   return h("select", { "aria-label": "종류", onchange: (e) => {
       spec.kind = e.target.value; delete spec.model; typing.delete(spec);
       if (spec.kind !== "opencode") delete spec.primary_agent;  // opencode-only
+      if (spec.kind !== "claude") delete spec.effort;  // claude-only
       const ok = permModes(spec);
       if (spec.permission && !ok.includes(spec.permission)) delete spec.permission;  // modes of the old kind do not apply
       changed(); } },
@@ -1597,6 +1608,7 @@ function renderOrch(tname, t) {
   card.append(h("div", { class: "form" },
     frow(["종류 / 모델", markFor(opath + ".kind"), markFor(opath + ".model")], [kindSelect(o), modelControl(o, (v) => setModel(o, v))],
       "판단이 중요하므로 큰 모델(opus 등)을 권합니다."),
+    (o.kind || "claude") === "claude" ? frow(["effort", markFor(opath + ".effort")], effortControl(o), EFFORT_HELP) : null,
     frow("프로젝트 목표",
       h("input", { value: o.goal || "", placeholder: "예: 로그인/결제 모듈 개발", "aria-label": "프로젝트 목표",
         onchange: (e) => { const v = e.target.value.trim(); if (v) o.goal = v; else delete o.goal; changed(); } }),
@@ -1647,6 +1659,7 @@ function renderAgents(tname, t) {
         const v = e.target.value.trim(); if (v) spec.role = v; else delete spec.role; changed(); } }), "role"),
       row("종류", kindSelect(spec), "kind"),
       row("모델", modelControl(spec, (v) => setModel(spec, v)), "model"),
+      (spec.kind || "claude") === "claude" ? row("effort", effortControl(spec), "effort") : null,
       spec.kind === "opencode" ? row("주 agent", agentControl(spec), "primary_agent") : null,
       row("권한", permSelect(spec, "edit"), "permission"),
       roleButton(name));

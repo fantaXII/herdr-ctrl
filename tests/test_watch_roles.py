@@ -502,3 +502,10 @@ def test_watcher_start_drops_its_own_stale_locks(tmp_path):
     acquire(p, "coder", "restart")
     assert release_own(p) == ["coder"]
     acquire(p, "coder", "restart")  # free again
+
+
+def test_effort_change_needs_a_restart(live):
+    c2 = reload(live, SAMPLE.replace('x1: { kind: claude, model: sonnet, role: "구현" }',
+                                     'x1: { kind: claude, model: sonnet, effort: high, role: "구현" }'))
+    ch = {c.name: c for c in detect(c2)}
+    assert ch["x1"].type == "restart" and "effort None → 'high'" in ch["x1"].detail and len(ch) == 1

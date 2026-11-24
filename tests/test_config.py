@@ -140,6 +140,27 @@ def test_agent_args_mapping():
     assert o[-5:] == ["--allowedTools", "Read", "Grep", "Glob", "Bash(hctrl:*)"]
 
 
+def test_claude_effort():
+    text = SAMPLE.replace('x1: { kind: claude, model: sonnet, role: "구현" }',
+                          'x1: { kind: claude, model: sonnet, effort: high, role: "구현" }')
+    text = text.replace("orchestrator: { kind: claude, model: opus,", "orchestrator: { kind: claude, model: opus, effort: max,")
+    cfg, issues = check(text)
+    assert not [i for i in issues if "effort" in i.path], issues
+    assert agent_args(cfg.member("x1")) == ["--model", "sonnet", "--effort", "high", "--permission-mode", "acceptEdits"]
+    assert agent_args(cfg.member("x-orch"))[:4] == ["--model", "opus", "--effort", "max"]
+    assert "--effort" not in agent_args(cfg.member("y1"))  # unset: claude's own setting
+
+
+def test_effort_values_and_kind():
+    cfg, issues = check(SAMPLE.replace('role: "구현" }', 'effort: extreme, role: "구현" }'))
+    assert any(i.level == "error" and i.path.endswith("x1.effort") for i in issues)
+    cfg, issues = check(SAMPLE.replace('role: "테스트" }', 'effort: high, role: "테스트" }'))
+    assert any(i.level == "warning" and i.path.endswith("x2.effort") and "claude 전용" in i.message for i in issues)
+    assert "--effort" not in agent_args(cfg.member("x2"))
+    cfg, issues = check(SAMPLE.replace('role: "구현" }', 'effort: low, args: ["--effort", "max"], role: "구현" }'))
+    assert any(i.path.endswith("x1.args") and "effort" in i.message for i in issues)
+
+
 def test_layout_grouping():
     cfg, _ = check(SAMPLE)
     groups = group_tab(cfg.tab("X"))
