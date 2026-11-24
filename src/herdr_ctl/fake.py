@@ -26,6 +26,8 @@ class FPane:
     output: str = ""
     zoomed: bool = False
     busy: bool = False  # a non-agent foreground command is running
+    stray: str | None = None  # an agent CLI running here that herdr has not registered (e.g. "claude")
+    stray_ctrl_c: int = 0
 
 
 @dataclass
@@ -184,10 +186,21 @@ class FakeHerdr:
 
     def pane_send_keys(self, pane_id, *keys):
         self.calls.append(("pane_send_keys", pane_id, keys))
+        p = self._pane(pane_id)
+        if p.stray and "ctrl+c" in keys:  # ctrl+c presses in a row quit an agent CLI
+            p.stray_ctrl_c += 1
+            if p.stray_ctrl_c >= 2:
+                p.stray, p.stray_ctrl_c = None, 0
 
     def pane_shell_idle(self, pane_id):
         p = self._pane(pane_id)
-        return not p.busy and not any(a.pane_id == pane_id for a in self.agents.values())
+        return not p.busy and not p.stray and not any(a.pane_id == pane_id for a in self.agents.values())
+
+    def pane_foreground_names(self, pane_id):
+        p = self._pane(pane_id)
+        names = [p.stray] if p.stray else []
+        names += [a.kind for a in self.agents.values() if a.pane_id == pane_id]
+        return names
 
     def pane_shell_name(self, pane_id):
         self._pane(pane_id)

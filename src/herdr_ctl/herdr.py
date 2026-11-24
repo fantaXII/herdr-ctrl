@@ -256,6 +256,12 @@ class Herdr:
             return False  # unknown is not idle
         return info.get("foreground_process_group_id") == info.get("shell_pid") or not procs
 
+    def pane_foreground_names(self, pane_id: str) -> list[str]:
+        """Names of the pane's foreground processes other than its shell (e.g. ["claude"])."""
+        info = self.call("pane", "process-info", "--pane", pane_id).get("process_info", {})
+        return [p.get("name") or "" for p in info.get("foreground_processes") or []
+                if p.get("pid") != info.get("shell_pid")]
+
     # ---------------------------------------------------------------- agents
     def agent_list(self) -> list[dict]:
         return self.call("agent", "list").get("agents", [])

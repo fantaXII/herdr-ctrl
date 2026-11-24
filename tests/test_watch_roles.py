@@ -509,3 +509,26 @@ def test_effort_change_needs_a_restart(live):
                                      'x1: { kind: claude, model: sonnet, effort: high, role: "구현" }'))
     ch = {c.name: c for c in detect(c2)}
     assert ch["x1"].type == "restart" and "effort None → 'high'" in ch["x1"].detail and len(ch) == 1
+
+
+def test_restart_quits_an_agent_herdr_lost(live, monkeypatch):
+    """A claude still running in the pane that herdr no longer lists (lost, or started there by
+    hand) is quit with quick ctrl+c presses, then the configured agent starts."""
+    import herdr_ctl.watch as W
+    monkeypatch.setattr(W, "_sleep", lambda s: None)
+    pane = live.state.member("x1")["pane_id"]
+    live.h.kill_agent("x1")
+    live.h._pane(pane).stray = "claude"
+    msg = restart(live, "x1", handoff=False)
+    assert "재시작 완료" in msg and "x1" in live.h.agents
+    presses = [c for c in live.h.calls if c[0] == "pane_send_keys" and c[1] == pane]
+    assert len(presses) == 2  # stopped as soon as the shell was back
+
+
+def test_restart_leaves_other_programs_alone(live):
+    pane = live.state.member("x1")["pane_id"]
+    live.h.kill_agent("x1")
+    live.h._pane(pane).busy = True  # e.g. an editor someone opened there
+    with pytest.raises(RuntimeError, match="쉘 프롬프트로 돌아오지 않았습니다"):
+        restart(live, "x1", handoff=False)
+    assert not [c for c in live.h.calls if c[0] == "pane_send_keys" and c[1] == pane]

@@ -232,8 +232,12 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
             handoff_path = hp  # an earlier attempt got the handoff written, then failed to start
         if st is not None:
             _stop_agent(ctx, name, pane)
+        elif not ctx.h.pane_shell_idle(pane):
+            _stop_stray_agent(ctx, pane)  # an agent CLI herdr lost track of (or started by hand)
         if not ctx.h.pane_shell_idle(pane):
-            raise RuntimeError(f"'{name}' 창이 쉘 프롬프트로 돌아오지 않았습니다")
+            running = ", ".join(_foreground(ctx, pane)) or "다른 프로그램"
+            raise RuntimeError(f"'{name}' 창이 쉘 프롬프트로 돌아오지 않았습니다 ({running} 실행 중). "
+                               "창에서 직접 종료한 뒤 다시 반영하세요")
         _wait_agent_gone(ctx, name)
         why = start_agent(ctx, m, pane, handoff_path, resume=rid)
         if why and why.startswith("시작 실패"):  # one more try: herdr may still be settling the pane
@@ -267,10 +271,41 @@ def _stop_agent(ctx: Ctx, name: str, pane: str) -> None:
     if _wait_shell(ctx, pane, 15):
         return
     for _ in range(2):
+        _ctrl_c_burst(ctx, pane)
+        if _wait_shell(ctx, pane, 5):
+            return
+
+
+def _ctrl_c_burst(ctx: Ctx, pane: str) -> None:
+    """Ctrl+C pressed in quick succession: claude quits only on a second press within about a
+    second (the first interrupts a turn or clears the input); one press every few seconds never
+    gets it out."""
+    for i in range(3):
+        if i:
+            _sleep(0.3)
+            if ctx.h.pane_shell_idle(pane):
+                return
         try:
-            h.pane_send_keys(pane, "ctrl+c")
+            ctx.h.pane_send_keys(pane, "ctrl+c")
         except HerdrError:
-            pass
+            return
+
+
+def _foreground(ctx: Ctx, pane: str) -> list[str]:
+    try:
+        return [n for n in ctx.h.pane_foreground_names(pane) if n]
+    except HerdrError:
+        return []
+
+
+def _stop_stray_agent(ctx: Ctx, pane: str) -> None:
+    """Quit an agent CLI running in the pane that herdr does not list as an agent (herdr lost it,
+    or it was started there by hand). Anything else (a build, an editor) is left alone."""
+    from .herdr import AGENT_KINDS
+    if not any(n in AGENT_KINDS for n in _foreground(ctx, pane)):
+        return
+    for _ in range(2):
+        _ctrl_c_burst(ctx, pane)
         if _wait_shell(ctx, pane, 5):
             return
 
