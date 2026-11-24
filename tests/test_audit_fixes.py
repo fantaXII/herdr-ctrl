@@ -123,7 +123,7 @@ def test_shell_change_is_relayout_and_ack_records(live):
     c2 = reload(live, SAMPLE.replace("xbuild: {}", "xbuild: { cwd: sub }"))
     ch = [c for c in detect(c2) if c.name == "xbuild"]
     assert [c.type for c in ch] == ["relayout"] and "hctrl down X" in ch[0].detail
-    assert default_actions(ch[0]) == ["ack", "skip"]
+    assert default_actions(ch[0]) == ["move", "ack", "skip"]
     apply_change(c2, ch[0], "ack")
     assert detect(c2) == []
 

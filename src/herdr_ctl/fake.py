@@ -56,6 +56,7 @@ class FakeHerdr:
         self.start_status: dict[str, str] = {}  # name -> status after start (e.g. blocked)
         self.background_patterns = [r"herdr_ctl\.cli\b.*\swatch\b"]  # regexes
         self.shell_name: str | None = "bash"  # what pane_shell_name reports for every pane
+        self.git_worktrees = False  # True: worktree_create/remove run real git (tests with a repo)
         self._n = 0
 
     def _id(self) -> int:
@@ -284,11 +285,21 @@ class FakeHerdr:
         self.notifications.append((title, body))
 
     def worktree_create(self, workspace_id, cwd, branch, base, label):
-        res = self.workspace_create(cwd + f"/../wt-{branch.replace('/', '-')}", label)
+        path = cwd + f"/../wt-{branch.replace('/', '-')}"
+        if self.git_worktrees:  # a real `git worktree add`, like herdr
+            subprocess.run(["git", "-C", cwd, "worktree", "add", "-b", branch, path, *([base] if base else [])],
+                           check=True, capture_output=True)
+            path = os.path.realpath(path)
+        res = self.workspace_create(path, label)
         wid = res["workspace"]["workspace_id"]
-        self.worktrees[wid] = {"branch": branch, "base": base}
+        self.worktrees[wid] = {"branch": branch, "base": base, "path": path}
         return res
 
     def worktree_remove(self, workspace_id, force=False):
-        self.worktrees.pop(workspace_id, None)
+        wt = self.worktrees.pop(workspace_id, None)
+        if self.git_worktrees and wt:
+            r = subprocess.run(["git", "-C", wt["path"], "worktree", "remove", *(["--force"] if force else []),
+                                wt["path"]], capture_output=True, text=True)
+            if r.returncode:
+                raise HerdrError("worktree_remove_failed", r.stderr.strip())
         self.workspace_close(workspace_id)

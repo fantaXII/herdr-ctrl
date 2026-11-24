@@ -1903,7 +1903,7 @@ function renderStep(f, st, i, members, fname) {
 
 // ------------------------------------------------------------------ apply
 const ACTION_LABELS = { remove: "창 닫기", add: "창 추가", restart: "재시작 (인수인계 후)", fresh: "재시작 (인수인계 없이)", notify: "agent에 알리기",
-  ack: "확인", skip: "건너뛰기" };
+  ack: "확인 (옮기지 않음)", move: "옮기기 (인수인계 후 탭 다시 배치)", skip: "건너뛰기" };
 async function refreshChanges(show) {
   try {
     const res = await api("GET", "/api/project/" + encodeURIComponent(S.project) + "/changes");

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from typing import Callable
@@ -168,6 +169,32 @@ def _wait_shell(ctx: Ctx, pane: str, timeout_s: float = 20.0) -> bool:
     return False
 
 
+def collect_handoff(ctx: Ctx, name: str, timeout_s: float = 1800) -> Path:
+    """Ask live agent `name` (idle) to write its handoff file and wait for it. Raises HandoffMissing
+    (or RuntimeError) when no file came."""
+    hp = (ctx.project.handoff_dir / f"{name}.md").resolve()
+    ctx.project.handoff_dir.mkdir(parents=True, exist_ok=True)
+    # an earlier handoff of this agent: it may answer "already written, nothing changed"
+    previous = hp.read_text() if hp.exists() else ""
+    hp.unlink(missing_ok=True)
+    turned = True  # `prompt --wait` returned: the agent finished a turn on it
+    try:
+        try:
+            ctx.h.agent_prompt(name, HANDOFF_PROMPT.format(path=hp), wait=True,
+                               timeout_ms=int(timeout_s * 1000))
+        except HerdrError as e:
+            if e.code != "agent_prompt_stalled":
+                raise RuntimeError(f"인수인계 요청 실패: {e}") from e
+            _await_handoff(ctx, name, hp, timeout_s)
+    except HandoffMissing as e:
+        turned = e.turned
+    if not (hp.exists() and hp.read_text().strip()):
+        if not (turned and previous.strip()):
+            raise _missing(name, hp, turned)
+        hp.write_text(previous)  # the agent kept its earlier handoff as current
+    return hp
+
+
 def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True,
             timeout_s: float = 1800, resume: bool = False) -> str:
     """Stop agent `name` and start it again in the same pane with the current config.
@@ -199,26 +226,7 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
         handoff_path = None
         hp = (ctx.project.handoff_dir / f"{name}.md").resolve()
         if handoff and st is not None and not rid:
-            ctx.project.handoff_dir.mkdir(parents=True, exist_ok=True)
-            handoff_path = hp
-            # an earlier handoff of this agent: it may answer "already written, nothing changed"
-            previous = hp.read_text() if hp.exists() else ""
-            handoff_path.unlink(missing_ok=True)
-            turned = True  # `prompt --wait` returned: the agent finished a turn on it
-            try:
-                try:
-                    ctx.h.agent_prompt(name, HANDOFF_PROMPT.format(path=handoff_path), wait=True,
-                                       timeout_ms=int(timeout_s * 1000))
-                except HerdrError as e:
-                    if e.code != "agent_prompt_stalled":
-                        raise RuntimeError(f"인수인계 요청 실패: {e}") from e
-                    _await_handoff(ctx, name, handoff_path, timeout_s)
-            except HandoffMissing as e:
-                turned = e.turned
-            if not (handoff_path.exists() and handoff_path.read_text().strip()):
-                if not (turned and previous.strip()):
-                    raise _missing(name, handoff_path, turned)
-                handoff_path.write_text(previous)  # the agent kept its earlier handoff as current
+            handoff_path = collect_handoff(ctx, name, timeout_s)
         elif handoff and st is None and hp.exists() and hp.read_text().strip() \
                 and hp.stat().st_mtime > float(rec.get("started_at") or 0):
             handoff_path = hp  # an earlier attempt got the handoff written, then failed to start
@@ -295,7 +303,7 @@ def remove_member(ctx: Ctx, name: str) -> str:
 
 
 def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str:
-    """action: notify | restart | add | remove | skip | ack"""
+    """action: notify | restart | add | remove | skip | ack | move (relayout: the whole tab, relocate.py)"""
     if action == "skip":
         return f"{ch.name}: 건너뜀"
     if ch.type == "flow":
@@ -309,6 +317,12 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
         ctx.state["applied"][ch.name] = fingerprint(ctx.project, m)
         ctx.state.save()
         return f"{ch.name}: 확인함 (창 배치는 hctrl down {m.tab} && hctrl up {m.tab}로 반영)"
+    if ch.type == "relayout" and action == "move":
+        m = ctx.cfg.member(ch.name)
+        if m is None:
+            raise KeyError(f"'{ch.name}'가 설정에 없습니다")
+        from .relocate import relocate_tab
+        return f"탭 {m.tab}: " + "; ".join(relocate_tab(ctx, m.tab))
     if action == "notify":
         return notify_role(ctx, ch.name)
     if action == "restart":
@@ -326,7 +340,7 @@ def apply_change(ctx: Ctx, ch: Change, action: str, handoff: bool = True) -> str
 
 def default_actions(ch: Change) -> list[str]:
     return {"role": ["notify", "restart", "fresh", "skip"], "restart": ["restart", "fresh", "skip"],
-            "relayout": ["ack", "skip"],
+            "relayout": ["move", "ack", "skip"],
             "add": ["add", "skip"], "remove": ["remove", "skip"], "flow": ["ack"]}[ch.type]
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from .config import CONTROL_TAB, Config, Member, TabCfg, agent_args
 from .herdr import HerdrError
 from .layout import TabGroup, group_tab, source_slot
-from .project import Project
+from .project import FLOW_DIR, Project
 from .selfcmd import self_cmd
 from .roles import render_agent_brief, render_orchestrator_rules, role_fingerprint
 from .state import State, digest, lock_holder, write_json
@@ -133,6 +133,20 @@ def git_branch(root: Path) -> str | None:
         return None
 
 
+def work_dir(root: Path, tab: TabCfg) -> Path:
+    """The tab's work files (task.md, ...). Templates name it relative to the agents' folder, so a
+    worktree tab has its own copy inside the worktree."""
+    return Path(root) / FLOW_DIR / "work" / tab.name
+
+
+def seed_work_dir(ctx: Ctx, tab: TabCfg, wt_root: Path) -> None:
+    """A new worktree takes the tab's work files from the project folder along (moved, so a later move
+    back finds one copy only). A fresh worktree has none of its own to clash with."""
+    if work_dir(ctx.project.root, tab).is_dir() and not work_dir(wt_root, tab).exists():
+        from .relocate import move_work_files
+        move_work_files(ctx.project.root, wt_root, tab)
+
+
 def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport) -> str:
     """Workspace that hosts `tab`: the project workspace, or a worktree workspace."""
     if not tab.worktree:
@@ -165,6 +179,8 @@ def ensure_tab_workspace(ctx: Ctx, tab: TabCfg, main_wid: str, report: UpReport)
         h.tab_rename(res["tab"]["tab_id"], tab.display)
         st["tabs"][tab.name] = {"tab_id": res["tab"]["tab_id"], "workspace_id": wid}
     report.created_tabs.append(f"{tab.name} (worktree {tab.worktree['branch']} {how})")
+    if how == "생성" and cwd:
+        seed_work_dir(ctx, tab, Path(cwd))
     if how == "생성":
         try:  # this workspace has no _hc tab of its own
             h.notify(f"hctrl: 탭 {tab.name} (worktree)",
@@ -450,7 +466,8 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None,
     return None
 
 
-def ensure_agents(ctx: Ctx, group: TabGroup, report: UpReport, resume: bool = False) -> None:
+def ensure_agents(ctx: Ctx, group: TabGroup, report: UpReport, resume: bool = False,
+                  handoffs: dict[str, Path] | None = None) -> None:
     h, st = ctx.h, ctx.state
     live = {a["name"]: a for a in h.agent_list() if a.get("name")}
     sessions = load_sessions(ctx.project) if resume else {}
@@ -470,15 +487,18 @@ def ensure_agents(ctx: Ctx, group: TabGroup, report: UpReport, resume: bool = Fa
             report.attention[m.name] = "창에서 다른 프로그램이 실행 중이라 agent를 시작할 수 없습니다"
             continue
         rid = resume_id(ctx, m, sessions.get(m.name)) if resume else None
-        why = start_agent(ctx, m, rec["pane_id"], resume=rid)
+        hand = (handoffs or {}).get(m.name) if not rid else None
+        why = start_agent(ctx, m, rec["pane_id"], hand, resume=rid)
         if why is None:
-            report.started.append(m.name + (" (이전 대화 이어서)" if rid else ""))
+            report.started.append(m.name + (" (이전 대화 이어서)" if rid else " (인수인계)" if hand else ""))
         else:
             report.attention[m.name] = why
 
 
-def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True, resume: bool = False) -> UpReport:
-    """Lay out and start the tab(s). `resume`: continue each agent's recorded conversation."""
+def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True, resume: bool = False,
+       handoffs: dict[str, Path] | None = None) -> UpReport:
+    """Lay out and start the tab(s). `resume`: continue each agent's recorded conversation.
+    `handoffs`: member → handoff file each new agent is started with."""
     report = UpReport()
     tabs = [ctx.cfg.tab(tab)] if tab else ctx.cfg.open_tabs
     if tab and tabs[0] is None:
@@ -493,7 +513,7 @@ def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True, resume: bool 
         for group in group_tab(t):
             ensure_group(ctx, group, twid, report)
             ctx.state.save()
-            ensure_agents(ctx, group, report, resume)
+            ensure_agents(ctx, group, report, resume, handoffs)
             ctx.state.save()
     ctx.state["applied_flows"] = flows_fingerprint(ctx.cfg)
     ctx.state["session"] = ctx.cfg.session

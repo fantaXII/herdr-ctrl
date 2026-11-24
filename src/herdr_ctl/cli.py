@@ -759,8 +759,8 @@ def cmd_changes(args) -> int:
         print("반영 대기 중인 변경이 없습니다" + (f" (탭 {args.tab})" if args.tab else ""))
         return 0
     labels = {"notify": "[a] 알리기", "restart": "[r] 재시작", "fresh": "[f] 인수인계 없이 재시작", "add": "[c] 추가",
-              "remove": "[x] 닫기", "skip": "[s] 건너뛰기", "ack": "[k] 확인"}
-    keys = {"a": "notify", "r": "restart", "f": "fresh", "c": "add", "x": "remove", "s": "skip", "k": "ack"}
+              "remove": "[x] 닫기", "skip": "[s] 건너뛰기", "ack": "[k] 확인(옮기지 않음)", "move": "[m] 옮기기"}
+    keys = {"a": "notify", "r": "restart", "f": "fresh", "c": "add", "x": "remove", "s": "skip", "k": "ack", "m": "move"}
     remaining = []
     for ch in changes:
         print(f"{ch.name}: {ch.detail}")
