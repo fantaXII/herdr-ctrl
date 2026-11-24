@@ -201,14 +201,19 @@ def _typed_by_user(text: str) -> bool:
 
 def last_user_prompt(ctx, name: str) -> float | None:
     """When the user last typed a new instruction straight into orchestrator `name` (epoch), read
-    from its claude transcript. Prompts hctrl itself sends start with "[hctrl]" and do not count, and
-    the orchestrator cannot write user turns, so this is a reset only the user can trigger."""
+    from its claude transcript or opencode database (the conversation herdr reports for it). Prompts
+    hctrl itself sends start with "[hctrl]" and do not count, and the orchestrator cannot write user
+    turns, so this is a reset only the user can trigger."""
     try:
         a = ctx.h.agent_get(name)
     except (HerdrError, KeyError):
         return None
     sess = a.get("agent_session") if isinstance(a, dict) else None
-    if not isinstance(sess, dict) or sess.get("agent") != "claude":
+    if not isinstance(sess, dict):
+        return None
+    if sess.get("agent") == "opencode":
+        return opencode_last_user_prompt(str(sess.get("value") or ""))
+    if sess.get("agent") != "claude":
         return None
     path = claude_transcript(str(sess.get("value") or ""))
     if path is None:
@@ -233,6 +238,55 @@ def last_user_prompt(ctx, name: str) -> float | None:
             return datetime.fromisoformat(str(row.get("timestamp")).replace("Z", "+00:00")).timestamp()
         except ValueError:
             return None
+    return None
+
+
+def opencode_db() -> Path:
+    """opencode's message store (opencode 1.x keeps it in SQLite under its data dir)."""
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "opencode" / "opencode.db"
+
+
+def _typed_into_opencode(text: str) -> bool:
+    """Stricter than claude: plugins (e.g. oh-my-opencode's "[SYSTEM DIRECTIVE: ...]" loops,
+    "<system-reminder>" notices) add user-role text with no mark of their own, and an orchestrator
+    could start such a loop itself. So text starting with "[" or "<" never counts ("[hctrl]" too)."""
+    return not text.lstrip().startswith(("[", "<"))
+
+
+def opencode_last_user_prompt(session_id: str) -> float | None:
+    """When a person last typed into opencode session `session_id` (epoch), from opencode's database
+    (read-only). Parts opencode adds itself are marked synthetic and do not count."""
+    if not re.fullmatch(r"ses_[0-9A-Za-z]{8,80}", session_id or ""):
+        return None
+    path = opencode_db()
+    if not path.is_file():
+        return None
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+        try:
+            rows = con.execute(
+                "SELECT m.id, m.time_created, p.data FROM message m JOIN part p ON p.message_id = m.id "
+                "WHERE m.session_id = ? AND json_extract(m.data, '$.role') = 'user' "
+                "ORDER BY m.time_created DESC, p.id LIMIT 2000", (session_id,)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    for _mid, created, data in rows:  # newest first; any typed part makes its message count
+        try:
+            part = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(part, dict) or part.get("type") != "text" or part.get("synthetic"):
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text.strip() and _typed_into_opencode(text):
+            try:
+                return float(created) / 1000
+            except (TypeError, ValueError):
+                return None
     return None
 
 

@@ -429,15 +429,15 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None,
         return reason
     # claude has its brief in the system prompt (args), an armed opencode through OPENCODE_CONFIG
     # (without the handoff: that one is told once); the rest get it as a first prompt.
-    # A continued conversation already has both.
+    # A continued conversation already has both. "[hctrl]": not counted as the user's instruction.
     prompt = None
     if resume:
         pass
     elif m.kind == "opencode" and armed:
         if handoff:
-            prompt = f"이전 작업 상태가 {handoff} 에 있습니다. 먼저 읽고 이어서 작업하세요."
+            prompt = f"[hctrl] 이전 작업 상태가 {handoff} 에 있습니다. 먼저 읽고 이어서 작업하세요."
     elif m.kind != "claude":
-        prompt = f"{brief} 파일을 읽고 그 역할과 규칙을 따르세요. 확인했으면 '준비됨'이라고만 답하세요."
+        prompt = f"[hctrl] {brief} 파일을 읽고 그 역할과 규칙을 따르세요. 확인했으면 '준비됨'이라고만 답하세요."
     if prompt:
         try:
             h.agent_prompt(m.name, prompt, wait=False)

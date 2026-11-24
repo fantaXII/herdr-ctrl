@@ -638,7 +638,7 @@ hctrl wait <job-id>
 hctrl stop <run-id|job-id>                       # 실행 중인 flow나 지시 중단
 ```
 
-orchestrator에는 상한(`limits`)이 걸립니다. 사용자의 지시 한 번(`hctrl ask` 또는 orchestrator 창에 직접 입력한 새 메시지)마다 지시할 수 있는 횟수와 시간이 정해져 있고, 넘으면 `hctrl`이 멈추고 알려줍니다. 새 지시를 입력하면 상한이 다시 시작됩니다. 직접 입력은 orchestrator의 claude 대화 기록에서 확인하며, `[hctrl]`로 시작하는 hctrl의 알림이나 도구 결과로는 초기화되지 않으므로 LLM이 이 상한을 무시할 수 없습니다.
+orchestrator에는 상한(`limits`)이 걸립니다. 사용자의 지시 한 번(`hctrl ask` 또는 orchestrator 창에 직접 입력한 새 메시지)마다 지시할 수 있는 횟수와 시간이 정해져 있고, 넘으면 `hctrl`이 멈추고 알려줍니다. 새 지시를 입력하면 상한이 다시 시작됩니다. 직접 입력은 orchestrator의 대화 기록에서 확인합니다(claude는 대화 기록 파일, opencode는 opencode DB `~/.local/share/opencode/opencode.db`를 읽기 전용으로). `[hctrl]`로 시작하는 hctrl의 알림이나 도구 결과로는 초기화되지 않으므로 LLM이 이 상한을 무시할 수 없습니다. opencode는 플러그인(예: oh-my-opencode의 반복 실행)이 표시 없이 사용자 메시지를 넣을 수 있어서, `[`나 `<`로 시작하는 메시지는 직접 입력으로 보지 않습니다. 그런 메시지로 시작하는 지시라면 `hctrl ask`를 쓰세요.
 
 ## 5. 멈췄을 때
 

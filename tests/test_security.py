@@ -417,3 +417,85 @@ def test_queued_notifications_do_not_reset_the_budget(two, tmp_path, monkeypatch
     ])
     with pytest.raises(LimitExceeded, match="시간 상한"):
         enforce(a, orch, ["x1"], "a")
+
+
+# --------------------------------------------------------------- the same for an opencode orchestrator
+def _opencode_db(tmp_path, monkeypatch, a, messages, session="ses_test0001abcd"):
+    """Give the fake orchestrator an opencode session; `messages` = [(epoch, [part dict, ...]), ...]
+    written in opencode 1.x's SQLite layout (message + part, role in message.data)."""
+    import json
+    import sqlite3
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    d = tmp_path / "xdg" / "opencode"
+    d.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(d / "opencode.db")
+    con.execute("CREATE TABLE message (id text PRIMARY KEY, session_id text, time_created integer, "
+                "time_updated integer, data text)")
+    con.execute("CREATE TABLE part (id text PRIMARY KEY, message_id text, session_id text, "
+                "time_created integer, time_updated integer, data text)")
+    for i, msg in enumerate(messages):  # (epoch, parts[, session_id[, role]])
+        ts, parts, sid, role = list(msg) + [session, "user"][len(msg) - 2:]
+        ms = int(ts * 1000)
+        con.execute("INSERT INTO message VALUES (?,?,?,?,?)",
+                    (f"msg_{i:04d}", sid, ms, ms, json.dumps({"role": role, "time": {"created": ms}})))
+        for j, p in enumerate(parts):
+            con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                        (f"prt_{i:04d}_{j}", f"msg_{i:04d}", sid, ms, ms, json.dumps(p, ensure_ascii=False)))
+    con.commit()
+    con.close()
+    real = a.h.agent_get
+    a.h.agent_get = lambda t: {**real(t), "agent_session": {"agent": "opencode", "kind": "id", "value": session}}
+
+
+def _text(t, **kw):
+    return {"type": "text", "text": t, **kw}
+
+
+def test_typing_to_an_opencode_orchestrator_starts_a_fresh_budget(two, tmp_path, monkeypatch):
+    """Seen live: with an opencode orchestrator, typing into it never reset the 2-hour budget
+    (only claude transcripts were read), so every hctrl send hit the time limit."""
+    import time as _t
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import read_json
+    a, tab = _stale_budget(two)
+    orch = Actor("orch", "x-orch", "X")
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, orch, ["x1"], "a")
+    now = _t.time() - 60
+    _opencode_db(tmp_path, monkeypatch, a, [
+        (now - 27 * 3600, [_text("어제 지시")]),
+        (now, [_text("진행해줘."), _text("<system-reminder>열린 파일</system-reminder>", synthetic=True)]),
+        (now + 1, [_text("[hctrl] 'coder'가 재시작됐습니다")]),
+        (now + 2, [_text("답변입니다")], "ses_test0001abcd", "assistant"),
+    ])
+    enforce(a, orch, ["x1"], "b")
+    assert read_json(_budget_path(a, tab))["steps"] == 1
+
+
+def test_opencode_injected_turns_do_not_reset_the_budget(two, tmp_path, monkeypatch):
+    """Plugin loops (e.g. oh-my-opencode's "[SYSTEM DIRECTIVE: ...]") write unmarked user-role text, and
+    the orchestrator could start one itself: only plain typed text counts."""
+    import time as _t
+    a, _ = _stale_budget(two)
+    orch = Actor("orch", "x-orch", "X")
+    now = _t.time() - 60
+    _opencode_db(tmp_path, monkeypatch, a, [
+        (now, [_text("Continue if you have next steps", synthetic=True)]),
+        (now, [_text("[SYSTEM DIRECTIVE: OH-MY-OPENCODE - RALPH LOOP 2/100] Continue")]),
+        (now, [_text("<system-reminder>[ALL BACKGROUND TASKS FINISHED]</system-reminder>")]),
+        (now, [_text("[hctrl] 역할이 변경됐습니다")]),
+        (now, [{"type": "file", "url": "file:///x"}]),
+        (now, [_text("다른 세션에서 입력")], "ses_other0001abcd"),
+    ])
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, orch, ["x1"], "a")
+
+
+def test_opencode_without_a_database_keeps_the_budget(two, tmp_path, monkeypatch):
+    a, _ = _stale_budget(two)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "nothing"))
+    real = a.h.agent_get
+    a.h.agent_get = lambda t: {**real(t), "agent_session": {"agent": "opencode", "kind": "id",
+                                                            "value": "ses_test0001abcd"}}
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, Actor("orch", "x-orch", "X"), ["x1"], "a")
