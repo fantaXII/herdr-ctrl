@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import TabCfg, orch_name
-from .herdr import HerdrError, agent_status
+from .herdr import HerdrError
 from .project import state_home
 from .state import digest, file_lock, read_json, write_json
 
@@ -382,9 +382,10 @@ def ask(ctx, tab_name: str, text: str) -> None:
         raise RuntimeError(f"탭 '{tab.name}'에는 orchestrator가 없습니다 (orchestrator: none). "
                            f"정해진 순서 실행은 hctrl run <flow>를 쓰세요")
     name = orch_name(tab.name)
-    st = agent_status(ctx.h, name)
+    from .up import live_agent_status
+    st = live_agent_status(ctx, name)  # adopts an orchestrator started by hand in its pane
     if st is None:
-        raise RuntimeError(f"orchestrator '{name}'가 실행 중이 아닙니다 (hctrl up {tab.name})")
+        raise RuntimeError(f"orchestrator '{name}'가 실행 중이 아닙니다 (hctrl restart {name})")
     if st == "blocked":
         raise RuntimeError(f"orchestrator '{name}'가 승인 대기 중입니다. 화면에서 먼저 처리하세요")
     if st not in ("idle", "done"):

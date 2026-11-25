@@ -167,10 +167,12 @@ class Runner:
             self.no_retry = True
             return "failed", f"잠금 사용 중: {e}"
         try:
-            st = agent_status(self.h, name)
+            from .up import live_agent_status
+            st = live_agent_status(self.ctx, name)  # adopts an agent started by hand in its pane
             if st is None:
                 self.no_retry = True
-                return "failed", f"agent '{name}'가 실행 중이 아닙니다 (hctrl up)"
+                return "failed", (f"agent '{name}'가 실행 중이 아닙니다 (다시 시작: hctrl restart {name}, "
+                                  f"대화가 망가졌으면 hctrl restart {name} --no-handoff)")
             if st == "blocked":
                 return "blocked", f"agent '{name}'가 승인 대기 중입니다"
             if st not in READY_STATES:

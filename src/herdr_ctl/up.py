@@ -468,10 +468,50 @@ def start_agent(ctx: Ctx, m: Member, pane_id: str, handoff: Path | None = None,
     return None
 
 
+def adopt_agent(ctx: Ctx, name: str, agents: list[dict] | None = None) -> dict | None:
+    """herdr lists no agent named `name`, but the member's own pane runs an unnamed agent of its kind:
+    give it the name back and return its entry (None when there is nothing to adopt).
+    herdr's name belongs to the process `agent start` launched. An agent quit and started again by
+    hand in its pane (after a crash or an LLM error, or `opencode -c`) is detected without a name, so
+    `hctrl send` / `agent prompt <name>` could not reach it ("실행 중이 아닙니다"). The pane shell is
+    armed with the member's role (arm_pane_shell), so that agent is the member."""
+    m = ctx.cfg.member(name)
+    rec = ctx.state.member(name)
+    if m is None or not m.is_agent or not rec:
+        return None
+    try:
+        agents = ctx.h.agent_list() if agents is None else agents
+        if any(a.get("name") == name for a in agents):
+            return None
+        hit = next((a for a in agents if not a.get("name") and a.get("pane_id") == rec["pane_id"]
+                    and a.get("agent") == m.kind), None)
+        if hit is None:
+            return None
+        ctx.h.agent_rename(rec["pane_id"], name)
+    except HerdrError:
+        return None
+    ctx.state["attention"].pop(name, None)
+    return dict(hit, name=name)
+
+
+def live_agent_status(ctx: Ctx, name: str) -> str | None:
+    """agent_status(), adopting a hand-started agent in the member's pane first (see adopt_agent)."""
+    agents = ctx.h.agent_list()
+    for a in agents:
+        if a.get("name") == name:
+            return a.get("agent_status")
+    hit = adopt_agent(ctx, name, agents)
+    return hit.get("agent_status") if hit else None
+
+
 def ensure_agents(ctx: Ctx, group: TabGroup, report: UpReport, resume: bool = False,
                   handoffs: dict[str, Path] | None = None) -> None:
     h, st = ctx.h, ctx.state
-    live = {a["name"]: a for a in h.agent_list() if a.get("name")}
+    agents = h.agent_list()
+    live = {a["name"]: a for a in agents if a.get("name")}
+    for m in group.members:
+        if m.is_agent and m.name not in live and (hit := adopt_agent(ctx, m.name, agents)):
+            live[m.name] = hit
     sessions = load_sessions(ctx.project) if resume else {}
     for m in group.members:
         rec = st.member(m.name)
@@ -602,7 +642,12 @@ def zoom(ctx: Ctx, name: str) -> None:
 def status(ctx: Ctx, tab: str | None = None) -> list[str]:
     from .runner import list_runs
     h, st = ctx.h, ctx.state
-    live = {a["name"]: a for a in h.agent_list() if a.get("name")}
+    agents = h.agent_list()
+    live = {a["name"]: a for a in agents if a.get("name")}
+    for t in ctx.cfg.open_tabs:
+        for m in t.agents + ([t.orchestrator] if t.orchestrator else []):
+            if m.name not in live and (hit := adopt_agent(ctx, m.name, agents)):
+                live[m.name] = hit
     lines = [f"세션 {ctx.cfg.session}  (프로젝트 {ctx.project.root})"]
     tabs = [ctx.cfg.tab(tab)] if tab else ctx.cfg.tabs
     if tab and tabs[0] is None:

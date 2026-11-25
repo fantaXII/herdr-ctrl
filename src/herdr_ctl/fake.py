@@ -56,6 +56,8 @@ class FakeHerdr:
         self.on_prompt: dict[str, Callable] = {}
         self.default_on_prompt: Callable | None = None
         self.start_status: dict[str, str] = {}  # name -> status after start (e.g. blocked)
+        # name -> callable(args) -> True: the CLI starts, then quits at once (e.g. a broken resume)
+        self.quits_on_start: dict[str, Callable] = {}
         self.background_patterns = [r"herdr_ctl\.cli\b.*\swatch\b"]  # regexes
         self.shell_name: str | None = "bash"  # what pane_shell_name reports for every pane
         self.git_worktrees = False  # True: worktree_create/remove run real git (tests with a repo)
@@ -221,8 +223,10 @@ class FakeHerdr:
 
     def agent_get(self, target):
         a = self._agent(target)
-        return {"name": a.name, "agent": a.kind, "agent_status": a.status, "pane_id": a.pane_id,
-                "agent_session": {"agent": a.kind, "kind": "id", "value": f"fake-{a.name}-session"}}
+        info = {"name": a.name, "agent": a.kind, "agent_status": a.status, "pane_id": a.pane_id}
+        if a.name not in self.no_session:
+            info["agent_session"] = {"agent": a.kind, "kind": "id", "value": f"fake-{a.name}-session"}
+        return info
 
     def agent_start(self, name, kind, pane_id, args=None, timeout_ms=60000):
         p = self._pane(pane_id)
@@ -233,6 +237,9 @@ class FakeHerdr:
         status = self.start_status.get(name, "idle")
         self.agents[name] = FAgent(name, kind, p.pane_id, list(args or []), status)
         self.calls.append(("agent_start", name, kind, pane_id, tuple(args or [])))
+        if self.quits_on_start.get(name, lambda a: False)(list(args or [])):
+            del self.agents[name]
+            return {"agent": {"name": name, "agent": kind, "agent_status": "idle", "pane_id": pane_id}}
         if status == "blocked":
             raise HerdrError("agent_not_ready", f"agent {name} is blocked during startup")
         return {"agent": self.agent_get(name)}
@@ -269,7 +276,7 @@ class FakeHerdr:
         a = self._agent(target)
         if name in self.agents and self.agents[name] is not a:
             raise HerdrError("name_in_use", name)
-        self.agents.pop(a.name)
+        self.agents.pop(a.name if a.name is not None else "#" + a.pane_id)
         a.name = name
         self.agents[name] = a
         self.calls.append(("agent_rename", target, name))
@@ -287,6 +294,15 @@ class FakeHerdr:
     def kill_agent(self, name):
         """Test helper: the agent process exits; pane stays at a shell prompt."""
         self.agents.pop(name, None)
+
+    def hand_start(self, pane_id, kind):
+        """Test helper: someone typed the agent CLI into the pane's shell. herdr detects it, but it
+        has no name (only `agent start` names one)."""
+        a = FAgent(None, kind, pane_id, [])
+        self.agents["#" + pane_id] = a
+        return a
+
+    no_session: set = frozenset()  # agent names herdr reports no conversation for (a new, empty one)
 
     # misc ---------------------------------------------------------------
     integrations = {"claude": "current", "opencode": "current"}

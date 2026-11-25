@@ -113,8 +113,9 @@ class HandoffMissing(RuntimeError):
 
 
 def _missing(name: str, path, turned: bool) -> HandoffMissing:
-    return HandoffMissing(f"인수인계 파일이 작성되지 않았습니다: {path} (인수인계 없이 재시작하려면 "
-                          f"변경 반영에서 [f] 또는 hctrl restart {name} --no-handoff)", turned)
+    return HandoffMissing(f"인수인계 파일이 작성되지 않았습니다: {path} (agent가 응답하지 못하면, 예: LLM 오류·"
+                          f"context 한도, 인수인계 없이 새로 시작: _hc 탭 [r] → [n], 변경 반영에서 [f], "
+                          f"또는 hctrl restart {name} --no-handoff)", turned)
 
 
 def _await_handoff(ctx: Ctx, name: str, path, timeout_s: float) -> None:
@@ -145,19 +146,39 @@ def _await_handoff(ctx: Ctx, name: str, path, timeout_s: float) -> None:
     raise _missing(name, path, turned=seen_busy)
 
 
-def _wait_agent_gone(ctx: Ctx, name: str, timeout_s: float = 10.0) -> bool:
+def _wait_agent_gone(ctx: Ctx, name: str, pane: str | None = None, timeout_s: float = 10.0) -> bool:
     """The shell prompt can be back a moment before herdr notices the agent exited; starting the
-    new agent in that gap is refused. Wait until herdr no longer lists it."""
+    new agent in that gap is refused (or the name lands on the dying record). Wait until herdr no
+    longer lists it, nor any agent in `pane` (one started there by hand has no name)."""
     deadline = time.time() + timeout_s
     while True:
         try:
-            if not any(a.get("name") == name for a in ctx.h.agent_list()):
+            if not any(a.get("name") == name or (pane and a.get("pane_id") == pane)
+                       for a in ctx.h.agent_list()):
                 return True
         except HerdrError:
             pass
         if time.time() >= deadline:
             return False
         _sleep(0.3)
+
+
+START_CHECK_S = 3.0  # after a start: how long the new agent must stay listed under its name
+
+
+def _started_alive(ctx: Ctx, name: str, pane: str) -> bool:
+    """herdr accepted the start; check the agent is still listed under its name a moment later.
+    A CLI that quits right away (e.g. resuming a conversation it cannot load) leaves the pane at a
+    shell with no agent, which used to be reported as "재시작 완료"."""
+    for i in range(int(START_CHECK_S / 0.5) + 1):
+        if i:
+            _sleep(0.5)
+        try:
+            if not any(a.get("name") == name and a.get("pane_id") == pane for a in ctx.h.agent_list()):
+                return False
+        except HerdrError:
+            pass
+    return True
 
 
 def _wait_shell(ctx: Ctx, pane: str, timeout_s: float = 20.0) -> bool:
@@ -209,7 +230,12 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
     pane = rec["pane_id"]
     acquire(ctx.project, name, "restart")
     try:
+        from .up import adopt_agent
         st = agent_status(ctx.h, name)
+        adopted = None
+        if st is None:  # an agent started by hand in the pane: stop it like ours
+            adopted = adopt_agent(ctx, name)
+            st = adopted.get("agent_status") if adopted else None
         if st == "blocked":
             raise RuntimeError(f"'{name}'가 승인 대기 중이라 재시작하지 않습니다. 화면에서 먼저 처리하세요")
         if st is not None and st not in READY_STATES:
@@ -220,12 +246,15 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
             if st == "blocked":
                 raise RuntimeError(f"'{name}'가 승인 대기 중이라 재시작하지 않습니다")
         from .up import live_session, resume_id, update_sessions
-        rid = resume_id(ctx, m, live_session(ctx, name)) if resume and st is not None else None
+        resume_failed = False
+        sess = live_session(ctx, name) if st is not None else None
+        rid = resume_id(ctx, m, sess) if resume else None
         if rid:
             update_sessions(ctx.project, lambda rec: rec.update({name: {"agent": m.kind, "id": rid, "at": time.time()}}))
         handoff_path = None
         hp = (ctx.project.handoff_dir / f"{name}.md").resolve()
-        if handoff and st is not None and not rid:
+        # a hand-started agent with no conversation yet has nothing to hand off
+        if handoff and st is not None and not rid and not (adopted and sess is None):
             handoff_path = collect_handoff(ctx, name, timeout_s)
         elif handoff and st is None and hp.exists() and hp.read_text().strip() \
                 and hp.stat().st_mtime > float(rec.get("started_at") or 0):
@@ -238,13 +267,23 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
             running = ", ".join(_foreground(ctx, pane)) or "다른 프로그램"
             raise RuntimeError(f"'{name}' 창이 쉘 프롬프트로 돌아오지 않았습니다 ({running} 실행 중). "
                                "창에서 직접 종료한 뒤 다시 반영하세요")
-        _wait_agent_gone(ctx, name)
+        _wait_agent_gone(ctx, name, pane)
         why = start_agent(ctx, m, pane, handoff_path, resume=rid)
         if why and why.startswith("시작 실패"):  # one more try: herdr may still be settling the pane
             _sleep(2.0)
             if ctx.h.pane_shell_idle(pane):
-                _wait_agent_gone(ctx, name)
+                _wait_agent_gone(ctx, name, pane)
                 why = start_agent(ctx, m, pane, handoff_path, resume=rid)
+        if why is None and not _started_alive(ctx, name, pane):
+            if rid and ctx.h.pane_shell_idle(pane):
+                # the conversation could not be continued (e.g. past the context limit): a new one
+                _wait_agent_gone(ctx, name, pane)
+                rid, resume_failed = None, True
+                why = start_agent(ctx, m, pane, handoff_path)
+                if why is None and not _started_alive(ctx, name, pane):
+                    why = "시작 실패: agent가 시작 직후 종료됐습니다"
+            else:
+                why = "시작 실패: agent가 시작 직후 종료됐습니다"
         ctx.state.save()
         if why and why.startswith("시작 실패"):
             raise RuntimeError(f"'{name}' {why}. 창은 쉘 상태입니다. 다시 반영하면 "
@@ -255,7 +294,9 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
                                                          if rid else "새 설정으로 재시작됐습니다.") +
                        (f" 인수인계: {handoff_path}" if handoff_path else ""))
     how = " (대화 유지)" if rid else (f" (인수인계 {handoff_path.name})" if handoff_path else "")
-    if resume and not rid and st is not None:
+    if resume_failed:
+        how += " — 이어 갈 대화로 시작하지 못해 새 대화로 시작"
+    elif resume and not rid and st is not None:
         how += " — 이어 갈 대화를 찾지 못해 " + ("인수인계로 새로 시작" if handoff_path else "새로 시작")
     if why:
         return f"{name}: 재시작했지만 확인 필요 — {why}"
@@ -445,7 +486,8 @@ HELP = """\
   [Tab] / ←→ / 숫자   대상 탭 바꾸기 (0 = 전체). worktree 탭(별도 workspace)도 여기서 고릅니다.
   [s] 설정 화면(브라우저)   [c] 변경 반영   [t] 상태   [p] 답을 기다리는 질문
   [r] 재시작: 탭 전체 또는 agent 하나. 기본은 같은 대화로 이어서(설정·skill·MCP 다시 불러옴),
-      [f]를 고르면 인수인계 파일을 남기고 새 대화로 시작
+      [f]를 고르면 인수인계 파일을 남기고 새 대화로, [n]은 인수인계 없이 새 대화로 시작
+      (LLM 오류·context 한도로 agent가 응답하지 못할 때. 손으로 다시 띄운 agent도 이 창의 agent로 다룸)
   [x] 1) 잠시 닫기  창만 닫음. 다시 열면 이전 대화 이어서
       2) 탭 종료    이 탭의 hctrl 세션을 끝내고 산출물(작업 폴더·인수인계·실행 기록·대화 기록)을 지움.
                     탭 설정과 prompt(역할 상세)는 남고, 다시 열면 새 세션으로 시작
@@ -690,9 +732,11 @@ class Menu:
             print(f"[hctrl] '{t['name']}' 탭은 실행 중이 아닙니다. [o]로 여세요", flush=True)
             return
         who = self._input(f"재시작: [Enter] 탭 '{t['name']}' 전체, 또는 agent 이름 > ")
-        how = self._input("[Enter] 같은 대화로 이어서 (설정·skill·MCP 다시 불러옴)  [f] 새 대화 (인수인계) > ")
+        how = self._input("[Enter] 같은 대화로 이어서 (설정·skill·MCP 다시 불러옴)  [f] 새 대화 (인수인계)  "
+                          "[n] 새 대화 (인수인계 없이 — LLM 오류·context 한도로 대화가 망가졌을 때) > ")
         target = ["--tab", t["name"]] if not who else [who]
-        self._hctrl("restart", *target, *(["--fresh"] if how == "f" else []))
+        flag = {"f": ["--fresh"], "n": ["--no-handoff"]}.get(how, [])
+        self._hctrl("restart", *target, *flag)
 
     def finish(self) -> None:
         t = self._need_tab()

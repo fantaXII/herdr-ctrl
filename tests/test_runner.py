@@ -124,7 +124,7 @@ def test_on_fail_stop(ready):
 def test_agent_not_running(ready):
     ready.h.kill_agent("x1")
     rec = run_flow(ready)
-    assert rec["status"] == "failed" and "hctrl up" in rec["steps"][0]["error"]
+    assert rec["status"] == "failed" and "hctrl restart x1" in rec["steps"][0]["error"]
 
 
 def test_busy_agent_is_waited_for(ready):
@@ -331,3 +331,14 @@ def test_pid_reuse_is_not_mistaken_for_worker(ready):
     rec["pid"], rec["pid_start"], rec["status"] = os.getppid(), "1", "stopped"
     save_run(ready.project, rec)
     assert prepare_resume(ready.project, rec["id"])["id"] == rec["id"]
+
+
+def test_send_reaches_an_agent_started_again_by_hand(ready):
+    """The agent died and was started again by hand in its pane: herdr lists it without a name.
+    The step adopts it (gives the name back) instead of failing with "실행 중이 아닙니다"."""
+    pane = ready.state.member("x1")["pane_id"]
+    ready.h.kill_agent("x1")
+    ready.h.hand_start(pane, "claude")
+    rec = run_flow(ready)
+    assert rec["steps"][0]["status"] == "ok", rec["steps"][0].get("error")
+    assert ready.h.agents["x1"].pane_id == pane

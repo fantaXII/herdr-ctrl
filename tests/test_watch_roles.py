@@ -532,3 +532,89 @@ def test_restart_leaves_other_programs_alone(live):
     with pytest.raises(RuntimeError, match="쉘 프롬프트로 돌아오지 않았습니다"):
         restart(live, "x1", handoff=False)
     assert not [c for c in live.h.calls if c[0] == "pane_send_keys" and c[1] == pane]
+
+
+# ------------------------------------------- an agent quit and started again by hand in its pane
+def _hand_restarted(ctx, name, kind):
+    """The agent died / was quit, then someone typed its CLI into the pane again: herdr detects
+    it without a name, so name-based calls (send, ask, restart) could not reach it."""
+    pane = ctx.state.member(name)["pane_id"]
+    ctx.h.kill_agent(name)
+    ctx.h.hand_start(pane, kind)
+    return pane
+
+
+def test_hand_started_agent_is_adopted_by_status(live):
+    from herdr_ctl.up import status
+    pane = _hand_restarted(live, "x2", "opencode")
+    row = next(ln for ln in status(live) if ln.strip().startswith("x2"))
+    assert "정지" not in row and "idle" in row
+    assert live.h.agents["x2"].pane_id == pane
+
+
+def test_hand_started_agent_of_another_kind_is_not_adopted(live):
+    from herdr_ctl.up import live_agent_status
+    _hand_restarted(live, "x2", "claude")  # x2 is configured as opencode
+    assert live_agent_status(live, "x2") is None
+    assert "x2" not in live.h.agents
+
+
+def test_up_adopts_a_hand_started_agent(live):
+    from herdr_ctl.up import up
+    _hand_restarted(live, "x2", "opencode")
+    n = len(live.h.calls)
+    rep = up(live, tab="X", start_watch=False)
+    assert "x2" in rep.skipped and "x2" not in rep.attention
+    assert not [c for c in live.h.calls[n:] if c[0] == "agent_start"]
+
+
+def test_ask_reaches_a_hand_started_orchestrator(live):
+    from herdr_ctl.orchestrator import ask
+    _hand_restarted(live, "x-orch", "claude")
+    ask(live, "X", "계속 진행")
+    assert live.h.agents["x-orch"].prompts[-1] == "계속 진행"
+
+
+def _quits_on_exit(ctx, name):
+    def exit_on_cmd(agent, text):
+        if text == "/exit":
+            ctx.h.kill_agent(agent.name)
+        return "idle"
+    ctx.h.on_prompt[name] = exit_on_cmd
+
+
+def test_restart_adopts_a_hand_started_agent(live):
+    pane = _hand_restarted(live, "x2", "opencode")
+    _quits_on_exit(live, "x2")
+    msg = restart(live, "x2", resume=True)
+    assert "재시작 완료" in msg and "대화 유지" in msg  # the hand-started conversation goes on
+    assert live.h.agents["x2"].pane_id == pane
+
+
+def test_restart_reports_an_agent_that_quits_right_after_start(live, no_sleep):
+    _quits_on_exit(live, "x2")
+    live.h.quits_on_start["x2"] = lambda args: True
+    with pytest.raises(RuntimeError, match="시작 직후 종료"):
+        restart(live, "x2", handoff=False)
+    assert "x2" not in live.h.agents
+
+
+def test_restart_starts_fresh_when_the_conversation_cannot_be_resumed(live, no_sleep):
+    """e.g. an opencode conversation past its context limit: resuming it quits at once."""
+    _quits_on_exit(live, "x2")
+    live.h.quits_on_start["x2"] = lambda args: "--session" in args
+    msg = restart(live, "x2", resume=True)
+    assert "재시작 완료" in msg and "새 대화로 시작" in msg
+    assert "--session" not in live.h.agents["x2"].args
+
+
+def test_restart_of_a_new_hand_started_agent_needs_no_handoff(live):
+    """Started by hand and never used: herdr reports no conversation, so there is nothing to hand
+    off or continue; the default restart just starts the configured agent (as before adoption)."""
+    _hand_restarted(live, "x2", "opencode")
+    live.h.no_session = {"x2"}
+    _quits_on_exit(live, "x2")
+    msg = restart(live, "x2", resume=True)
+    assert "재시작 완료" in msg
+    assert not [p for p in live.h.calls if p[0] == "agent_prompt" and "인수인계" in p[2]]
+    assert "--session" not in live.h.agents["x2"].args

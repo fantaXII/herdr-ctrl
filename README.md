@@ -511,8 +511,12 @@ x2: model sonnet → opus  (재시작 필요)
 ```bash
 hctrl restart x1             # 같은 대화로 이어서 (기본)
 hctrl restart x1 --fresh     # 인수인계 파일을 남기고 새 대화로
+hctrl restart x1 --no-handoff  # 인수인계 없이 새 대화로 (LLM 오류·context 한도로 대화가 망가졌을 때)
 hctrl restart --tab X        # 탭 X 전체 (작업 agent 먼저, orchestrator 마지막)
 ```
+
+- **대화가 망가졌을 때**(LLM 오류, context 한도를 넘어 compact도 안 될 때): 같은 대화로 이어서 시작하면 같은 상태로 돌아가고, `--fresh`는 그 agent에게 인수인계를 쓰게 해서 역시 실패합니다. `--no-handoff`(`_hc` 탭 `[r]` → `[n]`)로 새 대화를 시작하세요. 이어 갈 대화를 불러오다 agent가 바로 종료되면 hctrl이 새 대화로 다시 시작하고 그렇게 알려 줍니다. 시작 직후 agent가 사라지면 "재시작 완료" 대신 실패로 알립니다.
+- **창에서 직접 다시 띄운 agent**: agent를 종료하고 그 창에서 `opencode`/`claude`를 손으로 다시 실행하면 herdr는 그것을 이름 없는 agent로 봅니다. hctrl은 그 창의 같은 종류 agent에 이름을 다시 붙여(`send`·`ask`·`restart`·`up`·`status` 때) 원래 agent로 다룹니다. orchestrator도 `hctrl restart <agent>`로 자기 탭 agent를 다시 시작할 수 있습니다(`hctrl up`은 사용자 전용).
 
 설정에 오류가 있으면 반영하지 않고 오류만 알립니다.
 
@@ -574,6 +578,7 @@ hctrl tab rename X login   # 탭 ID 변경 (창과 agent는 그대로)
 ```
 
 - `[Tab]`, `←`/`→`, 숫자 키로 대상을 바꿉니다(`0` = 전체). `[?]`를 누르면 키 설명이 나옵니다.
+- `[r]`은 탭 전체 또는 agent 하나를 고른 뒤 `[Enter]` 같은 대화로 이어서 / `[f]` 새 대화(인수인계) / `[n]` 새 대화(인수인계 없이, 대화가 망가졌을 때) 중에서 고릅니다.
 - `[x]`는 1) 잠시 닫기 / 2) 탭 종료 중에서 고릅니다. 탭 설정 삭제는 실수로 누르지 않도록 대문자 `[D]`입니다.
 
 ## 4. 파이프라인 정의와 실행
