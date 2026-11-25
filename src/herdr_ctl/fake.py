@@ -244,11 +244,18 @@ class FakeHerdr:
             raise HerdrError("agent_not_ready", f"agent {name} is blocked during startup")
         return {"agent": self.agent_get(name)}
 
+    drop_prompts: dict = {}  # name -> how many next prompts the TUI drops (still starting up)
+
     def agent_prompt(self, target, text, wait=True, timeout_ms=None):
         a = self._agent(target)
         if a.status == "blocked":
             raise HerdrError("agent_blocked", target)
+        if self.drop_prompts.get(a.name):
+            self.drop_prompts = dict(self.drop_prompts, **{a.name: self.drop_prompts[a.name] - 1})
+            self.calls.append(("agent_prompt_dropped", a.name, text))
+            raise HerdrError("agent_prompt_stalled", "no observed working state")
         a.prompts.append(text)
+        self._pane(a.pane_id).output += text + "\n"  # a delivered prompt shows on screen
         self.calls.append(("agent_prompt", a.name, text))
         cb = self.on_prompt.get(a.name) or self.default_on_prompt
         new = cb(a, text) if cb else "done"

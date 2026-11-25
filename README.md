@@ -745,6 +745,7 @@ hctrl zoom x1              # 필요할 때 크게 보기
 - 한 줄 역할을 바꾸면(`hctrl role x1 "..."`) yaml이 아니라 `.herdr-flow/roles/x1.md` 첫 줄(`# 역할: ...`)에 저장됩니다. 이 값이 yaml의 `role`보다 우선합니다.
 - 쉘 단계는 pane의 쉘 종류와 관계없이 `bash -c`(pipefail)로 실행됩니다.
 - `hctrl stop`은 실행 프로세스가 10초(`HC_STOP_GRACE_S`) 안에 멈추지 않으면 강제 종료합니다. 터미널에서 직접 `hctrl run` 중인 프로세스도 해당됩니다.
-- 방금 띄운 agent에는 첫 지시 전 최대 8초 기다립니다(`HC_READY_GRACE_S`). 지시가 반응 없이 끝나면 자동 재전송하지 않고 실패로 기록합니다(`hctrl resume <id> --resend`로 직접 재전송).
+- 방금 띄운 agent에는 첫 지시 전 최대 8초(opencode는 15초) 기다립니다(`HC_READY_GRACE_S`로 모두 바꿈). opencode는 준비된 것처럼 보인 뒤에도 10초 남짓 입력을 버리기 때문입니다. 재시작도 방금 띄운 agent라면 이 시간이 지난 뒤 종료시킵니다.
+- 지시가 반응 없이 끝났는데(`agent_prompt_stalled`) 화면 어디에도 지시 내용이 없으면, 아직 입력을 받지 못하는 agent가 버린 것이라 **한 번만** 다시 보냅니다(손으로 다시 띄운 agent 등). 내용이 화면에 보이면(전달됨) 자동 재전송하지 않고 실패로 기록합니다(`hctrl resume <id> --resend`로 직접 재전송).
 - herdr 밖에서 `hctrl`을 실행할 때는 `--session <project>`로 대상 세션을 지정합니다.
 - 설계 상세: [PLAN.md](PLAN.md)

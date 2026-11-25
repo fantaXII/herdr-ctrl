@@ -260,6 +260,8 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
                 and hp.stat().st_mtime > float(rec.get("started_at") or 0):
             handoff_path = hp  # an earlier attempt got the handoff written, then failed to start
         if st is not None:
+            from .runner import wait_ready_grace
+            wait_ready_grace(ctx, name)  # just started: /exit and ctrl+c would be dropped
             _stop_agent(ctx, name, pane)
         elif not ctx.h.pane_shell_idle(pane):
             _stop_stray_agent(ctx, pane)  # an agent CLI herdr lost track of (or started by hand)

@@ -545,8 +545,8 @@ flows:
 - **worktree 생성 옵션:** `herdr worktree create`의 `--workspace`와 `--cwd`는 함께 쓸 수 없다. 그래서 `--cwd`(저장소 루트)만 쓴다.
 - **worktree 정리 순서:** worktree workspace의 마지막 탭을 닫으면 workspace도 닫힌다. 그래서 `down --remove-worktree`는 worktree를 먼저 제거한다.
 - **첫 지시 대기와 stall 처리:**
-  - 방금 시작한 claude는 입력을 받기 전에 idle로 보고될 수 있다. 그래서 첫 지시 전에 최대 8초 기다린다(`HC_READY_GRACE_S`).
-  - `agent_prompt_stalled`는 전달 여부를 알 수 없는 상태다. 그래서 결과 파일만 확인하고 **자동 재전송·재시도하지 않는다**(사용자가 `hctrl resume --resend`).
+  - 방금 시작한 claude는 입력을 받기 전에 idle로 보고될 수 있다. 그래서 첫 지시 전에 최대 8초 기다린다(`HC_READY_GRACE_S`). opencode는 `agent start`가 끝난 뒤(interactive_ready) 10~12초 동안 키 입력을 모두 버려서(opencode 1.19 / herdr 0.9.5 측정) 15초를 기다린다.
+  - `agent_prompt_stalled`는 전달 여부를 알 수 없는 상태다. 그래서 결과 파일만 확인하고 **자동 재시도하지 않는다**(사용자가 `hctrl resume --resend`). 예외: 턴이 시작되지 않았고 지시의 마지막 줄이 보이는 화면에 없으면(입력을 버린 것) 한 번만 다시 보낸다. 전달된 지시는 입력창이나 마지막 메시지로 화면에 남는다(claude의 접힌 붙여넣기 `[Pasted text`도 전달로 본다).
 - **서버 환경 변수:** Claude 세션 안에서 herdr 서버를 띄우면 `CLAUDE_CODE_*` 변수가 상속된다. 서버를 시작할 때 이 변수들을 제거한다.
 - **호출자별 권한:** 판별 기준은 `HERDR_PANE_ID`다.
 

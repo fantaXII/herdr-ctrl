@@ -342,3 +342,56 @@ def test_send_reaches_an_agent_started_again_by_hand(ready):
     rec = run_flow(ready)
     assert rec["steps"][0]["status"] == "ok", rec["steps"][0].get("error")
     assert ready.h.agents["x1"].pane_id == pane
+
+
+# ------------------------------------- a TUI still starting up drops the first prompt
+@pytest.fixture
+def quick_stall(monkeypatch):
+    import herdr_ctl.runner as runner_mod
+    monkeypatch.setenv("HC_STALL_WATCH_S", "0")
+    monkeypatch.setattr(runner_mod.time, "sleep", lambda s: None)
+
+
+def test_dropped_prompt_is_sent_again_once(ready, quick_stall):
+    """opencode reads no input for ~10 s after it looks ready: herdr reports agent_prompt_stalled
+    and nothing of the prompt is on screen. The step sends it again (once) instead of failing."""
+    ready.h.drop_prompts = {"x2": 1}
+    rec = execute(ready, create_job(ready.project, "x2", "기능 X 구현", None))
+    assert rec["status"] == "done", rec["steps"][0].get("error")
+    assert len([p for p in ready.h.agents["x2"].prompts if "기능 X" in p]) == 1
+    assert [c for c in ready.h.calls if c[0] == "agent_prompt_dropped"]
+
+
+def test_dropped_twice_is_not_sent_a_third_time(ready, quick_stall):
+    ready.h.drop_prompts = {"x2": 2}
+    rec = execute(ready, create_job(ready.project, "x2", "기능 X 구현", None))
+    assert rec["status"] == "failed" and "stalled" in rec["steps"][0]["error"]
+    assert not ready.h.agents["x2"].prompts
+
+
+def test_delivered_prompt_without_a_turn_is_not_resent(ready, quick_stall):
+    """The text reached the agent (on screen) but no turn started: never send it twice."""
+    ready.h.on_prompt["x2"] = lambda a, t: "stalled"
+    rec = execute(ready, create_job(ready.project, "x2", "기능 X 구현", None))
+    assert rec["status"] == "failed" and "--resend" in rec["steps"][0]["error"]
+    assert len(ready.h.agents["x2"].prompts) == 1
+
+
+def test_dropped_prompt_detected_even_when_an_earlier_one_scrolled_away(ready, quick_stall):
+    """Only the visible screen counts: an earlier identical prompt no longer shown does not
+    make a dropped one look delivered."""
+    pane = ready.state.member("x2")["pane_id"]
+    execute(ready, create_job(ready.project, "x2", "기능 X 구현", None))
+    ready.h._pane(pane).output = "(이전 화면은 지워짐)\n"
+    ready.h.drop_prompts = {"x2": 1}
+    rec = execute(ready, create_job(ready.project, "x2", "기능 X 구현", None))
+    assert rec["status"] == "done", rec["steps"][0].get("error")
+
+
+def test_opencode_waits_longer_after_a_start(monkeypatch):
+    import herdr_ctl.runner as runner_mod
+    monkeypatch.delenv("HC_READY_GRACE_S", raising=False)
+    assert runner_mod.ready_grace_s("opencode") == 15.0
+    assert runner_mod.ready_grace_s("claude") == runner_mod.READY_GRACE_S
+    monkeypatch.setenv("HC_READY_GRACE_S", "3")
+    assert runner_mod.ready_grace_s("opencode") == 3.0
