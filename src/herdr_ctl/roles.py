@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -101,6 +102,74 @@ def write_role_text(project: Project, name: str, text: str, path: Path | None = 
     f.write_text(text)
     _record(project, name, actor, reason, "", text)
     return True
+
+
+def rename_refs(text: str, mapping: dict[str, str]) -> tuple[str, int]:
+    """Whole-name references to members renamed old → new (one pass, so swaps work). A name is
+    bounded by anything but ASCII letters, digits, _ and -: "coder에게" and "`coder`" count,
+    "coder2" and "my-coder" do not. Same rule as renameRefs() in the settings page."""
+    keys = sorted((k for k, v in mapping.items() if k and v != k), key=len, reverse=True)
+    if not keys or not text:
+        return text, 0
+    pat = re.compile(r"(^|[^\w-])(" + "|".join(map(re.escape, keys)) + r")(?![\w-])", re.ASCII)
+    return pat.subn(lambda mt: mt.group(1) + mapping[mt.group(2)], text)
+
+
+def follow_member_renames(project: Project, old_cfg: Config | None, new_cfg: Config | None,
+                          renames: dict[str, str], actor: str = "user") -> list[str]:
+    """Agents renamed in the settings page (saved name → new name): the role file moves to the new
+    name (unless the member names its own role_file, or the new name already has one), and role
+    details that name it use the new name. Returns what was done, for the page to show."""
+    if old_cfg is None or new_cfg is None:
+        return []
+    pairs = {}
+    for old, new in renames.items():
+        mo, mn = old_cfg.member(old), new_cfg.member(new)
+        if old != new and mo is not None and mn is not None and mo.type == mn.type == "agent":
+            pairs[old] = new
+    out: list[str] = []
+    moving = {}
+    for old, new in pairs.items():
+        if old_cfg.member(old).role_file or new_cfg.member(new).role_file:
+            continue
+        f = project.roles_dir / f"{old}.md"
+        if f.exists():
+            moving[old] = f.read_text()
+    go = {}
+    for old, text in moving.items():
+        if (project.roles_dir / f"{pairs[old]}.md").exists() and pairs[old] not in moving:
+            out.append(f"{pairs[old]}: 역할 상세 파일이 이미 있어 {old}의 것을 옮기지 않았습니다")
+        else:
+            go[old] = text
+    written = {pairs[o] for o in go}
+    for old in go:
+        if old not in written:  # a swap writes the other member's text over it instead
+            (project.roles_dir / f"{old}.md").unlink(missing_ok=True)
+    for old, text in go.items():
+        new = pairs[old]
+        dst = project.roles_dir / f"{new}.md"
+        before = dst.read_text() if dst.exists() else ""
+        dst.write_text(text)
+        _record(project, new, actor, f"이름 변경: {old} → {new}", before, text)
+        out.append(f"역할 상세 이동: {old} → {new}")
+    if pairs:
+        for m in [x for t in new_cfg.tabs for x in t.members]:
+            if m.type == "shell":
+                continue
+            try:
+                f = role_file(project, m)
+            except RuntimeError:
+                continue
+            if not f.exists():
+                continue
+            before = f.read_text()
+            after, n = rename_refs(before, pairs)
+            if n:
+                f.write_text(after)
+                _record(project, m.name, actor, "멤버 이름 변경 반영: " + ", ".join(f"{o} → {n2}" for o, n2 in pairs.items()),
+                        before, after)
+                out.append(f"{m.name}: 역할 상세의 이름 {n}곳 바꿈")
+    return out
 
 
 def revert(project: Project, m: Member, n: int, actor: str = "user") -> None:

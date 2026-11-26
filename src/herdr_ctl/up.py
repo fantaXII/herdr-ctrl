@@ -221,6 +221,8 @@ def ensure_group(ctx: Ctx, group: TabGroup, wid: str, report: UpReport) -> None:
                        if t["tab_id"] not in claimed and t.get("label") in (group.title, group.label)), None)
     if tab_id in live_tabs and live_tabs[tab_id].get("label") != group.title:
         h.tab_rename(tab_id, group.title)  # title edited: rename in place, panes and agents untouched
+    if group.label == group.cfg.name:
+        record_titles(ctx.project, {group.cfg.name: group.title})
     panes = {p["pane_id"]: p for p in h.pane_list(wid)}
     _move_out_of_place_shells(ctx, group, tab_id, panes, report)
     configured = {m.name for t in ctx.cfg.tabs for m in t.members}
@@ -542,6 +544,7 @@ def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True, resume: bool 
     """Lay out and start the tab(s). `resume`: continue each agent's recorded conversation.
     `handoffs`: member → handoff file each new agent is started with."""
     report = UpReport()
+    pull_titles(ctx)  # a tab renamed in herdr keeps that name (instead of being renamed back)
     tabs = [ctx.cfg.tab(tab)] if tab else ctx.cfg.open_tabs
     if tab and tabs[0] is None:
         raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
@@ -562,7 +565,138 @@ def up(ctx: Ctx, tab: str | None = None, start_watch: bool = True, resume: bool 
     ctx.state.save()
     from .orchestrator import register_panes
     register_panes(ctx)  # pane → member identity lives outside the project
+    reapply_launch_args(ctx, list(report.skipped), report)
     return report
+
+
+# ------------------------------------------------------------ agents herdr brought back by itself
+# herdr resumes agents on its own after a server restart (config [session] resume_agents_on_restore,
+# on by default) with only the CLI's native resume: `claude --resume <id>` (herdr 0.9.5). The role,
+# permission mode, model and hooks hctrl started it with are gone, and since the agent runs under its
+# name, `up` used to leave it as it was ("이미 실행 중"): bypass came back as the account default (auto).
+HCTRL_LAUNCH_FLAGS = {"claude": ("--append-system-prompt-file", "--permission-mode", "--settings")}
+RESTORE_SETTLE_S = 30.0  # how long a listed agent may take to get its CLI running in its pane
+RESTORE_IDLE_S = 3.0     # how long it must stay idle before it is stopped (it is still loading)
+RESTORE_READY_S = 60.0
+
+
+def launched_without_hctrl(ctx: Ctx, m: Member, pane_id: str) -> bool | None:
+    """True: `m`'s agent CLI runs in its pane with none of the args hctrl starts it with (herdr's own
+    restore, or a start by hand in a shell hctrl had not armed). False: it has them. None: cannot
+    tell (kind without such args, not running, argv unreadable)."""
+    flags = HCTRL_LAUNCH_FLAGS.get(m.kind or "")
+    if not flags:
+        return None
+    try:
+        argv = ctx.h.pane_agent_argv(pane_id, m.kind)
+    except HerdrError:
+        return None
+    if argv is None:
+        return None
+    return not any(a == f or a.startswith(f + "=") for a in argv for f in flags)
+
+
+def _cli_pending(ctx: Ctx, pane_id: str) -> bool:
+    """herdr lists a restored agent while its pane is still at the shell prompt (its CLI not started
+    yet), and its API may answer pane_not_found for a moment after the server comes up."""
+    try:
+        return ctx.h.pane_shell_idle(pane_id)
+    except HerdrError:
+        return True
+
+
+def _wait_settled(ctx: Ctx, name: str) -> str | None:
+    """Wait until `name` has stayed idle/done for RESTORE_IDLE_S (bounded by RESTORE_READY_S).
+    Returns "ready", "gone" (the CLI quit: claude does when herdr resumes a conversation that has no
+    transcript yet) or the state it was left in ("working", "blocked", "unknown")."""
+    from .herdr import READY_STATES, agent_status
+    deadline = time.time() + RESTORE_READY_S
+    since, st = None, None
+    while time.time() < deadline:
+        try:
+            st = agent_status(ctx.h, name)
+        except HerdrError:
+            st = "unknown"
+        if st in READY_STATES:
+            since = since or time.time()
+            if time.time() - since >= RESTORE_IDLE_S:
+                return "ready"
+        else:
+            since = None
+            if st is None:
+                return "gone"
+            if st in ("blocked", "working"):  # waiting for the user, or busy: leave it
+                return st
+        time.sleep(0.5)
+    return st or "gone"
+
+
+def reapply_launch_args(ctx: Ctx, names: list[str], report: UpReport | None = None) -> list[str]:
+    """Members in `names` whose agent runs without hctrl's launch args (launched_without_hctrl):
+    start each again in the same conversation with them. Returns report lines."""
+    lines: list[str] = []
+    todo = []
+    for name in names:
+        m, rec = ctx.cfg.member(name), ctx.state.member(name)
+        if m is not None and m.is_agent and rec and m.kind in HCTRL_LAUNCH_FLAGS:
+            todo.append((m, rec["pane_id"]))
+    found = []
+    deadline = time.time() + RESTORE_SETTLE_S
+    while todo:
+        waiting = []
+        for m, pane in todo:
+            verdict = launched_without_hctrl(ctx, m, pane)
+            if verdict:
+                found.append(m)
+            elif verdict is None and _cli_pending(ctx, pane):
+                waiting.append((m, pane))  # listed, but herdr has not got its CLI running yet
+        todo = waiting
+        if not todo or time.time() >= deadline:
+            break
+        time.sleep(0.5)
+    from .state import LockBusy
+    from .watch import restart
+    for m in found:
+        why, how = None, "대화 유지"
+        settled = _wait_settled(ctx, m.name)
+        if settled not in ("ready", "gone"):
+            why = ("hctrl 설정(권한·역할) 없이 실행 중입니다 (herdr가 직접 다시 띄움). "
+                   f"작업이 끝나면 hctrl restart {m.name}")
+        else:
+            try:  # gone: nothing to continue, restart() starts it anew in the pane
+                msg = restart(ctx, m.name, handoff=False, wait_working=False, resume=True, tell=False)
+                if "확인 필요" in msg:
+                    why = msg
+                elif "(대화 유지)" not in msg:
+                    how = "이어 갈 대화가 없어 새로 시작"
+            except (RuntimeError, KeyError, HerdrError, LockBusy) as e:
+                why = f"hctrl 설정 다시 적용 실패: {e}"
+        if why:
+            lines.append(f"⚠ {m.name}: {why}")
+            if report is not None:
+                report.attention[m.name] = why
+            continue
+        lines.append(f"{m.name}: hctrl 설정 다시 적용 ({how})")
+        if report is not None:
+            if m.name in report.skipped:
+                report.skipped.remove(m.name)
+            report.started.append(f"{m.name} (hctrl 설정 다시 적용, {how})")
+    return lines
+
+
+def live_own_agents(ctx: Ctx) -> list[str]:
+    """Configured agents herdr lists under their name in their own pane."""
+    try:
+        live = {a.get("name"): a for a in ctx.h.agent_list() if a.get("name")}
+    except HerdrError:
+        return []
+    out = []
+    for t in ctx.cfg.open_tabs:
+        for m in t.members:
+            rec = ctx.state.member(m.name)
+            if m.is_agent and rec and m.name in live and live[m.name].get("pane_id") == rec.get("pane_id"):
+                out.append(m.name)
+    return out
 
 
 def sync_titles(ctx: Ctx) -> list[str]:
@@ -576,7 +710,92 @@ def sync_titles(ctx: Ctx) -> list[str]:
             if tab_id in live and live[tab_id].get("label") != group.title:
                 ctx.h.tab_rename(tab_id, group.title)
                 done.append(f"{live[tab_id].get('label')} → {group.title}")
+            if tab_id in live and group.label == t.name:
+                record_titles(ctx.project, {t.name: group.title})
     return done
+
+
+# ------------------------------------------------------------ tab names edited in herdr
+# A tab's herdr label comes from config `title`. A rename done in herdr itself (its tab menu) used
+# to live in herdr only: the next `up`, a title sync or reopening the tab put the config title back.
+# The label hctrl last applied is recorded per tab; a live label that differs from it while the
+# config title still equals it was renamed in herdr, and becomes the config title. When the config
+# title changed instead (settings UI, a hand edit), the config wins and the tab is renamed to it.
+def _titles_path(project: Project) -> Path:
+    return project.var_dir / "tab_titles.json"
+
+
+def applied_titles(project: Project) -> dict:
+    from .state import read_json
+    raw = read_json(_titles_path(project)) or {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(raw, dict) else {}
+
+
+def record_titles(project: Project, titles: dict[str, str]) -> None:
+    from .state import file_lock
+    path = _titles_path(project)
+    try:
+        with file_lock(path.with_suffix(".lock")):
+            rec = applied_titles(project)
+            if all(rec.get(k) == v for k, v in titles.items()):
+                return
+            rec.update(titles)
+            write_json(path, rec)
+    except OSError:
+        pass
+
+
+def pull_titles(ctx: Ctx, rename_rest: bool = False) -> list[str]:
+    """Tabs renamed in herdr: write the new label to config.yaml `title` (dropped when it is the tab
+    id). rename_rest: also rename the tab's other herdr tabs (`<title>-build`, `-2`) to follow.
+    Returns report lines; a label the config cannot take (too long, taken) is reported, not applied."""
+    from .config import CONTROL_TAB as _ctl
+    from .tabops import TabOpError, _edit_config, _tab_key
+    out: list[str] = []
+    applied = applied_titles(ctx.project)
+    lives: dict[str, dict] = {}
+    for t in ctx.cfg.open_tabs:
+        rec = ctx.state["tabs"].get(t.name) or {}
+        wid, tab_id = rec.get("workspace_id"), rec.get("tab_id")
+        if not wid or not tab_id:
+            continue
+        if wid not in lives:
+            try:
+                lives[wid] = {x["tab_id"]: x for x in ctx.h.tab_list(wid)}
+            except HerdrError:
+                lives[wid] = {}
+        live = (lives[wid].get(tab_id) or {}).get("label")
+        if not isinstance(live, str) or not live.strip():
+            continue
+        live, title = live.strip(), t.display
+        last = applied.get(t.name, title)
+        if live == title:
+            if last != title:
+                record_titles(ctx.project, {t.name: title})
+            continue
+        if title != last or live == last or live == _ctl:
+            continue  # the config title changed since it was applied: the config wins
+
+        def change(data, name=t.name, new=live):
+            td = data["tabs"][_tab_key(data, name)]
+            if new == name:
+                td.pop("title", None)
+            else:
+                td["title"] = new
+        try:
+            _edit_config(ctx, change)
+        except (TabOpError, KeyError) as e:
+            record_titles(ctx.project, {t.name: live})  # tell once, not on every poll
+            out.append(f"⚠ 탭 '{t.name}': herdr에서 바꾼 이름 '{live}'을 설정에 반영하지 못했습니다 ({e})")
+            continue
+        record_titles(ctx.project, {t.name: live})
+        out.append(f"탭 '{t.name}' 표시 이름: {title} → {live} (herdr에서 바꾼 이름 저장)")
+    if out and rename_rest:
+        try:
+            sync_titles(ctx)
+        except HerdrError:
+            pass
+    return out
 
 
 def flows_fingerprint(cfg: Config) -> str:
@@ -590,6 +809,10 @@ def down(ctx: Ctx, tab: str | None = None, remove_worktree: bool = False) -> lis
     tabs = [ctx.cfg.tab(tab)] if tab else ctx.cfg.tabs
     if tab and tabs[0] is None:
         raise KeyError(f"탭 '{tab}'이 설정에 없습니다")
+    try:
+        pull_titles(ctx)  # a name given in herdr survives closing the tab
+    except HerdrError:
+        pass
     for t in tabs:
         remember_sessions(ctx, t)
         wt = st["worktrees"].get(t.name)

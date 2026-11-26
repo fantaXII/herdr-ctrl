@@ -589,6 +589,9 @@ class UIServer:
         role_texts = body.get("role_texts") or {}
         if not _str_map(role_texts):
             raise ApiError(400, "role_texts는 {멤버: 역할 상세 전문} 객체여야 합니다")
+        member_renames = body.get("member_renames") or {}
+        if not _str_map(member_renames):
+            raise ApiError(400, "member_renames는 {저장된 이름: 새 이름} 객체여야 합니다")
         tabs = data.get("tabs") if isinstance(data, dict) else None
         renames = {o: n for o, n in renames.items() if o != n and isinstance(tabs, dict) and n in tabs}
         moved: list[str] = []
@@ -606,10 +609,17 @@ class UIServer:
             write_config(project, data)
         self.discard_draft(project)  # the draft is now the saved config
         renamed = moved + self.sync_live_titles(project)
+        followed: list[str] = []
+        if member_renames:  # before the role texts: a renamed member keeps its own file
+            new_cfg, _ = check_file(project.config_path, which=self.which)
+            try:
+                followed = roles_mod.follow_member_renames(project, old_cfg, new_cfg, member_renames)
+            except OSError as e:
+                followed = [f"역할 상세를 옮기지 못했습니다: {e}"]
         kept: list[str] = []
         copied = self.copy_roles(project, old_cfg, copies, kept) + self.write_role_texts(project, role_texts, kept)
         return {"version": digest(project.config_path.read_text()), "issues": issues, "renamed": renamed,
-                "copied": copied, "role_kept": kept, "roles": self.role_summary(project)}
+                "copied": copied, "role_kept": kept, "followed": followed, "roles": self.role_summary(project)}
 
     def write_role_texts(self, project: Project, texts: dict[str, str], kept: list[str] | None = None) -> list[str]:
         """Role details written in the page before the member was saved (team template text, tab copy

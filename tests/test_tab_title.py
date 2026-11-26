@@ -80,3 +80,79 @@ def test_label_fallback_never_takes_a_claimed_tab(ctx):
     c2 = make_ctx(ctx.project, h)
     up(c2, start_watch=False)
     assert c2.state["tabs"]["Z"]["tab_id"] != y_id and c2.state["tabs"]["Y"]["tab_id"] == y_id
+
+
+# ---- a tab renamed in herdr itself keeps that name
+def title_of(ctx, tab):
+    return (yaml.safe_load(ctx.project.config_path.read_text())["tabs"][tab] or {}).get("title")
+
+
+def test_herdr_rename_becomes_config_title_and_survives_reopen(ctx):
+    from herdr_ctl.up import down, pull_titles
+    up(ctx, start_watch=False)
+    h = ctx.h
+    h.tab_rename(ctx.state["tabs"]["X"]["tab_id"], "로그인")
+    assert pull_titles(ctx, rename_rest=True) == ["탭 'X' 표시 이름: X → 로그인 (herdr에서 바꾼 이름 저장)"]
+    assert title_of(ctx, "X") == "로그인" and ctx.cfg.tab("X").display == "로그인"
+    assert labels(h) == {"_hc", "로그인", "로그인-build", "Y"}  # its build tab follows
+    assert detect(ctx) == []  # nothing to restart
+    assert pull_titles(ctx) == []  # once
+    c2 = make_ctx(ctx.project, h)
+    down(c2, "X")
+    up(make_ctx(ctx.project, h), start_watch=False)
+    assert labels(h) == {"_hc", "로그인", "로그인-build", "Y"}
+
+
+def test_up_keeps_a_herdr_rename(ctx):
+    up(ctx, start_watch=False)
+    ctx.h.tab_rename(ctx.state["tabs"]["Y"]["tab_id"], "검증")
+    up(make_ctx(ctx.project, ctx.h), start_watch=False)
+    assert "검증" in labels(ctx.h) and title_of(ctx, "Y") == "검증"
+
+
+def test_down_saves_the_herdr_name_before_closing(ctx):
+    from herdr_ctl.up import down
+    up(ctx, start_watch=False)
+    ctx.h.tab_rename(ctx.state["tabs"]["Y"]["tab_id"], "검증")
+    down(make_ctx(ctx.project, ctx.h), "Y")
+    assert title_of(ctx, "Y") == "검증"
+
+
+def test_renaming_back_to_the_tab_id_drops_the_title(tmp_path):
+    from herdr_ctl.up import pull_titles
+    ctx = make_ctx(make_project(tmp_path, textwrap.dedent(with_title(SAMPLE))))
+    up(ctx, start_watch=False)
+    ctx.h.tab_rename(ctx.state["tabs"]["X"]["tab_id"], "X")
+    pull_titles(ctx)
+    assert title_of(ctx, "X") is None
+
+
+def test_config_title_edit_wins_over_the_live_label(ctx):
+    """UI save / hand edit: the config changed since hctrl applied it, so the tab follows the config."""
+    from herdr_ctl.up import pull_titles
+    up(ctx, start_watch=False)
+    ctx.project.config_path.write_text(textwrap.dedent(with_title(SAMPLE, title="새 이름")))
+    c2 = make_ctx(ctx.project, ctx.h)
+    assert pull_titles(c2) == [] and title_of(c2, "X") == "새 이름"
+    sync_titles(c2)
+    assert "새 이름" in labels(ctx.h)
+    ctx.h.tab_rename(c2.state["tabs"]["X"]["tab_id"], "또 바꿈")  # and a herdr rename after that is kept
+    pull_titles(c2)
+    assert title_of(c2, "X") == "또 바꿈"
+
+
+def test_a_herdr_name_the_config_cannot_take_is_reported_once(ctx):
+    from herdr_ctl.up import pull_titles
+    up(ctx, start_watch=False)
+    ctx.h.tab_rename(ctx.state["tabs"]["X"]["tab_id"], "Y")  # taken by tab Y
+    out = pull_titles(ctx)
+    assert len(out) == 1 and "반영하지 못했습니다" in out[0] and title_of(ctx, "X") is None
+    assert pull_titles(ctx) == []
+
+
+def test_watch_tick_pulls_titles(ctx):
+    from herdr_ctl.watch import pull_tab_titles
+    up(ctx, start_watch=False)
+    ctx.h.tab_rename(ctx.state["tabs"]["Y"]["tab_id"], "검증")
+    assert pull_tab_titles(ctx.project, ctx.h, which=always_found)
+    assert title_of(ctx, "Y") == "검증"

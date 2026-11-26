@@ -117,6 +117,13 @@ def cmd_open(name: str | None, project: Project | None = None) -> int:
             ctx.state.save()
         except HerdrError as e:
             print(f"_hc 탭을 다시 만들지 못했습니다: {e} (hctrl up으로 다시 시도)")
+        from .up import live_own_agents, reapply_launch_args
+        try:  # agents herdr brought back by itself (server restart) lack hctrl's launch args
+            for line in reapply_launch_args(ctx, live_own_agents(ctx)):
+                print("  " + line)
+            ctx.state.save()
+        except HerdrError as e:
+            print(f"agent 상태를 확인하지 못했습니다: {e}")
         pending = detect(ctx)
         if pending:
             print(f"설정 변경 {len(pending)}건이 반영 대기 중입니다 (세션 안에서 hctrl changes).")

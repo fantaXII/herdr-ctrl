@@ -551,7 +551,7 @@ async function openProject(name) {
         h("p", {}, "파일을 직접 고친 뒤 새로고침하세요.")));
       return;
     }
-    S.data = cfg.data; normalize(S.data); S.saved = clone(S.data); S.tabOrigin = {};
+    S.data = cfg.data; normalize(S.data); S.saved = clone(S.data); S.tabOrigin = {}; S.memberOrigin = {};
     S.draftJson = null; S.draftAt = null;
     if (cfg.draft) {  // an unfinished draft wins over config.yaml until it is saved or discarded
       S.data = cfg.draft.data; normalize(S.data);
@@ -624,7 +624,7 @@ function renderHeader() {
     S.running ? h("span", { class: "badge ok" }, "● 세션 실행 중") : null,
     S.pending.length ? h("button", { onclick: () => refreshChanges(true) }, "변경 반영 (" + S.pending.length + ")") : null,
     // back to the last kept state: the draft when there is one, otherwise config.yaml
-    h("button", { disabled: !unsaved(), onclick: () => { S.data = S.draftJson !== null ? JSON.parse(S.draftJson) : clone(S.saved); S.tabOrigin = {};
+    h("button", { disabled: !unsaved(), onclick: () => { S.data = S.draftJson !== null ? JSON.parse(S.draftJson) : clone(S.saved); S.tabOrigin = {}; S.memberOrigin = {};
       if (S.draftJson !== null) { const p = JSON.parse(S.draftPending); setPending({ role_texts: p.r, copies: p.c }); } else setPending(null);
       changed(); } }, "되돌리기"),
     S.draftJson !== null ? h("button", { title: "임시 저장본을 지우고 config.yaml 내용으로 돌아갑니다", onclick: discardDraft }, "임시본 버리기") : null,
@@ -685,13 +685,14 @@ async function save() {
   }
   try {
     const sent = clone(S.data);
-    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version, renames: tabRenames(), copies: S.copies || {}, role_texts: S.roleTexts || {} });
-    S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues; S.tabOrigin = {};
+    const res = await api("PUT", "/api/project/" + encodeURIComponent(S.project) + "/config", { data: forSave(sent), version: S.version, renames: tabRenames(), copies: S.copies || {}, role_texts: S.roleTexts || {}, member_renames: memberRenames() });
+    S.version = res.version; S.saved = sent; S.exists = true; S.issues = res.issues; S.tabOrigin = {}; S.memberOrigin = {};
     S.ackWarn = warningKey(res.issues);
     S.draftJson = null; S.draftAt = null;  // the server removed the draft
     let msg = "저장했습니다.";
     if (res.renamed && res.renamed.length) msg += " " + res.renamed.join(", ") + ".";
     if (res.copied && res.copied.length) msg += " 역할 상세 생성: " + res.copied.join(", ") + ".";
+    if (res.followed && res.followed.length) msg += " " + res.followed.join(", ") + ".";
     if (res.role_kept && res.role_kept.length) msg += " 역할 파일이 이미 있어 그대로 둠: " + res.role_kept.join(", ") + " (✎ 역할 상세에서 확인하세요).";
     setPending(null); S.draftPending = pendingKey(); if (res.roles) S.roles = res.roles;  // role files made by this save
     toast(msg);
@@ -712,6 +713,17 @@ function tabRenames() {
   const saved = (S.saved && S.saved.tabs) || {}, out = {};
   for (const [cur, orig] of Object.entries(S.tabOrigin))
     if (orig !== cur && orig in saved && S.data.tabs && cur in S.data.tabs) out[orig] = cur;
+  return out;
+}
+// agent renames since the last save ({saved name: current name}): the server moves the role file
+// and the role details that name the agent follow
+function memberRenames() {
+  const saved = new Set(), out = {};
+  for (const t of Object.values((S.saved && S.saved.tabs) || {}))
+    if (t && typeof t === "object") for (const n of Object.keys(t.agents || {})) saved.add(n);
+  const cur = new Set(allMembers(S.data).filter((m) => m.type === "agent").map((m) => m.name));
+  for (const [c, orig] of Object.entries(S.memberOrigin || {}))
+    if (orig !== c && saved.has(orig) && cur.has(c)) out[orig] = c;
   return out;
 }
 // finishing: launcher → save + open the session; running session → save (the apply window follows)
@@ -756,7 +768,7 @@ async function discardDraft() {
   if (!confirm("임시 저장본을 버리고 config.yaml 내용으로 돌아갈까요?")) return;
   try {
     await api("POST", "/api/project/" + encodeURIComponent(S.project) + "/draft/discard", {});
-    S.draftJson = null; S.draftAt = null; S.data = clone(S.saved); S.tabOrigin = {}; setPending(null); S.draftPending = pendingKey();
+    S.draftJson = null; S.draftAt = null; S.data = clone(S.saved); S.tabOrigin = {}; S.memberOrigin = {}; setPending(null); S.draftPending = pendingKey();
     changed();
   } catch (e) { toast(e.message); }
 }
@@ -792,6 +804,16 @@ function copyPlan(src, id, base) {
   for (const n of [...Object.keys(t.agents || {}), ...Object.keys(t.shells || {})]) names[n] = fresh(n);
   return { names, flows: Object.keys(src.flows) };
 }
+function copyNamesError(names, base) {
+  const used = new Set(allMembers(base || S.data).map((m) => m.name)), seen = new Set();
+  for (const [a, b] of Object.entries(names)) {
+    if (a === "@orch") { seen.add(b); continue; }
+    if (!NAME_RE.test(b)) return "'" + b + "': 이름은 소문자로 시작, 소문자/숫자/_- 32자 이하";
+    if (used.has(b) || seen.has(b)) return "'" + b + "': 이미 있는 이름입니다";
+    seen.add(b);
+  }
+  return "";
+}
 function copyIdError(id, base) {
   const d = base || S.data;
   if (!TAB_RE.test(id)) return "탭 이름: 영문 또는 숫자로 시작, 영문/숫자/_- 25자 이하";
@@ -820,6 +842,9 @@ function openAddTeam(src, id) {
 function copyBody(o) {
   const tpl = o.src.kind === "tpl", base = o.replace ? { tabs: {}, flows: {} } : S.data;
   const err = copyIdError(o.id, base), plan = err ? null : copyPlan(o.src, o.id, base);
+  // member names typed in the dialog replace the suggested ones (steps, prompts and roles follow)
+  if (plan && o.names) for (const [a, b] of Object.entries(o.names)) if (a in plan.names && a !== "@orch") plan.names[a] = b;
+  const namesErr = plan ? copyNamesError(plan.names, base) : "";
   const branchErr = o.wt && !/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(o.branch) ? "브랜치 이름을 확인하세요" : "";
   const rerender = () => { const f = document.activeElement && document.activeElement.id; copyBody(o); if (f && $(f)) { $(f).focus(); const v = $(f).value; if (typeof v === "string" && $(f).setSelectionRange) $(f).setSelectionRange(v.length, v.length); } };
   const idIn = h("input", { id: "copyId", value: o.id, oninput: (e) => {
@@ -827,16 +852,20 @@ function copyBody(o) {
     o.id = e.target.value.trim(); if (auto) o.branch = "feat/" + o.id.toLowerCase(); rerender(); } });
   const check = (key, label, extra) => h("label", { class: "row" }, h("input", { type: "checkbox", checked: o[key], disabled: extra && extra.disabled,
     onchange: (e) => { o[key] = e.target.checked; rerender(); } }), label, extra && extra.hint ? h("span", { class: "muted small" }, extra.hint) : null);
-  const note = (a, b) => !tpl || a === o.src.orchKey ? null : h("td", { class: "muted" }, a === b ? "(그대로)" : "(겹침)");
+  const note = (a, b) => !tpl || a === o.src.orchKey ? null
+    : h("td", { class: "muted" }, a === b ? "(그대로)" : o.names && a in o.names ? "" : "(겹침)");
   $("copyBody").replaceChildren(h("div", {},
     h("h3", { style: "margin-top:0" }, (tpl ? "템플릿에서 추가: " : "탭 복사: ") + o.src.id),
     tpl && canReplace() ? check("replace", "기본 탭(" + Object.keys(S.data.tabs).join(", ") + ") 대신 사용", { hint: "새 프로젝트를 이 템플릿으로 시작합니다" }) : null,
     h("label", { class: "field" }, "새 탭 이름", idIn),
     err ? h("p", { class: "small", style: "color:var(--err);margin:4px 0" }, err) : null,
     plan ? [h("p", { class: "muted small", style: "margin:10px 0 0" }, "멤버 이름"),
-      h("table", { class: "map small" }, Object.entries(plan.names).map(([a, b]) => a === "@orch"
-        ? h("tr", {}, h("td", {}, h("b", {}, b)), h("td", {}), h("td", {}))
-        : h("tr", {}, h("td", {}, a), h("td", {}, "→"), h("td", {}, h("b", {}, b)), note(a, b))))] : null,
+      h("table", { class: "map small" }, Object.entries(plan.names).map(([a, b]) => a === "@orch" || a === o.src.orchKey
+        ? h("tr", {}, h("td", {}, a === "@orch" ? h("b", {}, b) : a), a === "@orch" ? h("td", {}) : h("td", {}, "→"), h("td", {}, a === "@orch" ? null : h("b", {}, b)))
+        : h("tr", {}, h("td", {}, a), h("td", {}, "→"),
+          h("td", {}, h("input", { id: "copyName-" + a, value: b, "aria-label": a + "의 새 이름", size: 14,
+            oninput: (e) => { o.names = { ...(o.names || {}), [a]: e.target.value.trim() }; rerender(); } })), note(a, b)))),
+      namesErr ? h("p", { class: "small", style: "color:var(--err);margin:4px 0" }, namesErr) : null] : null,
     check("roles", tpl ? "역할 상세(prompt)도 가져오기" : "역할 상세(prompt)도 복사", { hint: "추가한 뒤 ✎ 역할 상세에서 바로 고칠 수 있고, 저장할 때 파일로 만들어집니다" }),
     check("flows", tpl ? "flow 가져오기" : "이 탭의 flow 복사", { hint: plan ? (plan.flows.length ? plan.flows.join(", ") : "없음") : "" }),
     check("wt", "별도 worktree에서 작업 (권장)", S.git ? { hint: "같은 폴더에서 두 팀이 같은 파일을 고치는 충돌을 막습니다" } : { disabled: true, hint: "git 저장소가 아니라 쓸 수 없습니다" }),
@@ -845,7 +874,7 @@ function copyBody(o) {
     branchErr ? h("p", { class: "small", style: "color:var(--err);margin:4px 0 0 24px" }, branchErr) : null,
     h("p", { class: "row", style: "justify-content:flex-end;margin-bottom:0" },
       h("button", { onclick: () => $("copyDialog").close() }, "취소"),
-      h("button", { class: "primary", disabled: !!(err || branchErr), onclick: () => {
+      h("button", { class: "primary", disabled: !!(err || branchErr || namesErr), onclick: () => {
         if (o.replace && dirty() && !confirm("지금 고친 내용 대신 템플릿 '" + o.src.id + "'으로 시작할까요?")) return;
         copyTab(o, plan); $("copyDialog").close(); } }, tpl ? "추가" : "복사"))));
 }
@@ -859,7 +888,7 @@ function renameRefs(text, map) {
   return text.replace(re, (m, pre, k) => pre + map[k]);
 }
 function copyTab(o, plan, quiet) {
-  if (o.replace) { S.data.tabs = {}; S.data.flows = {}; S.copies = {}; S.roleTexts = {}; S.tabOrigin = {}; }
+  if (o.replace) { S.data.tabs = {}; S.data.flows = {}; S.copies = {}; S.roleTexts = {}; S.tabOrigin = {}; S.memberOrigin = {}; }
   const d = S.data, src = o.src, t = clone(src.tab), map = plan.names;
   const rekey = (obj) => Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [map[k] || k, v]));
   t.agents = rekey(t.agents); t.shells = rekey(t.shells);
@@ -1121,14 +1150,31 @@ function dropSteps(names, asked = false) {
   }
   return true;
 }
-function renameMember(oldName, newName) {
+// `prose` (an agent renamed in its card): texts naming it follow too: flow prompts and commands,
+// role one-liners, role details not saved yet (saved role files: the server, on save)
+function renameMember(oldName, newName, prose) {
   for (const pend of [S.copies, S.roleTexts])  // unsaved tab copy / template tab: its role follows the name
     if (pend && oldName in pend) { pend[newName] = pend[oldName]; delete pend[oldName]; }
+  const map = { [oldName]: newName }, fix = (txt) => prose ? renameRefs(txt, map) : txt;
   for (const f of Object.values(S.data.flows || {}))
     for (const st of (f && f.steps) || []) {
       if (st.agent === oldName) st.agent = newName;
       if (st.shell === oldName) st.shell = newName;
+      if (typeof st.prompt === "string") st.prompt = fix(st.prompt);
+      if (typeof st.run === "string") st.run = fix(st.run);
     }
+  if (!prose) return;
+  for (const t of Object.values(S.data.tabs || {})) {
+    if (!t || typeof t !== "object") continue;
+    for (const a of Object.values(t.agents || {})) if (a && typeof a.role === "string") a.role = fix(a.role);
+    if (t.orchestrator && typeof t.orchestrator === "object" && typeof t.orchestrator.goal === "string")
+      t.orchestrator.goal = fix(t.orchestrator.goal);
+  }
+  for (const k of Object.keys(S.roleTexts || {})) S.roleTexts[k] = fix(S.roleTexts[k]);
+  S.memberOrigin = S.memberOrigin || {};
+  const orig = oldName in S.memberOrigin ? S.memberOrigin[oldName] : oldName;
+  delete S.memberOrigin[oldName];
+  S.memberOrigin[newName] = orig;
 }
 
 // --------------------------------------------------------------- model UI
@@ -1652,7 +1698,7 @@ function renderAgents(tname, t) {
           const nv = e.target.value.trim();
           if (!NAME_RE.test(nv)) { e.target.value = name; toast("이름: 소문자로 시작, 소문자/숫자/_- 32자 이하"); return; }
           if (nv !== name && allMembers(S.data).some((m) => m.name === nv)) { e.target.value = name; toast("이미 있는 이름입니다"); return; }
-          t.agents = renameKey(t.agents, name, nv); renameMember(name, nv); changed(); } }),
+          t.agents = renameKey(t.agents, name, nv); renameMember(name, nv, true); changed(); } }),
         h("button", { class: "danger", title: "삭제", onclick: () => { if (dropSteps([name])) { delete t.agents[name]; changed(); } } }, "✕")),
       row("역할", h("input", { value: spec.role || "", placeholder: "한 줄 역할 (예: 코드 작성, 테스트 코드, 문서)", "aria-label": "역할",
         title: "orchestrator가 일을 나눌 때 보는 한 줄입니다. 보고·질문 방식은 hctrl이 자동으로 넣습니다", onchange: (e) => {

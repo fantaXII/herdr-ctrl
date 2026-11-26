@@ -217,10 +217,11 @@ def collect_handoff(ctx: Ctx, name: str, timeout_s: float = 1800) -> Path:
 
 
 def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True,
-            timeout_s: float = 1800, resume: bool = False) -> str:
+            timeout_s: float = 1800, resume: bool = False, tell: bool = True) -> str:
     """Stop agent `name` and start it again in the same pane with the current config.
     resume: continue the same conversation (reloads skills/MCP/settings, keeps the context); when the
-    agent's CLI cannot, falls back to a handoff (or a fresh start with handoff=False)."""
+    agent's CLI cannot, falls back to a handoff (or a fresh start with handoff=False).
+    tell: let the tab's orchestrator know."""
     m = ctx.cfg.member(name)
     if m is None or not m.is_agent:
         raise KeyError(f"'{name}'는 설정된 agent가 아닙니다")
@@ -292,9 +293,10 @@ def restart(ctx: Ctx, name: str, handoff: bool = True, wait_working: bool = True
                                + ("이미 써 둔 인수인계 파일로 " if handoff_path else "") + "시작합니다")
     finally:
         release(ctx.project, name, "restart")
-    _tell_orchestrator(ctx, m, f"[hctrl] '{name}'가 " + ("같은 대화로 다시 시작됐습니다 (설정·skill·MCP 다시 불러옴)."
-                                                         if rid else "새 설정으로 재시작됐습니다.") +
-                       (f" 인수인계: {handoff_path}" if handoff_path else ""))
+    if tell:
+        _tell_orchestrator(ctx, m, f"[hctrl] '{name}'가 " + ("같은 대화로 다시 시작됐습니다 (설정·skill·MCP 다시 불러옴)."
+                                                             if rid else "새 설정으로 재시작됐습니다.") +
+                           (f" 인수인계: {handoff_path}" if handoff_path else ""))
     how = " (대화 유지)" if rid else (f" (인수인계 {handoff_path.name})" if handoff_path else "")
     if resume_failed:
         how += " — 이어 갈 대화로 시작하지 못해 새 대화로 시작"
@@ -477,6 +479,16 @@ def watch_once(project, h, last_sig: str | None, which=None) -> tuple[str, list[
     changes = detect(ctx)
     save_pending(project, changes)  # separate file: never rewrites state.json concurrently
     return sig, changes, None
+
+
+def pull_tab_titles(project, h, which=None) -> list[str]:
+    """Tabs renamed in herdr → config `title` (up.pull_titles). Reads state.json, never writes it."""
+    from .up import pull_titles
+    kw = {"which": which} if which else {}
+    cfg, _ = check_file(project.config_path, **kw)
+    if cfg is None:
+        return []
+    return pull_titles(Ctx(project, cfg, h, State(project)), rename_rest=True)
 
 
 MENU_LINES = ("[Tab] 대상 탭 바꾸기  [s] 설정  [c] 변경 반영  [t] 상태  [p] 질문",
@@ -884,6 +896,11 @@ def watch_loop(project, h, interval: float = 2.0, iterations: int | None = None,
             update_at = time.monotonic()
             update_seen = _update_notice(h, update_seen)
         _pause(interval, keys, menu)
+        try:
+            for line in pull_tab_titles(project, h):
+                print(f"[hctrl watch] {line}", flush=True)
+        except (HerdrError, OSError):
+            pass
         sig2, changes, err = watch_once(project, h, sig)
         if menu is not None:
             menu.draw()  # header: target tab state and its pending changes

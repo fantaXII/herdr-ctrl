@@ -310,6 +310,83 @@ def test_role_detail_roundtrip_records_history(client, tmp_path):
     assert client.json("GET", "/api/project/nope/role/x1")[0] == 404
 
 
+def _rename_agent(data, old, new):
+    tabs = data["tabs"]
+    for t in tabs.values():
+        if old in (t.get("agents") or {}):
+            t["agents"] = {(new if k == old else k): v for k, v in t["agents"].items()}
+    for f in (data.get("flows") or {}).values():
+        for st in f.get("steps") or []:
+            if st.get("agent") == old:
+                st["agent"] = new
+
+
+def test_renamed_agent_keeps_its_role_detail_and_others_follow(client, tmp_path):
+    from herdr_ctl import roles as R
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    p.roles_dir.mkdir(parents=True, exist_ok=True)
+    (p.roles_dir / "x1.md").write_text("# 역할: 구현\n\nx2에게 테스트를 넘긴다\n")
+    (p.roles_dir / "x-orch.md").write_text("# 역할: 총괄\n\nx1에게 구현, x2에게 테스트. x10, my-x1은 다른 이름\n")
+    _, cfg = client.json("GET", "/api/project/projA")
+    data = cfg["data"]
+    _rename_agent(data, "x1", "dev")
+    _rename_agent(data, "x2", "qa")
+    st, res = client.json("PUT", "/api/project/projA/config",
+                          {"data": data, "version": cfg["version"], "member_renames": {"x1": "dev", "x2": "qa"}})
+    assert st == 200, res
+    assert not (p.roles_dir / "x1.md").exists()
+    assert (p.roles_dir / "dev.md").read_text() == "# 역할: 구현\n\nqa에게 테스트를 넘긴다\n"
+    assert (p.roles_dir / "x-orch.md").read_text() == "# 역할: 총괄\n\ndev에게 구현, qa에게 테스트. x10, my-x1은 다른 이름\n"
+    assert "역할 상세 이동: x1 → dev" in res["followed"]
+    assert any(line.startswith("x-orch: 역할 상세의 이름 2곳") for line in res["followed"])
+    assert [h["reason"] for h in R.history(p, "dev")][0] == "이름 변경: x1 → dev"
+    assert res["roles"].get("dev")  # the page sees dev's role detail
+
+
+def test_swapped_agent_names_swap_role_files(client, tmp_path):
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    p.roles_dir.mkdir(parents=True, exist_ok=True)
+    (p.roles_dir / "x1.md").write_text("# 역할: A\n\nx2 참고\n")
+    (p.roles_dir / "x2.md").write_text("# 역할: B\n")
+    _, cfg = client.json("GET", "/api/project/projA")
+    data = cfg["data"]
+    agents = data["tabs"]["X"]["agents"]
+    agents["x1"], agents["x2"] = agents["x2"], agents["x1"]
+    st, res = client.json("PUT", "/api/project/projA/config",
+                          {"data": data, "version": cfg["version"], "member_renames": {"x1": "x2", "x2": "x1"}})
+    assert st == 200, res
+    assert (p.roles_dir / "x2.md").read_text() == "# 역할: A\n\nx1 참고\n"
+    assert (p.roles_dir / "x1.md").read_text() == "# 역할: B\n"
+
+
+def test_rename_onto_an_existing_role_file_keeps_both(client, tmp_path):
+    p = make_project(tmp_path)
+    register("projA", p.root)
+    p.roles_dir.mkdir(parents=True, exist_ok=True)
+    (p.roles_dir / "x1.md").write_text("# 역할: old\n")
+    (p.roles_dir / "dev.md").write_text("# 역할: leftover\n")
+    _, cfg = client.json("GET", "/api/project/projA")
+    data = cfg["data"]
+    _rename_agent(data, "x1", "dev")
+    st, res = client.json("PUT", "/api/project/projA/config",
+                          {"data": data, "version": cfg["version"], "member_renames": {"x1": "dev"}})
+    assert st == 200
+    assert (p.roles_dir / "dev.md").read_text() == "# 역할: leftover\n"
+    assert (p.roles_dir / "x1.md").exists() and "옮기지 않았습니다" in res["followed"][0]
+    bad = client.json("PUT", "/api/project/projA/config",
+                      {"data": data, "version": res["version"], "member_renames": {"x1": 3}})
+    assert bad[0] == 400
+
+
+def test_rename_refs_rules():
+    from herdr_ctl.roles import rename_refs
+    assert rename_refs("coder에게, `coder`, coder2, my-coder, coder_x, (coder)", {"coder": "dev"}) == \
+        ("dev에게, `dev`, coder2, my-coder, coder_x, (dev)", 3)
+    assert rename_refs("a b", {"a": "b", "b": "a"}) == ("b a", 2)
+
+
 # ------------------------------------------------------------------ open
 def test_open_returns_choice(client, server, tmp_path):
     p = make_project(tmp_path)

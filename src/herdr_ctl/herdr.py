@@ -262,6 +262,26 @@ class Herdr:
         return [p.get("name") or "" for p in info.get("foreground_processes") or []
                 if p.get("pid") != info.get("shell_pid")]
 
+    def pane_agent_argv(self, pane_id: str, kind: str) -> list[str] | None:
+        """Arguments the agent CLI `kind` running in the pane's foreground was started with
+        (without the program name). None when it is not running there or they cannot be read
+        (herdr on another machine, no /proc)."""
+        info = self.call("pane", "process-info", "--pane", pane_id).get("process_info", {})
+        for p in info.get("foreground_processes") or []:
+            if p.get("pid") == info.get("shell_pid") or p.get("name") != kind:
+                continue
+            argv = p.get("argv")
+            if not isinstance(argv, list):
+                try:
+                    with open(f"/proc/{int(p['pid'])}/cmdline", "rb") as f:
+                        argv = f.read().decode(errors="replace").split("\0")
+                except (OSError, KeyError, TypeError, ValueError):
+                    return None
+                if argv and argv[-1] == "":
+                    argv.pop()
+            return [str(a) for a in argv[1:]]
+        return None
+
     # ---------------------------------------------------------------- agents
     def agent_list(self) -> list[dict]:
         return self.call("agent", "list").get("agents", [])

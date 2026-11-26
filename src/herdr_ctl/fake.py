@@ -208,6 +208,11 @@ class FakeHerdr:
         self._pane(pane_id)
         return self.shell_name
 
+    def pane_agent_argv(self, pane_id, kind):
+        self._pane(pane_id)
+        a = next((a for a in self.agents.values() if a.pane_id == pane_id and a.kind == kind), None)
+        return list(a.args) if a else None
+
     # agents ---------------------------------------------------------------
     def _agent(self, target) -> FAgent:
         if target in self.agents:
@@ -307,6 +312,13 @@ class FakeHerdr:
         has no name (only `agent start` names one)."""
         a = FAgent(None, kind, pane_id, [])
         self.agents["#" + pane_id] = a
+        return a
+
+    def server_restore(self, name):
+        """Test helper: herdr's own restore after a server restart continued agent `name`'s
+        conversation with its native resume command only (`claude --resume <id>`)."""
+        a = self.agents[name]
+        a.args = ["--resume", f"fake-{name}-session"]
         return a
 
     no_session: set = frozenset()  # agent names herdr reports no conversation for (a new, empty one)
