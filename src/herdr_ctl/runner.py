@@ -532,9 +532,12 @@ class Runner:
             acquire(self.project, run_lock, f"worker-{os.getpid()}")
         except LockBusy as e:
             raise RuntimeError(f"{rec['id']}는 다른 프로세스가 실행 중입니다 ({e})") from e
+        from .orchestrator import orch_job_span
+        orch_job_span(self.project, rec["id"], start=True)  # an orchestrator waits while this runs
         try:
             return self._execute(start, resume, resend)
         finally:
+            orch_job_span(self.project, rec["id"], start=False)
             release(self.project, run_lock)
 
     def _execute(self, start: int | None, resume: bool, resend: bool) -> dict:
@@ -797,6 +800,8 @@ def stop(ctx, run_id: str) -> dict:
         rec["status"] = "stopped"
         rec["ended"] = time.time()
         save_run(project, rec)
+    from .orchestrator import orch_job_span
+    orch_job_span(project, run_id, start=False)  # a killed worker never ran its own finally
     return rec
 
 

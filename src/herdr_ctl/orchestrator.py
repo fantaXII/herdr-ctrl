@@ -12,7 +12,7 @@ from pathlib import Path
 from .config import TabCfg, orch_name
 from .herdr import HerdrError
 from .project import state_home
-from .state import digest, file_lock, read_json, write_json
+from .state import digest, file_lock, proc_start, read_json, same_process_alive, write_json
 
 
 class LimitExceeded(Exception):
@@ -301,6 +301,87 @@ def _budget(ctx, tab: TabCfg) -> dict:
     return budget
 
 
+# ------------------------------------------------------------ orchestrator job ledger
+# When each job an orchestrator started with hctrl send/run was running. Kept in secure_dir: run.json
+# lives under .herdr-flow/runs, which work agents can edit, so it must not decide the time limit.
+JOB_LEDGER_KEEP_S = 7 * 86400
+UNSTARTED_GRACE_S = 120.0  # a recorded job whose worker has not started yet still counts as waiting
+
+
+def _ledger_path(project):
+    return project.secure_dir / "orch-jobs.json"
+
+
+def record_orch_job(ctx, actor: Actor, rec: dict) -> None:
+    """Called by hctrl send/run after the job record exists. Only an orchestrator's jobs are kept."""
+    if actor.kind != "orch":
+        return
+    path = _ledger_path(ctx.project)
+    with file_lock(path.with_suffix(".lock")):
+        jobs = read_json(path) or {}
+        cut = time.time() - JOB_LEDGER_KEEP_S
+        jobs = {k: v for k, v in jobs.items() if float(v.get("created") or 0) > cut}
+        jobs[rec["id"]] = {"orch": actor.name, "created": rec["created"], "spans": []}
+        write_json(path, jobs)
+
+
+def orch_job_span(project, run_id: str, start: bool) -> None:
+    """The worker of an orchestrator's job starts (start=True) or stops running it. Jobs not in the
+    ledger (the user's own) are ignored."""
+    path = _ledger_path(project)
+    if not path.exists():
+        return
+    with file_lock(path.with_suffix(".lock")):
+        jobs = read_json(path) or {}
+        job = jobs.get(run_id)
+        if job is None:
+            return
+        spans = job.setdefault("spans", [])
+        now = time.time()
+        if start:
+            pid = os.getpid()
+            spans.append({"start": now, "pid": pid, "pid_start": proc_start(pid)})
+        elif spans and spans[-1].get("end") is None:
+            spans[-1]["end"] = now
+        else:
+            return
+        write_json(path, jobs)
+
+
+def _orch_minutes(ctx, actor: Actor, started: float) -> float:
+    """Minutes the orchestrator itself has used since `started`: wall time minus the time its own
+    hctrl send/run jobs were running. A work agent busy on a long job must not use up the
+    orchestrator's time limit (seen live: one 2-hour job, then every hctrl send was refused)."""
+    now = time.time()
+    spans = []
+    for job in (read_json(_ledger_path(ctx.project)) or {}).values():
+        if job.get("orch") != actor.name:
+            continue
+        runs = job.get("spans") or []
+        if not runs and now - float(job.get("created") or 0) < UNSTARTED_GRACE_S:
+            runs = [{"start": job.get("created"), "end": None, "unstarted": True}]
+        for sp in runs:
+            end = sp.get("end")
+            if end is None and not sp.get("unstarted"):
+                if not same_process_alive(sp.get("pid"), sp.get("pid_start")):
+                    continue  # its worker died: nobody is working, so the orchestrator is not waiting
+            lo = max(float(sp.get("start") or 0), started)
+            hi = min(float(end if end is not None else now), now)
+            if hi > lo:
+                spans.append((lo, hi))
+    waited, cur_lo, cur_hi = 0.0, None, None
+    for lo, hi in sorted(spans):  # union, so parallel jobs count once
+        if cur_hi is None or lo > cur_hi:
+            if cur_hi is not None:
+                waited += cur_hi - cur_lo
+            cur_lo, cur_hi = lo, hi
+        else:
+            cur_hi = max(cur_hi, hi)
+    if cur_hi is not None:
+        waited += cur_hi - cur_lo
+    return max(0.0, now - started - waited) / 60
+
+
 def enforce(ctx, actor: Actor, targets: list[str], prompt: str | None) -> None:
     """Called before hctrl send/run. No-op for the user; checks scope + budget for an orchestrator."""
     if actor.kind == "foreign":
@@ -319,7 +400,7 @@ def enforce(ctx, actor: Actor, targets: list[str], prompt: str | None) -> None:
     with _budget_lock(ctx, tab):  # parallel tool calls must not both pass the same budget check
         budget = _budget(ctx, tab)
         lim = tab.limits
-        minutes = (time.time() - budget["started"]) / 60
+        minutes = _orch_minutes(ctx, actor, budget["started"])
         if budget["steps"] >= lim["max_steps_per_ask"]:
             _limit(ctx, tab, f"hctrl ask 1회당 지시 상한 {lim['max_steps_per_ask']}회에 도달했습니다")
         if minutes >= lim["max_minutes_per_ask"]:

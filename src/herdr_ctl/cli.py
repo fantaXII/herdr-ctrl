@@ -15,7 +15,7 @@ import yaml
 from . import roles as roles_mod
 from .config import check_file, format_issues, orch_name, str_keys
 from .herdr import Herdr, HerdrError, clean_env
-from .orchestrator import LimitExceeded, ScopeError, current_actor, enforce, guard
+from .orchestrator import LimitExceeded, ScopeError, current_actor, enforce, guard, record_orch_job
 from .project import Project, find_project, load_registry, project_by_name, register
 from .state import LockBusy, State
 from .up import Ctx
@@ -515,6 +515,7 @@ def cmd_run(args) -> int:
     actor = current_actor(ctx)
     enforce(ctx, actor, sorted({s.target for s in flow.steps}), None)
     rec = create_run(ctx.project, flow, actor=str(actor))
+    record_orch_job(ctx, actor, rec)
     return _finish(ctx, rec, args.detach)
 
 
@@ -528,6 +529,7 @@ def cmd_send(args) -> int:
     actor = current_actor(ctx)
     enforce(ctx, actor, [args.agent], args.text)
     rec = create_job(ctx.project, args.agent, args.text, parse_duration(args.timeout), actor=str(actor))
+    record_orch_job(ctx, actor, rec)
     return _finish(ctx, rec, args.detach)
 
 

@@ -333,7 +333,7 @@ def render_orchestrator_rules(project: Project, cfg: Config, tab: TabCfg,
         "- 같은 파일을 두 agent에게 동시에 맡기지 않습니다.",
         "", ORCH_DECISION_RULES.rstrip(),
         "", "## 상한 (hctrl이 강제)",
-        f"- 사용자의 지시 1회(hctrl ask 또는 이 창에 직접 입력)당 지시 {lim['max_steps_per_ask']}회, {lim['max_minutes_per_ask']}분, "
+        f"- 사용자의 지시 1회(hctrl ask 또는 이 창에 직접 입력)당 지시 {lim['max_steps_per_ask']}회, {lim['max_minutes_per_ask']}분(작업 agent를 기다린 시간 제외), "
         f"같은 agent에게 같은 지시 반복 {lim['max_retries_per_agent']}회",
         "- 상한에 걸리면 멈추고 사용자에게 상황을 보고하세요.",
         "", "## 파일",

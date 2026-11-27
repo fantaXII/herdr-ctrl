@@ -499,3 +499,100 @@ def test_opencode_without_a_database_keeps_the_budget(two, tmp_path, monkeypatch
                                                             "value": "ses_test0001abcd"}}
     with pytest.raises(LimitExceeded, match="시간 상한"):
         enforce(a, Actor("orch", "x-orch", "X"), ["x1"], "a")
+
+
+
+def _orch_job(a, agent, created, ended, actor="x-orch", pid=None, pid_start=None):
+    """An orchestrator job as hctrl records it in the private ledger (not the agent-writable run.json)."""
+    from herdr_ctl.orchestrator import _ledger_path
+    from herdr_ctl.state import read_json, write_json
+    path = _ledger_path(a.project)
+    jobs = read_json(path) or {}
+    span = {"start": created, "end": ended, "pid": pid, "pid_start": pid_start}
+    jobs[f"j{len(jobs) + 1:04d}"] = {"orch": actor, "created": created, "spans": [span]}
+    write_json(path, jobs)
+
+
+def test_time_a_work_agent_spends_does_not_use_up_the_orchestrator_budget(two):
+    """Seen live: a work agent ran for over 2 hours on one `hctrl send`, and when it finished the
+    orchestrator's next hctrl send was refused with the 120-minute limit."""
+    import time as _t
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import read_json
+    a, tab = _stale_budget(two)  # ask started 3 hours ago
+    started = read_json(_budget_path(a, tab))["started"]
+    orch = Actor("orch", "x-orch", "X")
+    now = _t.time()
+    _orch_job(a, "x1", started + 300, now - 600)      # the long job: 5 min in, until 10 min ago
+    _orch_job(a, "x2", started + 600, now - 1200)     # a parallel one inside it counts once
+    enforce(a, orch, ["x1"], "next")
+    assert read_json(_budget_path(a, tab))["steps"] == 1
+
+
+def test_orchestrator_own_time_still_hits_the_limit(two):
+    import time as _t
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import read_json
+    a, tab = _stale_budget(two)
+    started = read_json(_budget_path(a, tab))["started"]
+    orch = Actor("orch", "x-orch", "X")
+    now = _t.time()
+    _orch_job(a, "x1", started + 60, started + 600)               # only 9 minutes of agent work
+    _orch_job(a, "x1", started - 7200, now - 60, actor="y-orch")  # another orchestrator's job
+    _orch_job(a, "x2", started - 3600, started + 30)              # before this ask: clipped
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, orch, ["x1"], "a")
+
+
+def test_a_running_job_pauses_the_orchestrator_clock(two):
+    import os
+    import time as _t
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import proc_start, read_json
+    a, tab = _stale_budget(two)
+    started = read_json(_budget_path(a, tab))["started"]
+    orch = Actor("orch", "x-orch", "X")
+    _orch_job(a, "x1", started + 120, None, pid=os.getpid(), pid_start=proc_start(os.getpid()))
+    enforce(a, orch, ["x1"], "parallel")  # still working: the orchestrator is only waiting
+    assert _t.time() - started > 2 * 3600
+
+
+def test_a_job_whose_worker_died_does_not_pause_the_clock(two):
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.state import read_json
+    a, tab = _stale_budget(two)
+    started = read_json(_budget_path(a, tab))["started"]
+    _orch_job(a, "x1", started + 60, None, pid=2 ** 22 + 7, pid_start="1")  # no such process
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, Actor("orch", "x-orch", "X"), ["x1"], "a")
+
+
+def test_a_forged_run_record_does_not_pause_the_clock(two):
+    """runs/ is under .herdr-flow, which a work agent can edit: a run.json claiming a long-running
+    orchestrator job must not stop the time limit."""
+    from herdr_ctl.orchestrator import _budget_path
+    from herdr_ctl.runner import _new_id, save_run
+    from herdr_ctl.state import read_json
+    a, tab = _stale_budget(two)
+    started = read_json(_budget_path(a, tab))["started"]
+    rid = _new_id(a.project, "j")
+    save_run(a.project, {"id": rid, "kind": "job", "flow": "send:x1", "status": "running", "current": 0,
+                         "steps": [], "created": started, "actor": "x-orch", "pid": None})
+    with pytest.raises(LimitExceeded, match="시간 상한"):
+        enforce(a, Actor("orch", "x-orch", "X"), ["x1"], "a")
+
+
+def test_the_ledger_records_when_an_orchestrator_job_ran(two):
+    from herdr_ctl.orchestrator import _ledger_path, record_orch_job
+    from herdr_ctl.runner import create_job, execute
+    from herdr_ctl.state import read_json
+    a, _ = two
+    user_job = create_job(a.project, "x1", "사용자 지시", None)
+    record_orch_job(a, Actor("user"), user_job)
+    rec = create_job(a.project, "x1", "구현해줘", None, actor="x-orch")
+    record_orch_job(a, Actor("orch", "x-orch", "X"), rec)
+    execute(a, rec)
+    jobs = read_json(_ledger_path(a.project))
+    assert set(jobs) == {rec["id"]}
+    (span,) = jobs[rec["id"]]["spans"]
+    assert span["end"] >= span["start"] >= rec["created"]
